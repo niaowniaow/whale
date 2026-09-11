@@ -94,6 +94,7 @@ Ratings and rankings from [CCRL 40/15](https://computerchess.org.uk/4040/), [CCR
 - Run engine : `cargo run --release`
 - Run engine benchmark: `cargo run --release -- bench`
 - Misc : `cargo run --release -- --generate-magics`, `cargo run --release --features cuda -- --train <binpack_path>`
+- Teacher-labelled data: `cargo run --release --features train -- datagen-teacher <output.binpack> <games> <book.fen> <depth> <threads> <path/to/stockfish-19>`
 - Use unoptimized versions (non `--release`) only if debugging
 
 ## Quality Checks

@@ -24,6 +24,7 @@ static EMBEDDED_NETWORK: Network =
     unsafe { std::mem::transmute(*include_bytes!("../../../resources/nnue.bin")) };
 
 impl Network {
+    #[inline(always)]
     pub fn get_embedded() -> &'static Self {
         &EMBEDDED_NETWORK
     }

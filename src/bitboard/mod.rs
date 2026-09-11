@@ -12,6 +12,9 @@ impl Bitboard {
 
     #[inline(always)]
     pub fn get_bit(&self, square: usize) -> u8 {
+        if square >= 64 {
+            return 0;
+        }
         ((self.0 >> square) & 1) as u8
     }
 
@@ -47,7 +50,7 @@ impl Bitboard {
 
     #[inline(always)]
     pub fn clear_lsb(&mut self) {
-        self.0 &= self.0 - 1;
+        self.0 &= self.0.wrapping_sub(1);
     }
 }
 

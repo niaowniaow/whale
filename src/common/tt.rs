@@ -132,6 +132,19 @@ impl TranspositionTable {
         entry_type: TranspositionEntryType,
     ) {
         let index = (hash as usize) & (self.capacity - 1);
+        let best_move = if best_move == Move::NO_MOVE {
+            self.depth_replaced_entries[index]
+                .filter(|e| e.hash == hash && e.best_move != Move::NO_MOVE)
+                .map(|e| e.best_move)
+                .or_else(|| {
+                    self.always_replaced_entries[index]
+                        .filter(|e| e.hash == hash && e.best_move != Move::NO_MOVE)
+                        .map(|e| e.best_move)
+                })
+                .unwrap_or(Move::NO_MOVE)
+        } else {
+            best_move
+        };
         let new_entry = Some(TranspositionTableEntry {
             hash,
             score,

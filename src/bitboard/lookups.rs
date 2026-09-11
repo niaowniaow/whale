@@ -42,7 +42,7 @@ fn rook_attacks() -> &'static [[u64; 4096]; SQUARES] {
     &ROOK_ATTACKS
 }
 
-#[inline]
+#[inline(always)]
 pub fn get_bishop_attacks_from_table(square: Square, occupancy: Bitboard) -> Bitboard {
     let sq = square as usize;
     let bits = bishop_mask_bits()[sq];
@@ -51,7 +51,7 @@ pub fn get_bishop_attacks_from_table(square: Square, occupancy: Bitboard) -> Bit
     Bitboard(bishop_attacks()[sq][index])
 }
 
-#[inline]
+#[inline(always)]
 pub fn get_rook_attacks_from_table(square: Square, occupancy: Bitboard) -> Bitboard {
     let sq = square as usize;
     let bits = rook_mask_bits()[sq];
@@ -60,7 +60,7 @@ pub fn get_rook_attacks_from_table(square: Square, occupancy: Bitboard) -> Bitbo
     Bitboard(rook_attacks()[sq][index])
 }
 
-#[inline]
+#[inline(always)]
 pub fn get_queen_attacks_from_table(square: Square, occupancy: Bitboard) -> Bitboard {
     Bitboard(
         get_bishop_attacks_from_table(square, occupancy).0

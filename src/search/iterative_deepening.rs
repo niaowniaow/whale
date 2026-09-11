@@ -24,25 +24,29 @@ pub fn search(
     let timer = Instant::now();
 
     for current_depth in 1..=depth {
-        search_state.move_ordering.decay_history();
-
         // Aspiration Windows
         let mut alpha = i16::MIN + 1;
         let mut beta = i16::MAX - 1;
 
         if current_depth > 1 {
-            alpha = last_score
-                .saturating_sub(ASPIRATION_WINDOW_MARGIN)
-                .max(i16::MIN + 1);
-            beta = last_score
-                .saturating_add(ASPIRATION_WINDOW_MARGIN)
-                .min(i16::MAX - 1);
+            if last_score.abs() as i32 > MAX_CENTIPAWN_EVAL as i32 - MAX_PLY as i32 {
+                alpha = i16::MIN + 1;
+                beta = i16::MAX - 1;
+            } else {
+                alpha = last_score
+                    .saturating_sub(ASPIRATION_WINDOW_MARGIN)
+                    .max(i16::MIN + 1);
+                beta = last_score
+                    .saturating_add(ASPIRATION_WINDOW_MARGIN)
+                    .min(i16::MAX - 1);
+            }
         }
 
-        let mut current_score;
+        let mut current_score = last_score;
+        let mut completed = false;
 
         loop {
-            current_score = negamax::search(
+            let score = negamax::search(
                 board_state,
                 current_depth,
                 alpha,
@@ -57,42 +61,44 @@ pub fn search(
                 break;
             }
 
+            current_score = score;
             // TODO: Gradually expand window?
             if current_score <= alpha {
                 alpha = i16::MIN + 1;
             } else if current_score >= beta {
                 beta = i16::MAX - 1;
             } else {
+                completed = true;
                 break;
             }
         }
-
-        last_score = current_score;
-        search_state.score = current_score;
 
         if cancellation_token.load(Ordering::Relaxed) {
             break;
         }
 
-        previous_pv = pv_table.line().to_vec();
-        search_state.best_move = previous_pv.first().copied().unwrap_or(Move::NO_MOVE);
+        if completed {
+            last_score = current_score;
+            search_state.score = current_score;
+            previous_pv = pv_table.line().to_vec();
+            search_state.best_move = previous_pv.first().copied().unwrap_or(Move::NO_MOVE);
+        }
 
         let time_ms = timer.elapsed().as_millis().max(1) as f64;
         let nps = (search_state.nodes as f64 / time_ms * 1000.0) as i32;
 
-        let pv_string = previous_pv
-            .iter()
-            .map(|m| {
-                let promotion = m
-                    .promotion_char()
-                    .map(|c| c.to_string())
-                    .unwrap_or_else(String::new);
-                format!("{}{}{}", m.source, m.target, promotion)
-            })
-            .collect::<Vec<String>>()
-            .join(" ");
-
         if *debug_mode {
+            let pv_string = previous_pv
+                .iter()
+                .map(|m| {
+                    let promotion = m
+                        .promotion_char()
+                        .map(|c| c.to_string())
+                        .unwrap_or_else(String::new);
+                    format!("{}{}{}", m.source, m.target, promotion)
+                })
+                .collect::<Vec<String>>()
+                .join(" ");
             let score_str = format_score(search_state.score);
             println!(
                 "info depth {} score {} nodes {} time {} nps {} pv {}",

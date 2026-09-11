@@ -53,6 +53,9 @@ impl DatasetSource {
 
 #[derive(Debug, Clone, Default)]
 pub struct TeacherStudentConfig {
+    pub teacher_name: &'static str,
+    pub teacher_engine_path: Option<PathBuf>,
+    pub teacher_depth: u8,
     pub teacher_model_path: Option<PathBuf>,
     pub student_model_path: PathBuf,
     pub dataset_manifest: Vec<DatasetSource>,
@@ -64,6 +67,9 @@ pub struct TeacherStudentConfig {
 impl TeacherStudentConfig {
     pub fn default_config() -> Self {
         Self {
+            teacher_name: "Stockfish 19",
+            teacher_engine_path: None,
+            teacher_depth: 12,
             teacher_model_path: None,
             student_model_path: PathBuf::from("resources/nnue.bin"),
             dataset_manifest: DatasetSource::candidate_datasets().to_vec(),
@@ -84,9 +90,12 @@ pub struct NnuePipelineConfig {
     pub baseline_model_path: PathBuf,
     pub baseline_meta_path: PathBuf,
     pub teacher_model_path: Option<PathBuf>,
+    pub teacher_engine_path: Option<PathBuf>,
+    pub teacher_depth: u8,
     pub dataset_dir: PathBuf,
     pub checkpoints_dir: PathBuf,
     pub validation_dir: PathBuf,
+    pub architecture_version: u8,
 }
 
 impl NnuePipelineConfig {
@@ -95,9 +104,12 @@ impl NnuePipelineConfig {
             baseline_model_path: PathBuf::from("resources/nnue.bin"),
             baseline_meta_path: PathBuf::from("resources/nnue.bin.meta"),
             teacher_model_path: None,
+            teacher_engine_path: None,
+            teacher_depth: 12,
             dataset_dir: PathBuf::from("data"),
             checkpoints_dir: PathBuf::from("checkpoints"),
             validation_dir: PathBuf::from("validation"),
+            architecture_version: crate::eval::nnue::v2::VERSION,
         }
     }
 }
@@ -141,6 +153,10 @@ pub fn dataset_ingestion_plan() -> Vec<&'static str> {
     ]
 }
 
+pub fn dataset_is_ready_for_training(total_positions: usize) -> bool {
+    total_positions >= 1_000_000
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -152,6 +168,7 @@ mod tests {
         assert!(cfg.dataset_dir.ends_with("data"));
         assert!(cfg.checkpoints_dir.ends_with("checkpoints"));
         assert!(cfg.validation_dir.ends_with("validation"));
+        assert_eq!(cfg.architecture_version, crate::eval::nnue::v2::VERSION);
     }
 
     #[test]
@@ -165,9 +182,24 @@ mod tests {
     #[test]
     fn teacher_student_default_config_is_well_defined() {
         let cfg = TeacherStudentConfig::default_config();
+        assert_eq!(cfg.teacher_name, "Stockfish 19");
+        assert_eq!(cfg.teacher_depth, 12);
         assert!(cfg.validation_suite.len() >= 4);
         assert_eq!(cfg.checkpoint_every, 5);
         assert_eq!(cfg.max_epochs, 30);
         assert_eq!(cfg.dataset_manifest.len(), DatasetSource::candidate_datasets().len());
+    }
+
+    #[test]
+    fn teacher_engine_defaults_are_explicitly_unconfigured() {
+        let cfg = NnuePipelineConfig::default_paths();
+        assert!(cfg.teacher_engine_path.is_none());
+        assert_eq!(cfg.teacher_depth, 12);
+    }
+
+    #[test]
+    fn small_datasets_are_not_marked_training_ready() {
+        assert!(!dataset_is_ready_for_training(847));
+        assert!(dataset_is_ready_for_training(1_000_000));
     }
 }

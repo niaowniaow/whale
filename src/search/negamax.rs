@@ -58,6 +58,26 @@ fn search_internal(
         ctx.search_state.nodes += 1;
         return 0;
     }
+
+    let mated = -constants::MAX_CENTIPAWN_EVAL + ply as i16;
+    let mating = constants::MAX_CENTIPAWN_EVAL - ply as i16;
+    if alpha < mated {
+        alpha = mated;
+    }
+    let mut beta = beta;
+    if beta > mating {
+        beta = mating;
+    }
+    if alpha >= beta {
+        return alpha;
+    }
+
+    let depth = if in_check {
+        (depth + 1).min(constants::MAX_PLY as u8)
+    } else {
+        depth
+    };
+
     if ply as usize >= constants::MAX_PLY {
         return quiescence::search(
             board_state,
@@ -98,11 +118,14 @@ fn search_internal(
     let mut static_eval = 0;
     let has_static_eval = !is_pv_node && !in_check;
 
+    let mate_bound = constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16;
+    let beta_is_mate = beta.abs() >= mate_bound;
+
     if has_static_eval {
         static_eval = evaluate(board_state);
         // TODO: tune
         let margin = 150 * depth as i16;
-        if static_eval.saturating_sub(margin) >= beta {
+        if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
             return static_eval;
         }
     }
@@ -146,7 +169,7 @@ fn search_internal(
             ctx.search_state.tt.submit_entry(
                 board_state.board_hash,
                 tt::TranspositionTable::adjust_score(score, ply as i32),
-                depth,
+                reduced_depth,
                 Move::NO_MOVE,
                 TranspositionEntryType::Beta,
             );
@@ -185,42 +208,68 @@ fn search_internal(
             continue;
         }
 
-        let gives_check = board_state.is_in_check(board_state.side_to_move);
-        let is_tactical = move_obj.is_capture() || move_obj.is_promotion() || gives_check;
-
         has_legal_moves = true;
+
+        let cap_or_promo = move_obj.is_capture() || move_obj.is_promotion();
+        let alpha_is_mate = alpha.abs() >= mate_bound;
+
+        let mut gives_check = false;
+        let mut gives_check_computed = false;
 
         // PRUNE: Futility Pruning
         if number_of_legal_moves > 0
             && has_static_eval
             && depth < 3
-            && !is_tactical
+            && !cap_or_promo
+            && !alpha_is_mate
             // TODO: tune
             && static_eval.saturating_add(150 * depth as i16) <= alpha
         {
-            board_state.unmake_move(move_obj);
-            continue;
+            gives_check = board_state.is_in_check(board_state.side_to_move);
+            gives_check_computed = true;
+            if !gives_check {
+                board_state.unmake_move(move_obj);
+                continue;
+            }
         }
 
         // PRUNE: Late Move Pruning
         // TODO: tune base and depth limit
         if has_static_eval
             && depth < 4
-            && !is_tactical
+            && !cap_or_promo
+            && !alpha_is_mate
             && number_of_legal_moves >= 3 + (depth as usize * depth as usize)
         {
-            board_state.unmake_move(move_obj);
-            continue;
+            if !gives_check_computed {
+                gives_check = board_state.is_in_check(board_state.side_to_move);
+                gives_check_computed = true;
+            }
+            if !gives_check {
+                board_state.unmake_move(move_obj);
+                continue;
+            }
         }
 
-        let needs_lmr = lmr::needs_reduction(depth, number_of_legal_moves, is_tactical, in_check);
+        let is_tactical = if cap_or_promo {
+            true
+        } else if gives_check_computed {
+            gives_check
+        } else if depth >= 3 && number_of_legal_moves >= 3 && !in_check {
+            board_state.is_in_check(board_state.side_to_move)
+        } else {
+            false
+        };
+
+        let needs_lmr =
+            lmr::needs_reduction(depth, number_of_legal_moves, is_tactical, in_check);
 
         let mut score;
         let next_on_pv = ctx.on_pv_path && Some(move_obj) == pv_move;
 
         // REDUCTION: Late Move Reductions
         if needs_lmr {
-            let reduction = lmr::get_reduction(depth, number_of_legal_moves);
+            let reduction = lmr::get_reduction(depth, number_of_legal_moves, is_pv_node);
             score = -search_internal(
                 board_state,
                 depth.saturating_sub(1 + reduction),
@@ -229,7 +278,7 @@ fn search_internal(
                 -alpha,
                 Some(move_obj),
                 &mut SearchContext {
-                    allow_null_move: ctx.allow_null_move,
+                    allow_null_move: true,
                     on_pv_path: false,
                     previous_pv: ctx.previous_pv,
                     pv_table: &mut *ctx.pv_table,
@@ -240,7 +289,7 @@ fn search_internal(
 
             if score > alpha {
                 let mut child_ctx = SearchContext {
-                    allow_null_move: ctx.allow_null_move,
+                    allow_null_move: true,
                     on_pv_path: next_on_pv,
                     previous_pv: ctx.previous_pv,
                     pv_table: &mut *ctx.pv_table,
@@ -260,7 +309,7 @@ fn search_internal(
             }
         } else {
             let mut child_ctx = SearchContext {
-                allow_null_move: ctx.allow_null_move,
+                allow_null_move: true,
                 on_pv_path: next_on_pv,
                 previous_pv: ctx.previous_pv,
                 pv_table: &mut *ctx.pv_table,
@@ -343,6 +392,7 @@ fn search_internal(
                 ctx.search_state,
                 best_move,
                 depth,
+                previous_move,
                 &tried_quiets[..tried_quiets_count],
             );
         }
@@ -435,20 +485,47 @@ fn update_history_stats(
     search_state: &mut SearchState,
     best_move: Move,
     depth: u8,
+    previous_move: Option<Move>,
     tried_quiets: &[Move],
 ) {
     let bonus = (300 * depth as i32) - 250;
     let piece = board_state.get_piece_on(best_move.source) as usize;
+    let side = board_state.side_to_move;
+    search_state.move_ordering.update_history(piece, best_move, bonus);
     search_state
         .move_ordering
-        .update_history(piece, best_move, bonus);
+        .update_quiet_history(side, best_move, bonus);
+    update_continuation(search_state, board_state, previous_move, best_move, bonus);
 
     for &quiet_move in tried_quiets {
         if quiet_move != best_move {
             let q_piece = board_state.get_piece_on(quiet_move.source) as usize;
+            let penalty = -bonus;
+            search_state.move_ordering.update_history(q_piece, quiet_move, penalty);
             search_state
                 .move_ordering
-                .update_history(q_piece, quiet_move, -bonus);
+                .update_quiet_history(side, quiet_move, penalty);
+            update_continuation(search_state, board_state, previous_move, quiet_move, penalty);
+        }
+    }
+}
+
+fn update_continuation(
+    search_state: &mut SearchState,
+    board_state: &BoardState,
+    previous_move: Option<Move>,
+    move_obj: Move,
+    bonus: i32,
+) {
+    if let Some(previous_move) = previous_move {
+        let previous_piece = board_state.piece_mapping[previous_move.target as usize];
+        if previous_piece != Piece::None {
+            search_state.move_ordering.update_continuation_history(
+                previous_piece,
+                previous_move.target,
+                move_obj,
+                bonus,
+            );
         }
     }
 }
@@ -481,7 +558,14 @@ fn beta_cutoff(
     if !move_obj.is_capture() {
         search_state.move_ordering.add_killer_move(move_obj, ply);
 
-        update_history_stats(board_state, search_state, move_obj, depth, tried_quiets);
+        update_history_stats(
+            board_state,
+            search_state,
+            move_obj,
+            depth,
+            previous_move,
+            tried_quiets,
+        );
 
         if let Some(prev_mv) = previous_move {
             let prev_side = board_state.side_to_move.other();

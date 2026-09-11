@@ -1,6 +1,7 @@
 pub mod accumulator;
 pub mod features;
 pub mod loader;
+pub mod v2;
 
 use crate::board::state::BoardState;
 use crate::common::side::Side;
@@ -12,11 +13,13 @@ pub const INPUT_SIZE: usize = 768;
 
 pub const SCALE: i32 = 400;
 
+#[inline(always)]
 pub fn evaluate(board: &BoardState) -> i16 {
     let network = Network::get_embedded();
     evaluate_internal(board, network)
 }
 
+#[inline(always)]
 pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
     let side_to_move = board.side_to_move;
     let (acc_active, acc_passive) = if side_to_move == Side::White {
@@ -31,16 +34,16 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
         )
     };
 
-    let mut output: i32 = 0;
+    let mut output: i64 = 0;
 
     for (&input, &weight) in acc_active
         .state
         .iter()
         .zip(&network.output_weights[0..ACC_SIZE])
     {
-        let val = i32::from(input).clamp(0, 255);
+        let val = i64::from(input).clamp(0, 255);
         let screlu = val * val;
-        output += screlu * i32::from(weight);
+        output += screlu * i64::from(weight);
     }
 
     for (&input, &weight) in acc_passive
@@ -48,15 +51,15 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
         .iter()
         .zip(&network.output_weights[ACC_SIZE..2 * ACC_SIZE])
     {
-        let val = i32::from(input).clamp(0, 255);
+        let val = i64::from(input).clamp(0, 255);
         let screlu = val * val;
-        output += screlu * i32::from(weight);
+        output += screlu * i64::from(weight);
     }
 
     // QA=255, QB=64, SCALE=400
     output /= 255;
-    output += i32::from(network.output_bias);
-    output *= SCALE;
+    output += i64::from(network.output_bias);
+    output *= i64::from(SCALE);
     output /= 255 * 64;
 
     output.clamp(-29000, 29000) as i16

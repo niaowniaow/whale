@@ -29,8 +29,8 @@ impl Accumulator {
     pub fn add_feature(&mut self, feature_idx: usize, network: &Network) {
         let start = feature_idx * ACC_SIZE;
         let weights = &network.transformer_weights[start..start + ACC_SIZE];
-        for (i, item) in weights.iter().enumerate().take(ACC_SIZE) {
-            self.state[i] += *item;
+        for (state, weight) in self.state.iter_mut().zip(weights) {
+            *state += *weight;
         }
     }
 
@@ -38,8 +38,8 @@ impl Accumulator {
     pub fn remove_feature(&mut self, feature_idx: usize, network: &Network) {
         let start = feature_idx * ACC_SIZE;
         let weights = &network.transformer_weights[start..start + ACC_SIZE];
-        for (i, item) in weights.iter().enumerate().take(ACC_SIZE) {
-            self.state[i] -= *item;
+        for (state, weight) in self.state.iter_mut().zip(weights) {
+            *state -= *weight;
         }
     }
 

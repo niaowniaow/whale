@@ -2,7 +2,7 @@ use crate::common::constants;
 use crate::common::moves::Move;
 use crate::common::side::Side;
 use crate::uci::{
-    SEARCH_STATE, UciClient, get_parameter, has_flag, output_best_move, time_management,
+    SEARCH_STATE, UciClient, get_parameter, output_best_move, time_management,
 };
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -23,13 +23,16 @@ impl UciClient {
             state.best_move = Move::NO_MOVE;
         }
 
-        let depth = get_parameter("depth", parameters, 8) as u8;
-        let winc = get_parameter("winc", parameters, -1);
-        let binc = get_parameter("binc", parameters, -1);
+        let has_depth = parameters.contains(&"depth");
+        let depth = get_parameter("depth", parameters, 8)
+            .clamp(1, constants::MAX_SEARCH_DEPTH as i32) as u8;
+        let winc = get_parameter("winc", parameters, 0);
+        let binc = get_parameter("binc", parameters, 0);
         let wtime = get_parameter("wtime", parameters, -1);
         let btime = get_parameter("btime", parameters, -1);
         let movetime = get_parameter("movetime", parameters, -1);
-        let infinite = has_flag("infinite", parameters);
+        let movestogo = get_parameter("movestogo", parameters, -1);
+        let infinite = parameters.contains(&"infinite");
 
         let (clock, increment) = {
             let board = self.board.lock().unwrap();
@@ -44,17 +47,13 @@ impl UciClient {
             if clock == -1 {
                 -1
             } else {
-                time_management::calculate_move_time(clock, increment)
+                time_management::calculate_move_time_with_moves(clock, increment, movestogo)
             }
         } else {
             movetime
         };
 
-        if infinite {
-            return;
-        }
-
-        let board = Arc::clone(&self.board);
+        let board_snapshot = self.board.lock().unwrap().clone();
         let debug = Arc::clone(&self.debug_mode);
         let cancel_for_search = Arc::clone(&cancel_token);
         let search_state = Arc::clone(&self.search_state);
@@ -68,14 +67,18 @@ impl UciClient {
             });
         }
 
-        let search_depth = if allotted_time == -1 {
+        let search_depth = if infinite {
+            constants::MAX_SEARCH_DEPTH
+        } else if has_depth {
+            depth
+        } else if allotted_time == -1 {
             depth
         } else {
             constants::MAX_SEARCH_DEPTH
         };
 
         thread::spawn(move || {
-            let mut board = board.lock().unwrap();
+            let mut board = board_snapshot;
             let mut debug_mode = debug.load(Ordering::Relaxed);
             let mut search_state_guard = search_state.lock().unwrap();
             let best_move = board.find_best_move(

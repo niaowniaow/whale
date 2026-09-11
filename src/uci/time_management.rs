@@ -1,7 +1,15 @@
 use crate::common::constants;
 
 pub fn calculate_move_time(clock: i32, increment: i32) -> i32 {
-    let move_time = clock / 20 + increment / 2;
+    calculate_move_time_with_moves(clock, increment, -1)
+}
+
+pub fn calculate_move_time_with_moves(clock: i32, increment: i32, movestogo: i32) -> i32 {
+    let move_time = if movestogo > 0 {
+        clock / movestogo + increment / 2
+    } else {
+        clock / 20 + increment / 2
+    };
     std::cmp::max(
         10,
         std::cmp::min(move_time, clock - constants::BUFFER_TIME as i32),

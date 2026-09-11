@@ -53,11 +53,23 @@ fn main() {
             println!("{} nodes {} nps", search_state.nodes, nps);
             exit(0);
         }
-        Some("datagen") | Some("--datagen") => {
-            if raw_args.len() < 5 {
+        Some("datagen") | Some("--datagen") | Some("datagen-teacher") => {
+            let uses_teacher =
+                matches!(raw_args.get(1).map(String::as_str), Some("datagen-teacher"));
+            if raw_args.len() < if uses_teacher { 8 } else { 5 } {
+                let command_name = if uses_teacher {
+                    "datagen-teacher"
+                } else {
+                    "datagen"
+                };
+                let teacher_suffix = if uses_teacher {
+                    " <stockfish_binary>"
+                } else {
+                    ""
+                };
                 eprintln!(
-                    "Usage: {} datagen <output.binpack> <number_of_games> <opening_book.fen> [depth] [threads]",
-                    raw_args[0]
+                    "Usage: {} {} <output.binpack> <number_of_games> <opening_book.fen> [depth] [threads]{}",
+                    raw_args[0], command_name, teacher_suffix
                 );
                 exit(1);
             }
@@ -95,7 +107,19 @@ fn main() {
                     .map(|p| p.get())
                     .unwrap_or(4)
             };
-            rudim::datagen::run(output_path, num_games, book_path, depth, threads);
+            let teacher_path = if uses_teacher {
+                raw_args.get(7).map(String::as_str)
+            } else {
+                None
+            };
+            rudim::datagen::run_with_teacher(
+                output_path,
+                num_games,
+                book_path,
+                depth,
+                threads,
+                teacher_path,
+            );
             exit(0);
         }
         _ => {

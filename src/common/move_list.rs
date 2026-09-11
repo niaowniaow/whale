@@ -41,6 +41,10 @@ impl MoveList {
     }
 
     pub fn push(&mut self, m: ScoredMove) {
+        if self.count >= MAX_MOVES {
+            debug_assert!(self.count < MAX_MOVES);
+            return;
+        }
         self.moves[self.count] = m;
         self.count += 1;
     }

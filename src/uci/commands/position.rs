@@ -67,7 +67,7 @@ impl UciClient {
     }
 
     fn find_move_from_move_list(&mut self, move_obj: Move) -> Move {
-        let board = self.board.lock().unwrap();
+        let mut board = self.board.lock().unwrap();
         let mut move_list = MoveList::new();
         board.generate_moves(&mut move_list);
 
@@ -77,7 +77,13 @@ impl UciClient {
                 && (move_obj.move_type == MoveType::Quiet
                     || ((m.mv.move_type.value() & !8) == move_obj.move_type.value()))
             {
-                return m.mv;
+                let candidate = m.mv;
+                board.make_move(candidate);
+                let illegal = board.is_in_check(board.side_to_move.other());
+                board.unmake_move(candidate);
+                if !illegal {
+                    return candidate;
+                }
             }
         }
 

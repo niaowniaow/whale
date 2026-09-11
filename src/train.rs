@@ -1,6 +1,6 @@
 use std::fs;
-
-use bullet_lib::game::inputs::Chess768;
+use bullet_lib::game::inputs::SparseInputType;
+use bulletformat::ChessBoard;
 use bullet_lib::nn::optimiser::AdamWOptimiser;
 use bullet_lib::value::{NoOutputBuckets, ValueTrainer};
 use bullet_lib::{
@@ -15,6 +15,74 @@ use bullet_lib::{
         loader::{ViriBinpackLoader, viribinpack::Filter},
     },
 };
+use crate::common::piece::Piece;
+use crate::common::side::Side;
+use crate::eval::nnue::v2::{
+    HIDDEN_SIZE, MAX_ACTIVE_FEATURES, NetworkHeader, RAW_INPUT_SIZE, RawBoard,
+    TRANSFORMED_SIZE, active_features_raw,
+};
+
+#[derive(Clone, Copy, Debug, Default)]
+struct RudimV2Input;
+
+fn chessboard_to_rawboard(pos: &ChessBoard) -> RawBoard {
+    let mut raw = RawBoard::empty();
+    for (piece_u8, sq_bullet) in (*pos).into_iter() {
+        let ptype = (piece_u8 & 7) as usize;
+        if ptype > 5 {
+            continue;
+        }
+        let side = if piece_u8 & 8 == 0 {
+            Side::White
+        } else {
+            Side::Black
+        };
+        let piece = Piece::from(ptype);
+        let sq_rudim = (sq_bullet ^ 56) as usize;
+        if sq_rudim >= 64 {
+            continue;
+        }
+        let bit = 1u64 << sq_rudim;
+        raw.pieces[ptype] |= bit;
+        match side {
+            Side::White => raw.white |= bit,
+            Side::Black => raw.black |= bit,
+            Side::Both => {}
+        }
+        raw.mapping[sq_rudim] = piece;
+    }
+    raw
+}
+
+impl SparseInputType for RudimV2Input {
+    type RequiredDataType = ChessBoard;
+
+    fn num_inputs(&self) -> usize {
+        RAW_INPUT_SIZE
+    }
+
+    fn max_active(&self) -> usize {
+        MAX_ACTIVE_FEATURES
+    }
+
+    fn map_features<F: FnMut(usize, usize)>(&self, pos: &ChessBoard, mut f: F) {
+        let raw = chessboard_to_rawboard(pos);
+        let stm = active_features_raw(&raw, Side::White);
+        let ntm = active_features_raw(&raw, Side::Black);
+        let n = if stm.len < ntm.len { stm.len } else { ntm.len };
+        for i in 0..n {
+            f(stm.indices[i], ntm.indices[i]);
+        }
+    }
+
+    fn shorthand(&self) -> String {
+        "rudim-v2-88944x1024".to_string()
+    }
+
+    fn description(&self) -> String {
+        "Rudim v2 raw inputs 88944".to_string()
+    }
+}
 
 pub fn run(custom_dataset_path: Option<&str>) {
     run_with_mode(custom_dataset_path, false);
@@ -26,9 +94,7 @@ pub fn run_smoke(custom_dataset_path: Option<&str>) {
 
 fn run_with_mode(custom_dataset_path: Option<&str>, smoke_mode: bool) {
     let dataset_path = custom_dataset_path.unwrap_or(DEFAULT_DATASET_PATH);
-
-    let mut trainer = build_trainer(HL_SIZE);
-
+    let mut trainer = build_trainer();
     let schedule = if smoke_mode {
         build_smoke_schedule()
     } else {
@@ -40,58 +106,62 @@ fn run_with_mode(custom_dataset_path: Option<&str>, smoke_mode: bool) {
         build_settings()
     };
     let dataloader = build_dataloader(dataset_path);
-
     println!("Starting bullet training loop{}...", if smoke_mode { " (smoke mode)" } else { "" });
     trainer.run(&schedule, &settings, &dataloader);
     println!("Bullet training completed successfully!");
-
-    copy_trained_weights();
+    if smoke_mode {
+        println!("Smoke training finished; keeping production NNUE unchanged.");
+    } else {
+        copy_trained_weights();
+    }
 }
 
-// Tunable Hyperparameters and Configurations
 const DEFAULT_DATASET_PATH: &str = "data/v1_gen3_1m_d7.binpack";
 const OUTPUT_DIRECTORY: &str = "checkpoints";
-const TARGET_WEIGHTS_PATH: &str = "resources/nnue.bin";
-
-const HL_SIZE: usize = 256;
-
+const TARGET_WEIGHTS_PATH: &str = "resources/nnue-v2-bullet.bin";
 const INITIAL_LR: f32 = 0.001;
 const FINAL_LR: f32 = 0.00001;
 const WDL_START: f32 = 0.2;
 const WDL_END: f32 = 0.7;
 const EVAL_SCALE: f32 = 400.0;
-
 const NET_ID: &str = "rudim-256";
 const BATCH_SIZE: usize = 16_384;
 const BATCHES_PER_SUPERBATCH: usize = 6104;
 const START_SUPERBATCH: usize = 1;
 const END_SUPERBATCH: usize = 40;
 const SAVE_RATE: usize = 5;
-
 const THREADS: usize = 4;
 const BATCH_QUEUE_SIZE: usize = 4;
 const DATALOADER_PER_THREAD_BUFFERS: usize = 512;
 
-fn build_trainer(hl_size: usize) -> ValueTrainer<AdamWOptimiser, Chess768, NoOutputBuckets> {
+fn build_trainer() -> ValueTrainer<AdamWOptimiser, RudimV2Input, NoOutputBuckets> {
+    let header = NetworkHeader::current().to_bytes().to_vec();
     ValueTrainerBuilder::default()
         .dual_perspective()
         .optimiser(AdamW)
-        .inputs(Chess768)
+        .inputs(RudimV2Input)
         .save_format(&[
+            SavedFormat::custom(header),
             SavedFormat::id("l0w").round().quantise::<i16>(255),
             SavedFormat::id("l0b").round().quantise::<i16>(255),
-            SavedFormat::id("l1w").round().quantise::<i16>(64),
-            SavedFormat::id("l1b").round().quantise::<i16>(255 * 64),
+            SavedFormat::id("l1w").round().quantise::<i8>(64),
+            SavedFormat::id("l1b").round().quantise::<i32>(255 * 64),
+            SavedFormat::id("l2w").round().quantise::<i8>(64),
+            SavedFormat::id("l2b").round().quantise::<i32>(255 * 64),
+            SavedFormat::id("outw").round().quantise::<i8>(64),
+            SavedFormat::id("outb").round().quantise::<i32>(255 * 64),
         ])
         .loss_fn(|output, target| output.sigmoid().squared_error(target))
         .build(|builder, stm_inputs, ntm_inputs| {
-            let l0 = builder.new_affine("l0", 768, hl_size);
-            let l1 = builder.new_affine("l1", 2 * hl_size, 1);
-
+            let l0 = builder.new_affine("l0", RAW_INPUT_SIZE, TRANSFORMED_SIZE);
+            let l1 = builder.new_affine("l1", 2 * TRANSFORMED_SIZE, HIDDEN_SIZE);
+            let l2 = builder.new_affine("l2", 2 * HIDDEN_SIZE, HIDDEN_SIZE);
+            let output = builder.new_affine("out", 2 * HIDDEN_SIZE, 1);
             let stm_hidden = l0.forward(stm_inputs).screlu();
             let ntm_hidden = l0.forward(ntm_inputs).screlu();
-            let hidden_layer = stm_hidden.concat(ntm_hidden);
-            l1.forward(hidden_layer)
+            let first_hidden = l1.forward(stm_hidden.concat(ntm_hidden)).screlu();
+            let second_hidden = l2.forward(first_hidden.concat(first_hidden)).screlu();
+            output.forward(second_hidden.concat(second_hidden))
         })
 }
 

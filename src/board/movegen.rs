@@ -87,6 +87,9 @@ impl BoardState {
         let both_occ = self.occupancy();
 
         if self.side_to_move == Side::Black {
+            if source > 55 {
+                return;
+            }
             let one_sq = source + 8;
             if both_occ.get_bit(one_sq) != 0 {
                 return;
@@ -101,6 +104,9 @@ impl BoardState {
                 self.add_pawn_move(source, two_sq, false, true, move_list, gen_type);
             }
         } else {
+            if source < 8 {
+                return;
+            }
             let one_sq = source - 8;
             if both_occ.get_bit(one_sq) != 0 {
                 return;
@@ -210,6 +216,7 @@ impl BoardState {
                 && occ.get_bit(Square::G1 as usize) == 0
                 && !self.is_square_attacked(Square::E1, Side::Black)
                 && !self.is_square_attacked(Square::F1, Side::Black)
+                && !self.is_square_attacked(Square::G1, Side::Black)
             {
                 move_list.push(ScoredMove::new(Square::E1, Square::G1, MoveType::Castle));
             }
@@ -219,6 +226,7 @@ impl BoardState {
                 && occ.get_bit(Square::B1 as usize) == 0
                 && !self.is_square_attacked(Square::E1, Side::Black)
                 && !self.is_square_attacked(Square::D1, Side::Black)
+                && !self.is_square_attacked(Square::C1, Side::Black)
             {
                 move_list.push(ScoredMove::new(Square::E1, Square::C1, MoveType::Castle));
             }
@@ -228,6 +236,7 @@ impl BoardState {
                 && occ.get_bit(Square::G8 as usize) == 0
                 && !self.is_square_attacked(Square::E8, Side::White)
                 && !self.is_square_attacked(Square::F8, Side::White)
+                && !self.is_square_attacked(Square::G8, Side::White)
             {
                 move_list.push(ScoredMove::new(Square::E8, Square::G8, MoveType::Castle));
             }
@@ -237,6 +246,7 @@ impl BoardState {
                 && occ.get_bit(Square::B8 as usize) == 0
                 && !self.is_square_attacked(Square::E8, Side::White)
                 && !self.is_square_attacked(Square::D8, Side::White)
+                && !self.is_square_attacked(Square::C8, Side::White)
             {
                 move_list.push(ScoredMove::new(Square::E8, Square::C8, MoveType::Castle));
             }

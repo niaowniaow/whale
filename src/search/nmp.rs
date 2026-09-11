@@ -1,4 +1,5 @@
 use crate::board::state::BoardState;
+use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::piece::Piece;
 
 // TODO: tune conditions and reduction
@@ -19,10 +20,12 @@ pub fn can_prune(
         ^ board_state.get_pieces(side, Piece::King))
     .is_not_empty();
 
+    let mate_bound = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
     allow_null_move
         && !is_pv_node
         && !in_check
         && depth >= 2
+        && beta.abs() < mate_bound
         && static_eval >= beta
         && has_non_pawn_material
 }

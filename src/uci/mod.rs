@@ -88,6 +88,11 @@ impl UciClient {
 }
 
 pub(crate) fn output_best_move(move_obj: Move) {
+    if move_obj == Move::NO_MOVE {
+        cli::write_line("bestmove 0000");
+        return;
+    }
+
     let promotion = move_obj
         .promotion_char()
         .map(|c| c.to_string())
@@ -110,6 +115,3 @@ pub(crate) fn get_parameter(name: &str, parameters: &[&str], fallback: i32) -> i
     fallback
 }
 
-pub(crate) fn has_flag(name: &str, parameters: &[&str]) -> bool {
-    parameters.contains(&name)
-}

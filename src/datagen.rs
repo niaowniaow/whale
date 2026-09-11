@@ -13,6 +13,7 @@ use crate::common::piece::Piece as RudimPiece;
 use crate::common::side::Side as RudimSide;
 use crate::common::square::Square as RudimSquare;
 use crate::search::search_state::SearchState;
+use crate::teacher::StockfishTeacher;
 
 use bullet_lib::game::formats::viriformat::{
     chess::board::Board as ViriBoard,
@@ -250,6 +251,17 @@ pub fn write_metadata(output_path: &str, meta: &DatagenMetadata) -> Result<()> {
 }
 
 pub fn run(output_path: &str, num_games: usize, book_path: &str, depth: u8, num_threads: usize) {
+    run_with_teacher(output_path, num_games, book_path, depth, num_threads, None);
+}
+
+pub fn run_with_teacher(
+    output_path: &str,
+    num_games: usize,
+    book_path: &str,
+    depth: u8,
+    num_threads: usize,
+    teacher_path: Option<&str>,
+) {
     let overall_start = std::time::Instant::now();
     let initial_metadata = read_metadata(output_path);
 
@@ -292,6 +304,10 @@ pub fn run(output_path: &str, num_games: usize, book_path: &str, depth: u8, num_
                 let cancellation_token = AtomicBool::new(false);
                 let mut debug_mode = false;
                 let mut search_state = SearchState::new();
+                let mut teacher = teacher_path.map(|path| match StockfishTeacher::new(path) {
+                    Ok(teacher) => teacher,
+                    Err(error) => panic!("failed to start Stockfish teacher '{path}': {error}"),
+                });
 
                 for _ in 0..thread_games {
                     let starting_fen = random::choose(book_fens_ref).unwrap();
@@ -308,7 +324,14 @@ pub fn run(output_path: &str, num_games: usize, book_path: &str, depth: u8, num_
                         &mut debug_mode,
                         &mut search_state,
                     );
-                    let initial_eval = search_state.score;
+                    let initial_eval = teacher
+                        .as_mut()
+                        .map(|teacher| {
+                            teacher.evaluate(&board_state, depth).unwrap_or_else(|error| {
+                                panic!("Stockfish teacher evaluation failed: {error}")
+                            })
+                        })
+                        .unwrap_or(search_state.score);
 
                     let mut positions = Vec::new();
                     let outcome;
@@ -336,7 +359,14 @@ pub fn run(output_path: &str, num_games: usize, book_path: &str, depth: u8, num_
                             break;
                         }
 
-                        let score = search_state.score;
+                        let score = teacher
+                            .as_mut()
+                            .map(|teacher| {
+                                teacher.evaluate(&board_state, depth).unwrap_or_else(|error| {
+                                    panic!("Stockfish teacher evaluation failed: {error}")
+                                })
+                            })
+                            .unwrap_or(search_state.score);
 
                         positions.push(SelfPlayPosition {
                             side_to_move: board_state.side_to_move,
