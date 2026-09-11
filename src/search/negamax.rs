@@ -122,7 +122,7 @@ fn search_internal(
     let beta_is_mate = beta.abs() >= mate_bound;
 
     if has_static_eval {
-        static_eval = evaluate(board_state);
+        static_eval = evaluate(&mut *board_state);
         // TODO: tune
         let margin = 150 * depth as i16;
         if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {

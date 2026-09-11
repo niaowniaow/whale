@@ -5,6 +5,7 @@ use crate::common::square::Square;
 use crate::eval::nnue::accumulator::Accumulator;
 use crate::eval::nnue::features::get_feature_index;
 use crate::eval::nnue::loader::Network;
+use crate::eval::nnue::v2::{self as sfnn10, SfnnPosition};
 
 impl BoardState {
     #[inline(always)]
@@ -16,6 +17,7 @@ impl BoardState {
             self.pending_adds_b[self.pending_adds as usize] = b_idx;
             self.pending_adds += 1;
         }
+        sfnn10::note_add(&mut self.sfnn10_pending, square, side, piece);
     }
 
     #[inline(always)]
@@ -27,6 +29,7 @@ impl BoardState {
             self.pending_dels_b[self.pending_removes as usize] = b_idx;
             self.pending_removes += 1;
         }
+        sfnn10::note_remove(&mut self.sfnn10_pending, square, side, piece);
     }
 
     pub fn flush_pending_updates(&mut self, target_idx: usize) {
@@ -92,6 +95,15 @@ impl BoardState {
         }
         self.pending_adds = 0;
         self.pending_removes = 0;
+
+        // SFNNv10 incremental HalfKA + PSQT for the target ply.
+        if sfnn10::maintenance_active() {
+            let pos = SfnnPosition::from_board(self);
+            let accs = &mut self.history.sfnn10[target_idx];
+            sfnn10::flush_pending(&pos, accs, &mut self.sfnn10_pending);
+        } else {
+            self.sfnn10_pending.clear();
+        }
     }
 
     pub fn refresh_accumulator(&mut self, side: Side, network: &Network) {

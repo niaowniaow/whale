@@ -11,6 +11,7 @@ use crate::common::piece::{Piece, PieceMap};
 use crate::common::side::{Side, SideMap};
 use crate::common::square::Square;
 use crate::eval::nnue::loader::Network;
+use crate::eval::nnue::v2::SfnnPending;
 
 #[rustfmt::skip]
 pub const CASTLING_CONSTANTS: [u8; SQUARES] = [
@@ -43,6 +44,7 @@ pub struct BoardState {
     pub pending_dels_b: [usize; 2],
     pub pending_adds: u8,
     pub pending_removes: u8,
+    pub sfnn10_pending: SfnnPending,
 }
 
 impl BoardState {
@@ -70,6 +72,7 @@ impl BoardState {
             pending_dels_b: [0; 2],
             pending_adds: 0,
             pending_removes: 0,
+            sfnn10_pending: SfnnPending::default(),
         }
     }
 

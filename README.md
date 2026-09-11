@@ -39,6 +39,8 @@ Rudim currently implements these core engine capabilities:
 
 - [NNUE](https://github.com/znxftw/rudim-networks) Architecture: (768 -> 256) x 2 -> 1
 - Trained purely on Self-Play games from scratch without any external data or games of HCE version of Rudim
+- Experimental SFNNv10 path (Stockfish 18 architecture, bit-exact inference):
+  set `EvalFile` + `EvalFileSmall` to real SFNNv10 nets to activate it
 </details>
 
 <details>

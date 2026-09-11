@@ -14,7 +14,10 @@ pub const INPUT_SIZE: usize = 768;
 pub const SCALE: i32 = 400;
 
 #[inline(always)]
-pub fn evaluate(board: &BoardState) -> i16 {
+pub fn evaluate(board: &mut BoardState) -> i16 {
+    if let Some(score) = v2::evaluate_board(board) {
+        return score;
+    }
     let network = Network::get_embedded();
     evaluate_internal(board, network)
 }

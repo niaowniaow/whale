@@ -83,6 +83,8 @@ impl UciClient {
         cli::write_line(&format!("id name Rudim {}", env!("CARGO_PKG_VERSION")));
         cli::write_line("id author Vishnu B");
         cli::write_line("option name Hash type spin default 64 min 1 max 2048");
+        cli::write_line("option name EvalFile type string default <empty>");
+        cli::write_line("option name EvalFileSmall type string default <empty>");
         cli::write_line("uciok");
     }
 }

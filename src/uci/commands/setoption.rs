@@ -33,6 +33,13 @@ impl UciClient {
             }
             // else, as per UCI specs, we should just ignore it (e.g. attempt to resize mid-search)
         }
+
+        if name.eq_ignore_ascii_case("EvalFile") || name.eq_ignore_ascii_case("EvalFileSmall") {
+            match crate::eval::nnue::v2::set_eval_file(&name, &value) {
+                Ok(msg) => crate::uci::cli::write_line(&format!("info string {msg}")),
+                Err(e) => crate::uci::cli::write_line(&format!("info string EvalFile error: {e}")),
+            }
+        }
     }
 }
 

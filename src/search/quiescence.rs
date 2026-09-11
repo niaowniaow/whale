@@ -23,7 +23,7 @@ pub fn search(
     }
 
     if ply as usize >= MAX_PLY {
-        return evaluate(board_state);
+        return evaluate(&mut *board_state);
     }
 
     search_state.nodes += 1;
@@ -31,7 +31,7 @@ pub fn search(
     let in_check = board_state.is_in_check(board_state.side_to_move);
 
     if !in_check {
-        let eval = evaluate(board_state);
+        let eval = evaluate(&mut *board_state);
         if eval >= beta {
             return beta;
         }
