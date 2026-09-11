@@ -17,15 +17,31 @@ use bullet_lib::{
 };
 
 pub fn run(custom_dataset_path: Option<&str>) {
+    run_with_mode(custom_dataset_path, false);
+}
+
+pub fn run_smoke(custom_dataset_path: Option<&str>) {
+    run_with_mode(custom_dataset_path, true);
+}
+
+fn run_with_mode(custom_dataset_path: Option<&str>, smoke_mode: bool) {
     let dataset_path = custom_dataset_path.unwrap_or(DEFAULT_DATASET_PATH);
 
     let mut trainer = build_trainer(HL_SIZE);
 
-    let schedule = build_schedule();
-    let settings = build_settings();
+    let schedule = if smoke_mode {
+        build_smoke_schedule()
+    } else {
+        build_schedule()
+    };
+    let settings = if smoke_mode {
+        build_smoke_settings()
+    } else {
+        build_settings()
+    };
     let dataloader = build_dataloader(dataset_path);
 
-    println!("Starting bullet training loop...");
+    println!("Starting bullet training loop{}...", if smoke_mode { " (smoke mode)" } else { "" });
     trainer.run(&schedule, &settings, &dataloader);
     println!("Bullet training completed successfully!");
 
@@ -102,12 +118,44 @@ fn build_schedule() -> TrainingSchedule<lr::CosineDecayLR, wdl::LinearWDL> {
     }
 }
 
+fn build_smoke_schedule() -> TrainingSchedule<lr::CosineDecayLR, wdl::LinearWDL> {
+    TrainingSchedule {
+        net_id: format!("{}-smoke", NET_ID),
+        eval_scale: EVAL_SCALE,
+        steps: TrainingSteps {
+            batch_size: 256,
+            batches_per_superbatch: 4,
+            start_superbatch: 1,
+            end_superbatch: 1,
+        },
+        wdl_scheduler: wdl::LinearWDL {
+            start: WDL_START,
+            end: WDL_END,
+        },
+        lr_scheduler: lr::CosineDecayLR {
+            initial_lr: 0.0005,
+            final_lr: 0.00005,
+            final_superbatch: 1,
+        },
+        save_rate: 1,
+    }
+}
+
 fn build_settings() -> LocalSettings<'static> {
     LocalSettings {
         threads: THREADS,
         test_set: None,
         output_directory: OUTPUT_DIRECTORY,
         batch_queue_size: BATCH_QUEUE_SIZE,
+    }
+}
+
+fn build_smoke_settings() -> LocalSettings<'static> {
+    LocalSettings {
+        threads: 1,
+        test_set: None,
+        output_directory: OUTPUT_DIRECTORY,
+        batch_queue_size: 1,
     }
 }
 

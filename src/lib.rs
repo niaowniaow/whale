@@ -2,6 +2,7 @@ pub mod bitboard;
 pub mod board;
 pub mod common;
 pub mod eval;
+pub mod nnue_pipeline;
 pub mod search;
 pub mod uci;
 
@@ -26,6 +27,11 @@ pub mod train;
 #[cfg(not(feature = "train"))]
 pub mod train {
     pub fn run(_custom_dataset_path: Option<&str>) {
+        eprintln!("Error: This build of rudim was compiled without the 'train' feature.");
+        std::process::exit(1);
+    }
+
+    pub fn run_smoke(_custom_dataset_path: Option<&str>) {
         eprintln!("Error: This build of rudim was compiled without the 'train' feature.");
         std::process::exit(1);
     }

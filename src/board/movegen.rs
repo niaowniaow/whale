@@ -186,7 +186,12 @@ impl BoardState {
     }
 
     fn generate_king_moves(&self, move_list: &mut MoveList, gen_type: MoveGenType) {
-        let source = self.get_pieces(self.side_to_move, Piece::King).get_lsb() as usize;
+        let king_bb = self.get_pieces(self.side_to_move, Piece::King);
+        if king_bb.is_empty() {
+            return;
+        }
+
+        let source = king_bb.get_lsb() as usize;
         let attacks = Bitboard(king_attacks()[source]);
 
         self.add_attacks(source, attacks, move_list, gen_type);

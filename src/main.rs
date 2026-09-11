@@ -8,7 +8,7 @@ use rudim::board::state::BoardState;
 use rudim::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
 use rudim::init;
 use rudim::search::search_state::SearchState;
-use rudim::train::run as train_run;
+use rudim::train::{run as train_run, run_smoke as train_smoke_run};
 use rudim::uci::cli::run as uci_run;
 
 fn main() {
@@ -22,6 +22,11 @@ fn main() {
             init();
             let dataset_path = raw_args.get(2).map(String::as_str);
             train_run(dataset_path);
+        }
+        Some("--train-smoke") => {
+            init();
+            let dataset_path = raw_args.get(2).map(String::as_str);
+            train_smoke_run(dataset_path);
         }
         Some("--profile") => {
             // Intended to be used when profiling as reqd to debug CPU usage

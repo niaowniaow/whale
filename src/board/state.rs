@@ -143,6 +143,9 @@ impl BoardState {
 
     pub fn is_in_check(&self, side: Side) -> bool {
         let king_bb = self.get_pieces(side, Piece::King);
+        if king_bb.is_empty() {
+            return false;
+        }
         let king_sq = Square::from(king_bb.get_lsb() as usize);
         self.is_square_attacked(king_sq, side.other())
     }
@@ -290,6 +293,13 @@ mod tests {
         let mut board = BoardState::new();
         board.add_piece(Square::E1, Side::White, Piece::King, false);
         assert!(!board.is_in_check(Side::White));
+    }
+
+    #[test]
+    fn is_in_check_handles_missing_king_without_panicking() {
+        let mut board = BoardState::new();
+        board.add_piece(Square::E1, Side::White, Piece::King, false);
+        assert!(!board.is_in_check(Side::Black));
     }
 
     #[test]
