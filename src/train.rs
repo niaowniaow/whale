@@ -41,9 +41,12 @@ use bulletformat::ChessBoard;
 use crate::common::piece::Piece;
 use crate::common::side::Side;
 use crate::eval::nnue::v16::{
-    BIG_INPUT_DIMS, BIG_L1, BIG_MAX_ACTIVE, FC0_ACT, FC0_OUT, FC1_IN, FC1_OUT, N_BUCKETS, PSQ_DIMS,
-    SMALL_L1, SMALL_MAX_ACTIVE, SfnnPosition, for_each_threat, halfka_index, threat_index_for,
+    BIG_INPUT_DIMS, FC0_ACT, FC0_OUT, FC1_IN, FC1_OUT, N_BUCKETS, PSQ_DIMS,
+    SMALL_MAX_ACTIVE, SfnnPosition, for_each_threat, halfka_index, threat_index_for,
+    L1 as BIG_L1, MAX_ACTIVE as BIG_MAX_ACTIVE,
 };
+
+const SMALL_L1: usize = 128;
 
 const PSQT_AUX_WEIGHT: f32 = 0.1;
 const PSQT_NORM: f32 = 600.0;
