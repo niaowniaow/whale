@@ -119,6 +119,31 @@ impl MoveOrdering {
         }
     }
 
+    pub fn get_quiet_history_score(
+        &self,
+        board_state: &BoardState,
+        move_obj: Move,
+        previous_move: Option<Move>,
+    ) -> i32 {
+        let piece = board_state.get_piece_on(move_obj.source);
+        if piece == -1 {
+            return 0;
+        }
+        let history_score = self.history_moves[piece as usize][move_obj.target as usize];
+        let from_to_score = self.quiet_history[board_state.side_to_move as usize]
+            [move_obj.source as usize][move_obj.target as usize];
+        let continuation_score = previous_move
+            .and_then(|prev_mv| {
+                let prev_piece = board_state.piece_mapping[prev_mv.target as usize];
+                (prev_piece != crate::common::piece::Piece::None).then(|| {
+                    self.continuation_history[prev_piece as usize][prev_mv.target as usize]
+                        [move_obj.target as usize]
+                })
+            })
+            .unwrap_or(0) as i32;
+        history_score + i32::from(from_to_score) + continuation_score
+    }
+
     pub fn populate_quiet_scores(
         &self,
         moves: &mut [ScoredMove],
@@ -162,7 +187,8 @@ impl MoveOrdering {
                             let prev_piece = board_state.piece_mapping[prev_mv.target as usize];
                             (prev_piece != Piece::None).then(|| {
                                 self.continuation_history[prev_piece as usize]
-                                    [prev_mv.target as usize][move_obj.mv.target as usize]
+                                    [prev_mv.target as usize]
+                                    [move_obj.mv.target as usize]
                             })
                         })
                         .unwrap_or(0) as i32;
@@ -202,19 +228,18 @@ impl MoveOrdering {
         }
     }
 
-
     #[inline(always)]
     fn update_gravity(score: &mut i32, bonus: i32, limit: i32) {
-    let bonus = bonus.clamp(-limit, limit);
-    *score += bonus - *score * bonus.abs() / limit;
-}
+        let bonus = bonus.clamp(-limit, limit);
+        *score += bonus - *score * bonus.abs() / limit;
+    }
 
     #[inline(always)]
     fn update_gravity_i16(score: &mut i16, bonus: i32, limit: i32) {
-    let mut value = i32::from(*score);
+        let mut value = i32::from(*score);
         Self::update_gravity(&mut value, bonus, limit);
-    *score = value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
-}
+        *score = value.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16;
+    }
     pub fn add_counter_move(
         &mut self,
         prev_side: Side,
@@ -422,8 +447,10 @@ mod tests {
 
         ordering.update_quiet_history(Side::White, move_obj, 1000);
 
-        assert!(ordering.quiet_history[Side::White as usize][Square::E2 as usize]
-            [Square::E4 as usize] > 0);
+        assert!(
+            ordering.quiet_history[Side::White as usize][Square::E2 as usize][Square::E4 as usize]
+                > 0
+        );
         assert_eq!(
             ordering.quiet_history[Side::Black as usize][Square::E2 as usize][Square::E4 as usize],
             0
@@ -441,8 +468,11 @@ mod tests {
 
         ordering.update_continuation_history(Piece::Knight, Square::F3, current, 1000);
 
-        assert!(ordering.continuation_history[Piece::Knight as usize][Square::F3 as usize]
-            [Square::E4 as usize] > 0);
+        assert!(
+            ordering.continuation_history[Piece::Knight as usize][Square::F3 as usize]
+                [Square::E4 as usize]
+                > 0
+        );
         assert_eq!(
             ordering.continuation_history[Piece::Bishop as usize][Square::F3 as usize]
                 [Square::E4 as usize],

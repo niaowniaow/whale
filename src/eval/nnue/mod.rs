@@ -1,7 +1,7 @@
 pub mod accumulator;
 pub mod features;
 pub mod loader;
-pub mod v2;
+pub mod v16;
 
 use crate::board::state::BoardState;
 use crate::common::side::Side;
@@ -15,7 +15,7 @@ pub const SCALE: i32 = 400;
 
 #[inline(always)]
 pub fn evaluate(board: &mut BoardState) -> i16 {
-    if let Some(score) = v2::evaluate_board(board) {
+    if let Some(score) = v16::evaluate_board(board) {
         return score;
     }
     let network = Network::get_embedded();

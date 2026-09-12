@@ -2,7 +2,7 @@ use crate::common::castle::Castle;
 use crate::common::piece::Piece;
 use crate::common::square::Square;
 use crate::eval::nnue::accumulator::Accumulators;
-use crate::eval::nnue::v2::Sfnn10Accs;
+use crate::eval::nnue::v16::Sfnn16Accs;
 
 pub const HISTORY_SIZE: usize = 4096;
 
@@ -31,7 +31,7 @@ impl Default for BoardHistory {
 pub struct History {
     pub entries: Box<[BoardHistory]>,
     pub accumulators: Box<[Accumulators]>,
-    pub sfnn10: Box<[Sfnn10Accs]>,
+    pub sfnn16: Box<[Sfnn16Accs]>,
     pub index: usize,
 }
 
@@ -40,7 +40,7 @@ impl History {
         Self {
             entries: vec![BoardHistory::default(); HISTORY_SIZE].into_boxed_slice(),
             accumulators: vec![Accumulators::default(); HISTORY_SIZE].into_boxed_slice(),
-            sfnn10: vec![Sfnn10Accs::empty(); HISTORY_SIZE].into_boxed_slice(),
+            sfnn16: vec![Sfnn16Accs::empty(); HISTORY_SIZE].into_boxed_slice(),
             index: 0,
         }
     }

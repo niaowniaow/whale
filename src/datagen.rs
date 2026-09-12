@@ -327,9 +327,11 @@ pub fn run_with_teacher(
                     let initial_eval = teacher
                         .as_mut()
                         .map(|teacher| {
-                            teacher.evaluate(&board_state, depth).unwrap_or_else(|error| {
-                                panic!("Stockfish teacher evaluation failed: {error}")
-                            })
+                            teacher
+                                .evaluate(&board_state, depth)
+                                .unwrap_or_else(|error| {
+                                    panic!("Stockfish teacher evaluation failed: {error}")
+                                })
                         })
                         .unwrap_or(search_state.score);
 
@@ -362,9 +364,11 @@ pub fn run_with_teacher(
                         let score = teacher
                             .as_mut()
                             .map(|teacher| {
-                                teacher.evaluate(&board_state, depth).unwrap_or_else(|error| {
-                                    panic!("Stockfish teacher evaluation failed: {error}")
-                                })
+                                teacher
+                                    .evaluate(&board_state, depth)
+                                    .unwrap_or_else(|error| {
+                                        panic!("Stockfish teacher evaluation failed: {error}")
+                                    })
                             })
                             .unwrap_or(search_state.score);
 

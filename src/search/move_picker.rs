@@ -20,6 +20,7 @@ pub struct MovePicker {
     pv_move: Option<Move>,
     tt_best: Option<Move>,
     previous_move: Option<Move>,
+    excluded_move: Option<Move>,
     good_captures_count: usize,
     current_index: usize,
     ply: usize,
@@ -32,12 +33,14 @@ impl MovePicker {
         tt_best: Option<Move>,
         previous_move: Option<Move>,
         ply: usize,
+        excluded_move: Option<Move>,
     ) -> Self {
         Self {
             phase: SearchPhase::PvMove,
             pv_move,
             tt_best,
             previous_move,
+            excluded_move,
             good_captures_count: 0,
             current_index: 0,
             ply,
@@ -51,6 +54,7 @@ impl MovePicker {
             pv_move: None,
             tt_best: None,
             previous_move: None,
+            excluded_move: None,
             good_captures_count: 0,
             current_index: 0,
             ply,
@@ -59,6 +63,24 @@ impl MovePicker {
     }
 
     pub fn next(
+        &mut self,
+        board_state: &mut BoardState,
+        move_ordering: &MoveOrdering,
+        captures: &mut MoveList,
+        quiets: &mut MoveList,
+    ) -> Option<Move> {
+        loop {
+            let m = self.next_internal(board_state, move_ordering, captures, quiets);
+            if let Some(mv) = m {
+                if Some(mv) == self.excluded_move {
+                    continue;
+                }
+            }
+            return m;
+        }
+    }
+
+    fn next_internal(
         &mut self,
         board_state: &mut BoardState,
         move_ordering: &MoveOrdering,
@@ -218,7 +240,7 @@ mod tests {
     fn test_move_picker_normal_search_all_phases() {
         let mut board = BoardState::parse_fen("k7/8/8/5n2/1p1p4/2B5/3R4/K7 w - - 0 1");
 
-        let mut picker = MovePicker::new(None, None, None, 0);
+        let mut picker = MovePicker::new(None, None, None, 0, None);
         let mut captures = MoveList::new();
         let mut quiets = MoveList::new();
         let mut returned_moves = Vec::new();

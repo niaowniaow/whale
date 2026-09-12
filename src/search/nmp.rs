@@ -31,6 +31,6 @@ pub fn can_prune(
 }
 
 #[inline(always)]
-pub fn get_reduction(depth: u8) -> u8 {
-    3 + depth / 4
+pub fn get_reduction(depth: u8, params: &crate::search::search_state::SearchParameters) -> u8 {
+    params.nmp_base + depth / params.nmp_depth_div
 }

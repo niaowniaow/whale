@@ -12,8 +12,8 @@ impl BoardState {
         let current_idx = self.history.index;
         let next_idx = current_idx + 1;
         self.history.accumulators[next_idx] = self.history.accumulators[current_idx];
-        if crate::eval::nnue::v2::maintenance_active() {
-            self.history.sfnn10[next_idx] = self.history.sfnn10[current_idx].clone();
+        if crate::eval::nnue::v16::maintenance_active() {
+            self.history.sfnn16[next_idx] = self.history.sfnn16[current_idx].clone();
         }
 
         let captured_piece = Piece::None;
@@ -274,8 +274,8 @@ impl BoardState {
         let current_idx = self.history.index;
         let next_idx = current_idx + 1;
         self.history.accumulators[next_idx] = self.history.accumulators[current_idx];
-        if crate::eval::nnue::v2::maintenance_active() {
-            self.history.sfnn10[next_idx] = self.history.sfnn10[current_idx].clone();
+        if crate::eval::nnue::v16::maintenance_active() {
+            self.history.sfnn16[next_idx] = self.history.sfnn16[current_idx].clone();
         }
 
         self.history.save(

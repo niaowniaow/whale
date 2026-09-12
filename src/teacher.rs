@@ -1,8 +1,8 @@
 use std::io::{BufRead, BufReader, Write};
 use std::process::{Child, ChildStdin, ChildStdout, Command, Stdio};
 
-use crate::common::constants::MAX_CENTIPAWN_EVAL;
 use crate::board::state::BoardState;
+use crate::common::constants::MAX_CENTIPAWN_EVAL;
 
 pub struct StockfishTeacher {
     child: Child,
@@ -88,7 +88,10 @@ fn parse_score(tokens: &[&str]) -> Option<i16> {
     let value = tokens.get(score_index + 2)?.parse::<i32>().ok()?;
 
     let score = match score_type {
-        "cp" => value.clamp(-i32::from(MAX_CENTIPAWN_EVAL), i32::from(MAX_CENTIPAWN_EVAL)),
+        "cp" => value.clamp(
+            -i32::from(MAX_CENTIPAWN_EVAL),
+            i32::from(MAX_CENTIPAWN_EVAL),
+        ),
         "mate" => {
             let sign = value.signum();
             sign * (i32::from(MAX_CENTIPAWN_EVAL) - value.abs().saturating_mul(2).min(1000))

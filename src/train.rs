@@ -40,7 +40,7 @@ use bulletformat::ChessBoard;
 
 use crate::common::piece::Piece;
 use crate::common::side::Side;
-use crate::eval::nnue::v2::{
+use crate::eval::nnue::v16::{
     BIG_INPUT_DIMS, BIG_L1, BIG_MAX_ACTIVE, FC0_ACT, FC0_OUT, FC1_IN, FC1_OUT, N_BUCKETS, PSQ_DIMS,
     SMALL_L1, SMALL_MAX_ACTIVE, SfnnPosition, for_each_threat, halfka_index, threat_index_for,
 };
@@ -145,7 +145,7 @@ impl SparseInputType for Sfnn10BigInput {
     }
 
     fn shorthand(&self) -> String {
-        "sfnn10-big-102384".to_string()
+        "sfnn16-big-102384".to_string()
     }
 
     fn description(&self) -> String {
@@ -195,7 +195,7 @@ impl SparseInputType for Sfnn10SmallInput {
     }
 
     fn shorthand(&self) -> String {
-        "sfnn10-small-22528".to_string()
+        "sfnn16-small-22528".to_string()
     }
 
     fn description(&self) -> String {
@@ -250,15 +250,15 @@ fn run_with_mode(custom_dataset_path: Option<&str>, smoke_mode: bool) {
 
 const DEFAULT_DATASET_PATH: &str = "data/v1_gen3_1m_d7.binpack";
 const OUTPUT_DIRECTORY: &str = "checkpoints";
-const BIG_KEEPER_PATH: &str = "resources/sfnn10-big-checkpoint.bin";
-const SMALL_KEEPER_PATH: &str = "resources/sfnn10-small-checkpoint.bin";
+const BIG_KEEPER_PATH: &str = "resources/sfnn16-big-checkpoint.bin";
+const SMALL_KEEPER_PATH: &str = "resources/sfnn16-small-checkpoint.bin";
 const INITIAL_LR: f32 = 0.001;
 const FINAL_LR: f32 = 0.00001;
 const WDL_START: f32 = 0.2;
 const WDL_END: f32 = 0.7;
 const EVAL_SCALE: f32 = 400.0;
-const BIG_NET_ID: &str = "rudim-sfnn10-big";
-const SMALL_NET_ID: &str = "rudim-sfnn10-small";
+const BIG_NET_ID: &str = "rudim-sfnn16-big";
+const SMALL_NET_ID: &str = "rudim-sfnn16-small";
 const BATCH_SIZE: usize = 16_384;
 const BATCHES_PER_SUPERBATCH: usize = 6104;
 const START_SUPERBATCH: usize = 1;

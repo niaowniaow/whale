@@ -109,7 +109,7 @@ impl NnuePipelineConfig {
             dataset_dir: PathBuf::from("data"),
             checkpoints_dir: PathBuf::from("checkpoints"),
             validation_dir: PathBuf::from("validation"),
-            architecture_version: crate::eval::nnue::v2::VERSION,
+            architecture_version: crate::eval::nnue::v16::VERSION,
         }
     }
 }
@@ -168,7 +168,7 @@ mod tests {
         assert!(cfg.dataset_dir.ends_with("data"));
         assert!(cfg.checkpoints_dir.ends_with("checkpoints"));
         assert!(cfg.validation_dir.ends_with("validation"));
-        assert_eq!(cfg.architecture_version, crate::eval::nnue::v2::VERSION);
+        assert_eq!(cfg.architecture_version, crate::eval::nnue::v16::VERSION);
     }
 
     #[test]
@@ -187,7 +187,10 @@ mod tests {
         assert!(cfg.validation_suite.len() >= 4);
         assert_eq!(cfg.checkpoint_every, 5);
         assert_eq!(cfg.max_epochs, 30);
-        assert_eq!(cfg.dataset_manifest.len(), DatasetSource::candidate_datasets().len());
+        assert_eq!(
+            cfg.dataset_manifest.len(),
+            DatasetSource::candidate_datasets().len()
+        );
     }
 
     #[test]

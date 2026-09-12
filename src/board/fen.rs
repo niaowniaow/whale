@@ -93,7 +93,11 @@ impl BoardState {
         format!(
             "{} {} {} {} {} {}",
             board,
-            if self.side_to_move == Side::White { "w" } else { "b" },
+            if self.side_to_move == Side::White {
+                "w"
+            } else {
+                "b"
+            },
             castling,
             self.en_passant_square,
             self.half_move_clock,
@@ -149,8 +153,7 @@ fn parse_en_passant(board: &mut BoardState, fen: &str) {
         return;
     }
     let bytes = fen.as_bytes();
-    if bytes.len() < 2 || bytes[0] < b'a' || bytes[0] > b'h' || bytes[1] < b'1' || bytes[1] > b'8'
-    {
+    if bytes.len() < 2 || bytes[0] < b'a' || bytes[0] > b'h' || bytes[1] < b'1' || bytes[1] > b'8' {
         return;
     }
     let file = (bytes[0] - b'a') as usize;

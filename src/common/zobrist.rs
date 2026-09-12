@@ -93,3 +93,15 @@ mod tests {
         assert_eq!(hash, 17316932686648747093);
     }
 }
+
+pub fn get_pawn_hash(board_state: &BoardState) -> u64 {
+    let mut current_hash = 0;
+    for square in 0..64 {
+        let piece = board_state.get_piece_on(crate::common::square::Square::from(square));
+        // WhitePawn = 0, BlackPawn = 6 in ZOBRIST_TABLE
+        if piece == 0 || piece == 6 {
+            current_hash ^= zobrist_table()[piece as usize][square];
+        }
+    }
+    current_hash
+}

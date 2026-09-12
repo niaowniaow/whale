@@ -20,6 +20,8 @@ pub fn search(
     let mut pv_table = PvTable::new();
 
     let mut last_score: i16 = 0;
+    let mut best_move_so_far = Move::NO_MOVE;
+    let mut bm_changes = 0;
 
     let timer = Instant::now();
 
@@ -78,10 +80,31 @@ pub fn search(
         }
 
         if completed {
+            let new_best_move = previous_pv.first().copied().unwrap_or(Move::NO_MOVE);
+            if current_depth > 1
+                && best_move_so_far != Move::NO_MOVE
+                && new_best_move != best_move_so_far
+            {
+                bm_changes += 1;
+            }
+            best_move_so_far = new_best_move;
+
             last_score = current_score;
             search_state.score = current_score;
             previous_pv = pv_table.line().to_vec();
-            search_state.best_move = previous_pv.first().copied().unwrap_or(Move::NO_MOVE);
+            search_state.best_move = best_move_so_far;
+        }
+
+        // TM: Soft limit with BM instability
+        if search_state.opt_time > 0 {
+            let elapsed = timer.elapsed().as_millis() as i32;
+            // Add up to 50% extra time if best move is unstable
+            let dynamic_opt =
+                search_state.opt_time + (search_state.opt_time / 4) * bm_changes.min(2);
+            if elapsed >= dynamic_opt {
+                cancellation_token.store(true, Ordering::Relaxed);
+                break;
+            }
         }
 
         let time_ms = timer.elapsed().as_millis().max(1) as f64;

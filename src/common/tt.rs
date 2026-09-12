@@ -70,6 +70,20 @@ impl TranspositionTable {
         }
     }
 
+    pub fn probe(&self, hash: u64) -> Option<TranspositionTableEntry> {
+        let index = (hash as usize) & (self.capacity - 1);
+        if let Some(e) = self.depth_replaced_entries[index] {
+            if e.hash == hash {
+                return Some(e);
+            }
+        }
+        if let Some(e) = self.always_replaced_entries[index] {
+            if e.hash == hash {
+                return Some(e);
+            }
+        }
+        None
+    }
     pub fn get_entry(
         &self,
         hash: u64,

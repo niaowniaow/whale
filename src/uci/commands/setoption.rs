@@ -35,9 +35,71 @@ impl UciClient {
         }
 
         if name.eq_ignore_ascii_case("EvalFile") || name.eq_ignore_ascii_case("EvalFileSmall") {
-            match crate::eval::nnue::v2::set_eval_file(&name, &value) {
+            match crate::eval::nnue::v16::set_eval_file(&name, &value) {
                 Ok(msg) => crate::uci::cli::write_line(&format!("info string {msg}")),
                 Err(e) => crate::uci::cli::write_line(&format!("info string EvalFile error: {e}")),
+            }
+        }
+
+        if name.eq_ignore_ascii_case("RFPMarginMult") {
+            if let Ok(val) = value.parse::<i16>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.rfp_margin_mult = val;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("FutilityMarginMult") {
+            if let Ok(val) = value.parse::<i16>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.futility_margin_mult = val;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("SingularMarginMult") {
+            if let Ok(val) = value.parse::<i16>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.singular_margin_mult = val;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("ProbCutMargin") {
+            if let Ok(val) = value.parse::<i16>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.probcut_margin = val;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("NmpBase") {
+            if let Ok(val) = value.parse::<u8>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.nmp_base = val;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("NmpDepthDiv") {
+            if let Ok(val) = value.parse::<u8>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.nmp_depth_div = val;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("LmrBase") {
+            if let Ok(val) = value.parse::<f64>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.lmr_base = val / 100.0;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("LmrDiv") {
+            if let Ok(val) = value.parse::<f64>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.lmr_div = val / 100.0;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("HistoryWeightMult") {
+            if let Ok(val) = value.parse::<i32>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.history_weight_mult = val;
+                }
+            }
+        } else if name.eq_ignore_ascii_case("HistoryWeightMax") {
+            if let Ok(val) = value.parse::<i32>() {
+                if let Ok(mut state) = self.search_state.try_lock() {
+                    state.params.history_weight_max = val;
+                }
             }
         }
     }
