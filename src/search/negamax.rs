@@ -400,6 +400,10 @@ fn search_internal(
                 {
                     extension = 1;
                 }
+            } else if let Some(prev) = previous_move {
+                if prev.is_capture() && move_obj.is_capture() && move_obj.target == prev.target {
+                    extension = 1;
+                }
             }
         }
         let depth = depth + extension;
