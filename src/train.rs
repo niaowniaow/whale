@@ -41,7 +41,7 @@ use bulletformat::ChessBoard;
 use crate::common::piece::Piece;
 use crate::common::side::Side;
 use crate::eval::nnue::v16::{
-    BIG_INPUT_DIMS, FC0_ACT, FC0_OUT, FC1_IN, FC1_OUT, N_BUCKETS, PSQ_DIMS,
+    BIG_INPUT_DIMS, FC0_OUT, FC1_IN, FC1_OUT, N_BUCKETS, PSQ_DIMS,
     SMALL_MAX_ACTIVE, SfnnPosition, for_each_threat, halfka_index, threat_index_for,
     L1 as BIG_L1, MAX_ACTIVE as BIG_MAX_ACTIVE,
 };
@@ -50,7 +50,6 @@ const SMALL_L1: usize = 128;
 
 const PSQT_AUX_WEIGHT: f32 = 0.1;
 const PSQT_NORM: f32 = 600.0;
-const FWD_SCALE: f32 = 9600.0 / 8128.0;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SfnnBuckets;
@@ -331,13 +330,9 @@ fn build_big_trainer() -> BigTrainer {
 
             // Per-bucket fc_0, pair [sqr, clip] on the first 15, forward [15].
             let fc0 = l1.forward(trans).select(buckets);
-            let fc0a = fc0.slice_rows(0, FC0_ACT);
-            let pair = fc0a.abs_pow(2.0).crelu().concat(fc0a.crelu());
-            let fwd = fc0.slice_rows(FC0_ACT, FC0_OUT);
-
+            let pair = fc0.abs_pow(2.0).crelu().concat(fc0.crelu());
             let fc1 = l2.forward(pair).crelu();
-            let positional = out.forward(fc1);
-            let final_out = positional + fwd * FWD_SCALE;
+            let final_out = out.forward(fc1);
 
             // PSQT second output (stm - ntm over the selected bucket).
             let psqt_stm = psqt_w.matmul(stm_inputs).select(buckets);
@@ -373,13 +368,9 @@ fn build_small_trainer() -> SmallTrainer {
             let trans = stm_p.concat(ntm_p);
 
             let fc0 = l1.forward(trans).select(buckets);
-            let fc0a = fc0.slice_rows(0, FC0_ACT);
-            let pair = fc0a.abs_pow(2.0).crelu().concat(fc0a.crelu());
-            let fwd = fc0.slice_rows(FC0_ACT, FC0_OUT);
-
+            let pair = fc0.abs_pow(2.0).crelu().concat(fc0.crelu());
             let fc1 = l2.forward(pair).crelu();
-            let positional = out.forward(fc1);
-            let final_out = positional + fwd * FWD_SCALE;
+            let final_out = out.forward(fc1);
 
             let psqt_stm = psqt_w.matmul(stm_inputs).select(buckets);
             let psqt_ntm = psqt_w.matmul(ntm_inputs).select(buckets);
