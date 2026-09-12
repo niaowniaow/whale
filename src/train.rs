@@ -33,7 +33,7 @@ use bullet_lib::{
     },
     value::{
         ValueTrainerBuilder,
-        loader::{ViriBinpackLoader, viribinpack::Filter},
+        loader::{SfBinpackLoader, sfbinpack::TrainingDataEntry},
     },
 };
 use bulletformat::ChessBoard;
@@ -448,9 +448,12 @@ fn build_smoke_settings() -> LocalSettings<'static> {
     }
 }
 
-fn build_dataloader(dataset_path: &str) -> ViriBinpackLoader {
-    let filter = Filter::default();
-    ViriBinpackLoader::new(dataset_path, DATALOADER_PER_THREAD_BUFFERS, THREADS, filter)
+fn sf_filter(_: &TrainingDataEntry) -> bool {
+    true
+}
+
+fn build_dataloader(dataset_path: &str) -> SfBinpackLoader<fn(&TrainingDataEntry) -> bool> {
+    SfBinpackLoader::new(dataset_path, DATALOADER_PER_THREAD_BUFFERS, THREADS, sf_filter)
 }
 
 fn copy_trained_weights() {
