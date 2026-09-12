@@ -13,6 +13,7 @@ pub struct MoveOrdering {
     pub quiet_history: [[[i16; SQUARES]; SQUARES]; SIDES],
     pub continuation_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
     pub counter_moves: [[[Move; SQUARES]; PIECES]; SIDES],
+    pub capture_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
 }
 
 #[rustfmt::skip]
@@ -35,6 +36,7 @@ impl MoveOrdering {
             quiet_history: [[[0; SQUARES]; SQUARES]; SIDES],
             continuation_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
             counter_moves: [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES],
+            capture_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
         }
     }
 
@@ -59,6 +61,7 @@ impl MoveOrdering {
         self.quiet_history = [[[0; SQUARES]; SQUARES]; SIDES];
         self.continuation_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
         self.counter_moves = [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES];
+        self.capture_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
     }
 
     pub fn decay_history(&mut self) {
@@ -75,6 +78,13 @@ impl MoveOrdering {
             }
         }
         for piece in &mut self.continuation_history {
+            for row in piece {
+                for score in row {
+                    *score /= 2;
+                }
+            }
+        }
+        for piece in &mut self.capture_history {
             for row in piece {
                 for score in row {
                     *score /= 2;
@@ -210,6 +220,24 @@ impl MoveOrdering {
     }
 
     #[inline(always)]
+    pub fn update_capture_history(
+        &mut self,
+        piece: usize,
+        move_obj: Move,
+        bonus: i32,
+    ) {
+        let source = move_obj.source as usize;
+        let target = move_obj.target as usize;
+        if piece < PIECES * 2 {
+            Self::update_gravity_i16(
+                &mut self.capture_history[piece][source][target],
+                bonus,
+                i16::MAX as i32,
+            );
+        }
+    }
+
+    #[inline(always)]
     pub fn update_continuation_history(
         &mut self,
         previous_piece: Piece,
@@ -258,7 +286,11 @@ impl Default for MoveOrdering {
     }
 }
 
-pub fn populate_capture_scores(moves: &mut [ScoredMove], board_state: &BoardState) {
+pub fn populate_capture_scores(
+    moves: &mut [ScoredMove],
+    board_state: &BoardState,
+    move_ordering: &MoveOrdering,
+) {
     for move_obj in moves.iter_mut() {
         let source_piece =
             board_state.get_piece_on_side(move_obj.mv.source, board_state.side_to_move);
@@ -274,6 +306,10 @@ pub fn populate_capture_scores(moves: &mut [ScoredMove], board_state: &BoardStat
             score += 50000;
         } else if prom_piece != Piece::None {
             score -= 20000;
+        }
+        if source_piece < PIECES * 2 {
+            let hist = move_ordering.capture_history[source_piece][move_obj.mv.source as usize][move_obj.mv.target as usize];
+            score += hist as i32 / 16;
         }
         move_obj.score = score;
     }
@@ -433,7 +469,7 @@ mod tests {
             },
         ];
 
-        populate_capture_scores(&mut capture_moves, &board);
+        populate_capture_scores(&mut capture_moves, &board, &move_ordering);
 
         assert_eq!(capture_moves[0].score, 95000);
         assert_eq!(capture_moves[1].score, 25000);

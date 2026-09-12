@@ -2,6 +2,7 @@ use crate::board::state::BoardState;
 use crate::common::constants;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
+use crate::common::side::Side;
 use crate::common::tt::{self, TranspositionEntryType};
 use crate::eval::evaluate;
 use crate::search::move_picker::MovePicker;
@@ -357,6 +358,19 @@ fn search_internal(
             );
         }
 
+        // PRUNE: SEE Pruning
+        // Skip quiet moves that blunder material, or bad captures at shallow depths
+        if !is_pv_node && !in_check && depth <= 6 && has_legal_moves {
+            let see_threshold = if cap_or_promo {
+                -100 * depth as i16
+            } else {
+                -35 * (depth as i16) * (depth as i16)
+            };
+            if board_state.see(move_obj) < see_threshold {
+                continue;
+            }
+        }
+
         board_state.make_move(move_obj);
         if board_state.is_in_check(board_state.side_to_move.other()) {
             board_state.unmake_move(move_obj);
@@ -375,6 +389,17 @@ fn search_internal(
             gives_check_computed = true;
             if gives_check {
                 extension = 2;
+            }
+        } else {
+            let prev_side = board_state.side_to_move.other();
+            let piece = board_state.get_piece_on_side(move_obj.target, prev_side);
+            if piece == Piece::Pawn as usize {
+                let target_rank = (move_obj.target as usize) / 8;
+                if (prev_side == Side::White && target_rank == 1)
+                    || (prev_side == Side::Black && target_rank == 6)
+                {
+                    extension = 1;
+                }
             }
         }
         let depth = depth + extension;
@@ -450,6 +475,9 @@ fn search_internal(
                 is_pv_node,
                 &ctx.search_state.params,
             );
+            if gives_check {
+                reduction = reduction.saturating_sub(1);
+            }
             if !cap_or_promo {
                 let history_bonus = history_score / 8192;
                 reduction = (reduction as i32 - history_bonus).clamp(0, depth as i32 - 1) as u8;
@@ -808,6 +836,12 @@ fn beta_cutoff(
                     move_obj,
                 );
             }
+        }
+    } else {
+        let piece = board_state.piece_mapping[move_obj.source as usize];
+        if piece != Piece::None {
+            let bonus = (300 * depth as i32) - 250;
+            search_state.move_ordering.update_capture_history(piece as usize, move_obj, bonus);
         }
     }
 

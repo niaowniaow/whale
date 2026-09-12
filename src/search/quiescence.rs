@@ -38,6 +38,12 @@ pub fn search(
         if eval > alpha {
             alpha = eval;
         }
+        // DELTA PRUNING:
+        // If standing pat + Queen value cannot exceed alpha, normal captures cannot raise alpha.
+        const QUEEN_DELTA: i16 = 1000;
+        if eval + QUEEN_DELTA < alpha {
+            return alpha;
+        }
     }
 
     let mut move_picker = if !in_check {
@@ -102,8 +108,7 @@ pub fn search(
                 }
             }
         }
-        for i in 0..promo_count {
-            let move_obj = promos[i];
+        for &move_obj in promos.iter().take(promo_count) {
             board_state.make_move(move_obj);
             if board_state.is_in_check(board_state.side_to_move.other()) {
                 board_state.unmake_move(move_obj);

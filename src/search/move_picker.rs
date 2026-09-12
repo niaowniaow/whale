@@ -110,7 +110,7 @@ impl MovePicker {
                     self.current_index = 0;
 
                     board_state.generate_captures(captures);
-                    move_ordering::populate_capture_scores(captures, board_state);
+                    move_ordering::populate_capture_scores(captures, board_state, move_ordering);
 
                     // Partition in-place: good captures (SEE >= 0) to the left, bad captures (SEE < 0) to the right
                     let mut left = 0;

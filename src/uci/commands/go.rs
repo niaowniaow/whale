@@ -67,9 +67,7 @@ impl UciClient {
 
         let search_depth = if infinite {
             constants::MAX_SEARCH_DEPTH
-        } else if has_depth {
-            depth
-        } else if allotted_time == -1 {
+        } else if has_depth || allotted_time == -1 {
             depth
         } else {
             constants::MAX_SEARCH_DEPTH
