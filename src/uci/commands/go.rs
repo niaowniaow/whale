@@ -5,7 +5,6 @@ use crate::uci::{SEARCH_STATE, UciClient, get_parameter, output_best_move, time_
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::Duration;
 
 impl UciClient {
     pub(crate) fn run_go(&mut self, parameters: &[&str]) {

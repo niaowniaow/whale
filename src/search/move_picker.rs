@@ -71,11 +71,10 @@ impl MovePicker {
     ) -> Option<Move> {
         loop {
             let m = self.next_internal(board_state, move_ordering, captures, quiets);
-            if let Some(mv) = m {
-                if Some(mv) == self.excluded_move {
+            if let Some(mv) = m
+                && Some(mv) == self.excluded_move {
                     continue;
                 }
-            }
             return m;
         }
     }

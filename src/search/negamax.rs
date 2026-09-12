@@ -92,11 +92,10 @@ fn search_internal(
 
     let tt_entry = ctx.search_state.tt.probe(board_state.board_hash);
     let mut tt_best = None;
-    if let Some(entry) = tt_entry {
-        if entry.best_move != Move::NO_MOVE {
+    if let Some(entry) = tt_entry
+        && entry.best_move != Move::NO_MOVE {
             tt_best = Some(entry.best_move);
         }
-    }
 
     let (has_value, tt_score, _) =
         ctx.search_state
@@ -115,6 +114,7 @@ fn search_internal(
         && tt_entry.is_some()
         && tt_best.is_some()
     {
+        #[allow(clippy::unnecessary_unwrap)]
         let entry = tt_entry.unwrap();
         if entry.depth >= depth - 3 && entry.entry_type != tt::TranspositionEntryType::Alpha {
             let original_score = tt::TranspositionTable::retrieve_score(entry.score, ply as i32);
@@ -219,7 +219,7 @@ fn search_internal(
 
         while let Some(move_obj) = prob_picker.next(
             board_state,
-            &mut ctx.search_state.move_ordering,
+            &ctx.search_state.move_ordering,
             &mut ctx.search_state.captures_stack[probcut_ply],
             &mut ctx.search_state.quiets_stack[probcut_ply],
         ) {

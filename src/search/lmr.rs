@@ -5,11 +5,7 @@ pub fn needs_reduction(
     is_tactical: bool,
     in_check: bool,
 ) -> bool {
-    if depth < 3 || number_of_legal_moves < 3 || is_tactical || in_check {
-        return false;
-    }
-
-    true
+    !(depth < 3 || number_of_legal_moves < 3 || is_tactical || in_check)
 }
 
 #[inline(always)]
