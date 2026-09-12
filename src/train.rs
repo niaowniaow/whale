@@ -463,6 +463,7 @@ fn build_dataloader(dataset_path: &str) -> ViriBinpackLoader {
 }
 
 fn copy_trained_weights() {
+    std::fs::create_dir_all("resources").ok();
     let big_cp = format!("{}/{}-{}", OUTPUT_DIRECTORY, BIG_NET_ID, END_SUPERBATCH);
     let big_cp = format!("{}/quantised.bin", big_cp);
     println!("Copying big weights from {} to {}", big_cp, BIG_KEEPER_PATH);
