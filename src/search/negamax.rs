@@ -76,7 +76,7 @@ fn search_internal(
         return alpha;
     }
 
-    let depth = if in_check {
+    let mut depth = if in_check {
         (depth + 1).min(constants::MAX_PLY as u8)
     } else {
         depth
@@ -160,6 +160,16 @@ fn search_internal(
         }
     }
 
+    if !is_pv_node
+        && ply > 0
+        && !in_check
+        && depth >= 5
+        && tt_best.is_none()
+        && ctx.excluded_move.is_none()
+    {
+        depth -= 1;
+    }
+
     if depth == 0 {
         return quiescence::search(
             board_state,
@@ -199,7 +209,7 @@ fn search_internal(
         static_eval =
             (static_eval as i32 + correction).clamp(-mate_bound as i32, mate_bound as i32) as i16;
 
-        if !is_pv_node {
+        if !is_pv_node && depth <= 6 {
             let margin = ctx.search_state.params.rfp_margin_mult * depth as i16;
             if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
                 return static_eval;
@@ -610,6 +620,9 @@ fn search_internal(
                 found_pv = true;
 
                 ctx.pv_table.update(ply as usize, move_obj);
+            } else if ply == 0 {
+                best_move = move_obj;
+                ctx.pv_table.update(0, move_obj);
             }
         }
 

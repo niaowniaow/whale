@@ -29,17 +29,18 @@ pub fn search(
         // Aspiration Windows
         let mut alpha = i16::MIN + 1;
         let mut beta = i16::MAX - 1;
+        let mut delta = ASPIRATION_WINDOW_MARGIN;
 
         if current_depth > 1 {
-            if last_score.abs() as i32 > MAX_CENTIPAWN_EVAL as i32 - MAX_PLY as i32 {
+            if last_score.abs() > 1000 {
                 alpha = i16::MIN + 1;
                 beta = i16::MAX - 1;
             } else {
                 alpha = last_score
-                    .saturating_sub(ASPIRATION_WINDOW_MARGIN)
+                    .saturating_sub(delta)
                     .max(i16::MIN + 1);
                 beta = last_score
-                    .saturating_add(ASPIRATION_WINDOW_MARGIN)
+                    .saturating_add(delta)
                     .min(i16::MAX - 1);
             }
         }
@@ -64,11 +65,22 @@ pub fn search(
             }
 
             current_score = score;
-            // TODO: Gradually expand window?
             if current_score <= alpha {
-                alpha = i16::MIN + 1;
+                alpha = current_score
+                    .saturating_sub(delta)
+                    .max(i16::MIN + 1);
+                delta = delta.saturating_add(delta * 2);
+                if delta >= 90 || alpha <= -MAX_CENTIPAWN_EVAL + MAX_PLY as i16 {
+                    alpha = i16::MIN + 1;
+                }
             } else if current_score >= beta {
-                beta = i16::MAX - 1;
+                beta = current_score
+                    .saturating_add(delta)
+                    .min(i16::MAX - 1);
+                delta = delta.saturating_add(delta * 2);
+                if delta >= 90 || beta >= MAX_CENTIPAWN_EVAL - MAX_PLY as i16 {
+                    beta = i16::MAX - 1;
+                }
             } else {
                 completed = true;
                 break;
@@ -88,11 +100,15 @@ pub fn search(
             {
                 bm_changes += 1;
             }
-            best_move_so_far = new_best_move;
+            if new_best_move != Move::NO_MOVE {
+                best_move_so_far = new_best_move;
+            }
 
             last_score = current_score;
             search_state.score = current_score;
-            previous_pv = current_pv;
+            if !current_pv.is_empty() {
+                previous_pv = current_pv;
+            }
             search_state.best_move = best_move_so_far;
         }
 
