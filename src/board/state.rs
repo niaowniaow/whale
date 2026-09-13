@@ -7,6 +7,7 @@ use crate::board::history::History;
 use crate::common::castle::Castle;
 use crate::common::constants::{PIECES, SIDES, SQUARES};
 use crate::common::game_phase::{add_phase, get_clipped_phase, remove_phase};
+use crate::common::moves::Move;
 use crate::common::piece::{Piece, PieceMap};
 use crate::common::side::{Side, SideMap};
 use crate::common::square::Square;
@@ -103,6 +104,9 @@ impl BoardState {
     pub fn remove_piece(&mut self, square: Square, update_nnue: bool) -> Piece {
         let sq = square as usize;
         let piece = self.piece_mapping[sq];
+        if piece == Piece::None {
+            return Piece::None;
+        }
 
         let side = if self.occupancies[Side::White].get_bit(sq) == 1 {
             Side::White
@@ -142,6 +146,184 @@ impl BoardState {
         } else {
             6 + piece as i32
         }
+    }
+
+    pub fn is_pseudo_legal(&self, m: Move) -> bool {
+        if m == Move::NO_MOVE || m.source == m.target {
+            return false;
+        }
+        let src = m.source as usize;
+        let tgt = m.target as usize;
+        if src >= 64 || tgt >= 64 {
+            return false;
+        }
+        let piece = self.piece_mapping[src];
+        if piece == Piece::None {
+            return false;
+        }
+        if self.occupancies[self.side_to_move].get_bit(src) == 0 {
+            return false;
+        }
+        if self.occupancies[self.side_to_move].get_bit(tgt) == 1 {
+            return false;
+        }
+        let occ = self.occupancy();
+        let is_target_occupied = occ.get_bit(tgt) == 1;
+
+        match piece {
+            Piece::Pawn => {
+                if m.is_castle() {
+                    return false;
+                }
+                let (forward, start_rank_min, start_rank_max, promo_rank_min, promo_rank_max) =
+                    if self.side_to_move == Side::White {
+                        (-8isize, 48usize, 55usize, 0usize, 7usize)
+                    } else {
+                        (8isize, 8usize, 15usize, 56usize, 63usize)
+                    };
+                let is_promo_target = (promo_rank_min..=promo_rank_max).contains(&tgt);
+                if is_promo_target != m.is_promotion() {
+                    return false;
+                }
+                let diff = tgt as isize - src as isize;
+                if diff == forward {
+                    if is_target_occupied || m.is_capture() {
+                        return false;
+                    }
+                } else if diff == 2 * forward {
+                    if (start_rank_min..=start_rank_max).contains(&src) {
+                        let intermediate = (src as isize + forward) as usize;
+                        if is_target_occupied || occ.get_bit(intermediate) == 1 || m.is_capture() {
+                            return false;
+                        }
+                    } else {
+                        return false;
+                    }
+                } else {
+                    let pawn_attack_mask =
+                        crate::bitboard::lookups::pawn_attacks()[self.side_to_move as usize][src];
+                    if (pawn_attack_mask & (1u64 << tgt)) == 0 {
+                        return false;
+                    }
+                    if m.move_type.is_en_passant() {
+                        if m.target != self.en_passant_square {
+                            return false;
+                        }
+                    } else if !is_target_occupied {
+                        return false;
+                    }
+                }
+            }
+            Piece::Knight => {
+                if m.is_castle() || m.is_promotion() {
+                    return false;
+                }
+                let attacks = crate::bitboard::lookups::knight_attacks()[src];
+                if (attacks & (1u64 << tgt)) == 0 {
+                    return false;
+                }
+                if m.is_capture() != is_target_occupied {
+                    return false;
+                }
+            }
+            Piece::Bishop => {
+                if m.is_castle() || m.is_promotion() {
+                    return false;
+                }
+                let attacks = crate::bitboard::lookups::get_bishop_attacks_from_table(m.source, occ);
+                if (attacks.0 & (1u64 << tgt)) == 0 {
+                    return false;
+                }
+                if m.is_capture() != is_target_occupied {
+                    return false;
+                }
+            }
+            Piece::Rook => {
+                if m.is_castle() || m.is_promotion() {
+                    return false;
+                }
+                let attacks = crate::bitboard::lookups::get_rook_attacks_from_table(m.source, occ);
+                if (attacks.0 & (1u64 << tgt)) == 0 {
+                    return false;
+                }
+                if m.is_capture() != is_target_occupied {
+                    return false;
+                }
+            }
+            Piece::Queen => {
+                if m.is_castle() || m.is_promotion() {
+                    return false;
+                }
+                let attacks = crate::bitboard::lookups::get_queen_attacks_from_table(m.source, occ);
+                if (attacks.0 & (1u64 << tgt)) == 0 {
+                    return false;
+                }
+                if m.is_capture() != is_target_occupied {
+                    return false;
+                }
+            }
+            Piece::King => {
+                if m.is_promotion() {
+                    return false;
+                }
+                if m.is_castle() {
+                    if self.side_to_move == Side::White {
+                        if m.source != Square::E1 {
+                            return false;
+                        }
+                        if m.target == Square::G1 {
+                            return self.castle.contains(Castle::WHITE_SHORT)
+                                && occ.get_bit(Square::F1 as usize) == 0
+                                && occ.get_bit(Square::G1 as usize) == 0
+                                && !self.is_square_attacked(Square::E1, Side::Black)
+                                && !self.is_square_attacked(Square::F1, Side::Black)
+                                && !self.is_square_attacked(Square::G1, Side::Black);
+                        } else if m.target == Square::C1 {
+                            return self.castle.contains(Castle::WHITE_LONG)
+                                && occ.get_bit(Square::D1 as usize) == 0
+                                && occ.get_bit(Square::C1 as usize) == 0
+                                && occ.get_bit(Square::B1 as usize) == 0
+                                && !self.is_square_attacked(Square::E1, Side::Black)
+                                && !self.is_square_attacked(Square::D1, Side::Black)
+                                && !self.is_square_attacked(Square::C1, Side::Black);
+                        } else {
+                            return false;
+                        }
+                    } else {
+                        if m.source != Square::E8 {
+                            return false;
+                        }
+                        if m.target == Square::G8 {
+                            return self.castle.contains(Castle::BLACK_SHORT)
+                                && occ.get_bit(Square::F8 as usize) == 0
+                                && occ.get_bit(Square::G8 as usize) == 0
+                                && !self.is_square_attacked(Square::E8, Side::White)
+                                && !self.is_square_attacked(Square::F8, Side::White)
+                                && !self.is_square_attacked(Square::G8, Side::White);
+                        } else if m.target == Square::C8 {
+                            return self.castle.contains(Castle::BLACK_LONG)
+                                && occ.get_bit(Square::D8 as usize) == 0
+                                && occ.get_bit(Square::C8 as usize) == 0
+                                && occ.get_bit(Square::B8 as usize) == 0
+                                && !self.is_square_attacked(Square::E8, Side::White)
+                                && !self.is_square_attacked(Square::D8, Side::White)
+                                && !self.is_square_attacked(Square::C8, Side::White);
+                        } else {
+                            return false;
+                        }
+                    }
+                }
+                let attacks = crate::bitboard::lookups::king_attacks()[src];
+                if (attacks & (1u64 << tgt)) == 0 {
+                    return false;
+                }
+                if m.is_capture() != is_target_occupied {
+                    return false;
+                }
+            }
+            Piece::None => return false,
+        }
+        true
     }
 
     pub fn is_in_check(&self, side: Side) -> bool {

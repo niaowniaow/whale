@@ -86,18 +86,6 @@ impl UciClient {
         cli::write_line("option name EvalFile type string default <empty>");
         cli::write_line("option name EvalFileSmall type string default <empty>");
 
-        // Search Tuning Parameters
-        cli::write_line("option name RFPMarginMult type spin default 150 min 50 max 300");
-        cli::write_line("option name FutilityMarginMult type spin default 150 min 50 max 300");
-        cli::write_line("option name SingularMarginMult type spin default 1 min 1 max 5");
-        cli::write_line("option name ProbCutMargin type spin default 200 min 50 max 400");
-        cli::write_line("option name NmpBase type spin default 3 min 1 max 5");
-        cli::write_line("option name NmpDepthDiv type spin default 4 min 1 max 10");
-        cli::write_line("option name LmrBase type spin default 50 min 10 max 100");
-        cli::write_line("option name LmrDiv type spin default 195 min 100 max 300");
-        cli::write_line("option name HistoryWeightMult type spin default 1 min 1 max 10");
-        cli::write_line("option name HistoryWeightMax type spin default 16 min 1 max 128");
-
         cli::write_line("uciok");
     }
 }
@@ -128,4 +116,9 @@ pub(crate) fn get_parameter(name: &str, parameters: &[&str], fallback: i32) -> i
         }
     }
     fallback
+}
+
+#[allow(dead_code)]
+pub(crate) fn has_flag(name: &str, parameters: &[&str]) -> bool {
+    parameters.contains(&name)
 }

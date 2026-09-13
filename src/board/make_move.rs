@@ -82,8 +82,10 @@ impl BoardState {
             m.target
         };
 
-        self.board_hash ^= zobrist::zobrist_table()[self.get_piece_on(target_square) as usize]
-            [target_square as usize];
+        let piece_idx = self.get_piece_on(target_square);
+        if piece_idx != -1 {
+            self.board_hash ^= zobrist::zobrist_table()[piece_idx as usize][target_square as usize];
+        }
         self.half_move_clock = 0;
 
         self.remove_piece(target_square, true)

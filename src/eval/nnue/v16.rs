@@ -45,6 +45,7 @@ pub const FC1_OUT: usize = 32; // L3
 pub const OUTPUT_SCALE: i32 = 16;
 pub const WEIGHT_SCALE_BITS: u32 = 6;
 pub const SF_FILE_VERSION: u32 = 0x7AF32F20;
+pub const SF17_FILE_VERSION: u32 = 0x6A448AFA;
 pub const PSQ_HASH: u32 = 0x7f234cb8;
 pub const THREAT_HASH: u32 = 0x8f234cb8; // TODO update hash
 const LEB128_MAGIC: &[u8] = b"COMPRESSED_LEB128";
@@ -524,6 +525,15 @@ pub fn threat_index_for(
     threat_make_index(perspective, attacker, from_sf, to_sf, attacked, ksq_sf)
 }
 
+pub fn append_threats(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>) {
+    let ksq = pos.king_square(perspective);
+    for_each_threat(pos, |attacker, from, to, attacked| {
+        if let Some(idx) = threat_make_index(perspective, attacker, from, to, attacked, ksq) {
+            out.push(PSQ_DIMS + idx);
+        }
+    });
+}
+
 // ---------------------------------------------------------------------------
 // PP_3Wide pairs
 // ---------------------------------------------------------------------------
@@ -640,6 +650,72 @@ pub fn append_pairs(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>)
     }
 }
 
+pub fn collect_threats(pos: &SfnnPosition, perspective: Side, out: &mut [usize; MAX_ACTIVE]) -> usize {
+    let ksq = pos.king_square(perspective);
+    let mut len = 0;
+    for_each_threat(pos, |attacker, from, to, attacked| {
+        if let Some(idx) = threat_make_index(perspective, attacker, from, to, attacked, ksq) {
+            if len < MAX_ACTIVE {
+                out[len] = PSQ_DIMS + idx;
+                len += 1;
+            }
+        }
+    });
+    len
+}
+
+pub fn collect_pairs(pos: &SfnnPosition, perspective: Side, out: &mut [usize; 64]) -> usize {
+    let ksq = pos.king_square(perspective);
+    let white = pos.pieces[Piece::Pawn as usize] & pos.white;
+    let black = pos.pieces[Piece::Pawn as usize] & pos.black;
+    let mut len = 0;
+
+    let mut bb = white;
+    while bb != 0 {
+        let from = bb.trailing_zeros() as usize;
+        bb &= bb - 1;
+        let band = pawn_pair_bb(from);
+
+        let mut ww = band & bb;
+        while ww != 0 {
+            let to = ww.trailing_zeros() as usize;
+            ww &= ww - 1;
+            if len < 64 {
+                out[len] = pair_make_index(perspective, Side::White, from, to, Side::White, ksq);
+                len += 1;
+            }
+        }
+
+        let mut wb = band & black;
+        while wb != 0 {
+            let to = wb.trailing_zeros() as usize;
+            wb &= wb - 1;
+            if len < 64 {
+                out[len] = pair_make_index(perspective, Side::White, from, to, Side::Black, ksq);
+                len += 1;
+            }
+        }
+    }
+
+    let mut bb = black;
+    while bb != 0 {
+        let from = bb.trailing_zeros() as usize;
+        bb &= bb - 1;
+        let band = pawn_pair_bb(from);
+
+        let mut bbk = band & bb;
+        while bbk != 0 {
+            let to = bbk.trailing_zeros() as usize;
+            bbk &= bbk - 1;
+            if len < 64 {
+                out[len] = pair_make_index(perspective, Side::Black, from, to, Side::Black, ksq);
+                len += 1;
+            }
+        }
+    }
+    len
+}
+
 // ---------------------------------------------------------------------------
 // Buckets + simple_eval gate (evaluate.cpp).
 // ---------------------------------------------------------------------------
@@ -709,6 +785,7 @@ pub fn network_hash(use_threats: bool, l1: u32) -> u32 {
 }
 
 // De-scramble table for SSSE3ChunkSize=4 fully-connected weights.
+#[allow(dead_code)]
 fn unscramble_table(out_dims: usize, padded_in: usize) -> Vec<usize> {
     let n = out_dims * padded_in;
     let mut inv = vec![0usize; n];
@@ -796,6 +873,7 @@ pub struct SfnnArch {
     pub fc1_w: Vec<i8>,
     pub fc2_bias: i32,
     pub fc2_w: [i8; FC0_OUT * 2 + FC1_OUT * 2],
+    pub is_rudi: bool,
 }
 
 impl SfnnArch {
@@ -806,8 +884,6 @@ impl SfnnArch {
         _expected_hash: u32,
     ) -> Result<Self, &'static str> {
         let _hash = read_u32_le(data, pos)?;
-        // Bypassed arch hash check
-        // if hash != expected_hash { return Err("arch hash mismatch"); }
         let mut fc0_bias = [0i32; FC0_OUT];
         for b in fc0_bias.iter_mut() {
             *b = read_i32_le(data, pos)?;
@@ -821,8 +897,7 @@ impl SfnnArch {
             *v = data[*pos] as i8;
             *pos += 1;
         }
-        let inv0 = unscramble_table(FC0_OUT, padded0);
-        let fc0_w = inv0.iter().map(|&i| raw0[i]).collect();
+        let fc0_w = raw0;
 
         let mut fc1_bias = [0i32; FC1_OUT];
         for b in fc1_bias.iter_mut() {
@@ -836,8 +911,7 @@ impl SfnnArch {
             *v = data[*pos] as i8;
             *pos += 1;
         }
-        let inv1 = unscramble_table(FC1_OUT, 64);
-        let fc1_w: Vec<i8> = inv1.iter().map(|&i| raw1[i]).collect();
+        let fc1_w = raw1;
 
         let fc2_bias = read_i32_le(data, pos)?;
         let mut fc2_w = [0i8; FC1_IN + FC1_OUT * 2];
@@ -848,12 +922,6 @@ impl SfnnArch {
             *v = data[*pos] as i8;
             *pos += 1;
         }
-        // fc_2 (32 -> 1) has no scramble meaning: single row, keep file order.
-        // Note: get_weight_index still applies formally; with OutDims=1 the
-        // scramble permutes within the single row, so unscramble it too.
-        let inv2 = unscramble_table(1, 128);
-        let tmp: Vec<i8> = inv2.iter().map(|&i| fc2_w[i]).collect();
-        fc2_w.copy_from_slice(&tmp);
 
         Ok(Self {
             fc0_bias,
@@ -862,6 +930,7 @@ impl SfnnArch {
             fc1_w,
             fc2_bias,
             fc2_w,
+            is_rudi: false,
         })
     }
 }
@@ -871,14 +940,19 @@ pub struct SfnnTransformer {
     pub bias: Vec<i16>,
     pub weights: Vec<i16>,       // PSQ_DIMS x l1, [feat * l1 + j]
     pub threat_w: Vec<i8>,       // THREAT_DIMS x l1 (empty for small net)
+    pub threat_w_i16: Vec<i16>,   // For Rudi net
     pub psqt_w: Vec<i32>,        // PSQ_DIMS x 8, [feat * 8 + b]
     pub threat_psqt_w: Vec<i32>, // THREAT_DIMS x 8 (empty for small net)
+    pub pair_w: Vec<i8>,         // PAIR_DIMS x l1 (empty for small net)
+    pub pair_w_i16: Vec<i16>,     // For Rudi net
+    pub pair_psqt_w: Vec<i32>,   // PAIR_DIMS x 8 (empty for small net)
 }
 
 #[derive(Clone, Debug)]
 pub struct Sfnn16Net {
     pub l1: usize,
     pub use_threats: bool,
+    pub is_rudi: bool,
     pub transformer: SfnnTransformer,
     pub stacks: Vec<SfnnArch>, // N_BUCKETS entries
 }
@@ -887,13 +961,10 @@ impl Sfnn16Net {
     pub fn load_bytes(data: &[u8], use_threats: bool, l1: usize) -> Result<Self, &'static str> {
         let mut pos = 0;
         let version = read_u32_le(data, &mut pos)?;
-        if version != SF_FILE_VERSION {
+        if version != SF_FILE_VERSION && version != SF17_FILE_VERSION {
             return Err("bad SFNN file version");
         }
         let _file_hash = read_u32_le(data, &mut pos)?;
-        // Bypassed hash check for ANY network file
-        let _expected = network_hash(use_threats, l1 as u32);
-        // if file_hash != _expected { ... }
         let desc_len = read_u32_le(data, &mut pos)? as usize;
         if pos + desc_len > data.len() {
             return Err("truncated description");
@@ -901,47 +972,66 @@ impl Sfnn16Net {
         pos += desc_len;
 
         let _thash = read_u32_le(data, &mut pos)?;
-        // Bypassed THash
-        let _thash_exp = transformer_hash(use_threats, l1 as u32);
-        // if thash != _thash_exp { ... }
         let mut bias = read_leb128_section(data, &mut pos, l1, decode_leb128_i16)?;
 
         let psq_inputs = PSQ_DIMS;
         let thr_inputs = if use_threats { THREAT_DIMS } else { 0 };
-        let (mut weights, threat_w) = if use_threats {
-            let combined = read_leb128_section(
-                data,
-                &mut pos,
-                (thr_inputs + psq_inputs) * l1,
-                decode_leb128_i16,
-            )?;
-            let (t, m) = combined.split_at(thr_inputs * l1);
-            (m.to_vec(), t.iter().map(|&v| v as i8).collect::<Vec<i8>>())
-        } else {
-            (
-                read_leb128_section(data, &mut pos, psq_inputs * l1, decode_leb128_i16)?,
-                Vec::new(),
-            )
-        };
+        let pair_inputs = if use_threats { PAIR_DIMS } else { 0 };
 
-        let (psqt_w, threat_psqt_w) = if use_threats {
-            let combined = read_leb128_section(
-                data,
-                &mut pos,
-                (thr_inputs + psq_inputs) * N_BUCKETS,
-                decode_leb128_i32,
-            )?;
-            let (t, m) = combined.split_at(thr_inputs * N_BUCKETS);
-            (m.to_vec(), t.to_vec())
+        let (mut weights, psqt_w, threat_w, threat_psqt_w, pair_w, pair_psqt_w) = if use_threats {
+            let thr_bytes = thr_inputs * l1;
+            let is_sf17 = pos + thr_bytes + LEB128_MAGIC.len() <= data.len()
+                && &data[pos + thr_bytes..pos + thr_bytes + LEB128_MAGIC.len()] == LEB128_MAGIC;
+
+            if is_sf17 {
+                let tw = data[pos..pos + thr_bytes].iter().map(|&b| b as i8).collect::<Vec<i8>>();
+                pos += thr_bytes;
+
+                let tp = read_leb128_section(data, &mut pos, thr_inputs * N_BUCKETS, decode_leb128_i32)?;
+
+                let pair_bytes = pair_inputs * l1;
+                if pos + pair_bytes > data.len() {
+                    return Err("truncated pair weights");
+                }
+                let pw = data[pos..pos + pair_bytes].iter().map(|&b| b as i8).collect::<Vec<i8>>();
+                pos += pair_bytes;
+
+                let pp = read_leb128_section(data, &mut pos, pair_inputs * N_BUCKETS, decode_leb128_i32)?;
+
+                let w = read_leb128_section(data, &mut pos, psq_inputs * l1, decode_leb128_i16)?;
+                let pw_psqt = read_leb128_section(data, &mut pos, psq_inputs * N_BUCKETS, decode_leb128_i32)?;
+
+                (w, pw_psqt, tw, tp, pw, pp)
+            } else {
+                let combined = read_leb128_section(
+                    data,
+                    &mut pos,
+                    (thr_inputs + psq_inputs) * l1,
+                    decode_leb128_i16,
+                )?;
+                let (t, m) = combined.split_at(thr_inputs * l1);
+                let w = m.to_vec();
+                let tw = t.iter().map(|&v| v as i8).collect::<Vec<i8>>();
+
+                let combined_psqt = read_leb128_section(
+                    data,
+                    &mut pos,
+                    (thr_inputs + psq_inputs) * N_BUCKETS,
+                    decode_leb128_i32,
+                )?;
+                let (tp_slice, pw_slice) = combined_psqt.split_at(thr_inputs * N_BUCKETS);
+                let pw_psqt = pw_slice.to_vec();
+                let tp = tp_slice.to_vec();
+
+                (w, pw_psqt, tw, tp, Vec::new(), Vec::new())
+            }
         } else {
-            (
-                read_leb128_section(data, &mut pos, psq_inputs * N_BUCKETS, decode_leb128_i32)?,
-                Vec::new(),
-            )
+            let w = read_leb128_section(data, &mut pos, psq_inputs * l1, decode_leb128_i16)?;
+            let pw_psqt = read_leb128_section(data, &mut pos, psq_inputs * N_BUCKETS, decode_leb128_i32)?;
+            (w, pw_psqt, Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
 
         if !use_threats {
-            // Small net: Stockfish doubles weights+biases on load (shift trick).
             for w in weights.iter_mut() {
                 *w = w.wrapping_mul(2);
             }
@@ -959,12 +1049,174 @@ impl Sfnn16Net {
         Ok(Self {
             l1,
             use_threats,
+            is_rudi: false,
             transformer: SfnnTransformer {
                 bias,
                 weights,
                 threat_w,
+                threat_w_i16: Vec::new(),
                 psqt_w,
                 threat_psqt_w,
+                pair_w,
+                pair_w_i16: Vec::new(),
+                pair_psqt_w,
+            },
+            stacks,
+        })
+    }
+
+    pub fn load_rudi(data: &[u8]) -> Result<Self, &'static str> {
+        let raw_payload = if data.len() >= 4 && &data[0..4] == b"RUDI" {
+            if data.len() < 64 + 181_011_108 {
+                return Err("truncated rudim.nnue");
+            }
+            &data[64..]
+        } else if data.len() == 181_011_136 || data.len() == 181_011_108 {
+            data
+        } else {
+            return Err("not a rudim net");
+        };
+
+        let mut offset = 0;
+        let l0w_bytes = BIG_INPUT_DIMS * L1 * 2;
+        if offset + l0w_bytes > raw_payload.len() {
+            return Err("truncated l0w");
+        }
+        let l0w_slice: &[i16] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + l0w_bytes].as_ptr() as *const i16, BIG_INPUT_DIMS * L1)
+        };
+        offset += l0w_bytes;
+
+        let l0b_bytes = L1 * 2;
+        if offset + l0b_bytes > raw_payload.len() {
+            return Err("truncated l0b");
+        }
+        let l0b_slice: &[i16] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + l0b_bytes].as_ptr() as *const i16, L1)
+        };
+        offset += l0b_bytes;
+
+        let l1w_bytes = L1 * N_BUCKETS * FC0_OUT;
+        if offset + l1w_bytes > raw_payload.len() {
+            return Err("truncated l1w");
+        }
+        let l1w_slice: &[i8] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + l1w_bytes].as_ptr() as *const i8, l1w_bytes)
+        };
+        offset += l1w_bytes;
+
+        let l1b_bytes = N_BUCKETS * FC0_OUT * 4;
+        if offset + l1b_bytes > raw_payload.len() {
+            return Err("truncated l1b");
+        }
+        let l1b_slice: &[i32] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + l1b_bytes].as_ptr() as *const i32, N_BUCKETS * FC0_OUT)
+        };
+        offset += l1b_bytes;
+
+        let l2w_bytes = FC1_IN * FC1_OUT;
+        if offset + l2w_bytes > raw_payload.len() {
+            return Err("truncated l2w");
+        }
+        let l2w_slice: &[i8] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + l2w_bytes].as_ptr() as *const i8, l2w_bytes)
+        };
+        offset += l2w_bytes;
+
+        let l2b_bytes = FC1_OUT * 4;
+        if offset + l2b_bytes > raw_payload.len() {
+            return Err("truncated l2b");
+        }
+        let l2b_slice: &[i32] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + l2b_bytes].as_ptr() as *const i32, FC1_OUT)
+        };
+        offset += l2b_bytes;
+
+        let outw_bytes = FC1_OUT;
+        if offset + outw_bytes > raw_payload.len() {
+            return Err("truncated outw");
+        }
+        let outw_slice: &[i8] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + outw_bytes].as_ptr() as *const i8, outw_bytes)
+        };
+        offset += outw_bytes;
+
+        if offset + 4 > raw_payload.len() {
+            return Err("truncated outb");
+        }
+        let outb_slice: &[i32] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + 4].as_ptr() as *const i32, 1)
+        };
+        offset += 4;
+
+        let psqt_bytes = N_BUCKETS * BIG_INPUT_DIMS * 4;
+        if offset + psqt_bytes > raw_payload.len() {
+            return Err("truncated psqt");
+        }
+        let psqt_slice: &[i32] = unsafe {
+            std::slice::from_raw_parts(raw_payload[offset..offset + psqt_bytes].as_ptr() as *const i32, N_BUCKETS * BIG_INPUT_DIMS)
+        };
+
+        let weights = l0w_slice[..PSQ_DIMS * L1].to_vec();
+        let threat_w_i16 = l0w_slice[PSQ_DIMS * L1..(PSQ_DIMS + THREAT_DIMS) * L1].to_vec();
+        let pair_w_i16 = l0w_slice[(PSQ_DIMS + THREAT_DIMS) * L1..BIG_INPUT_DIMS * L1].to_vec();
+
+        let bias = l0b_slice.to_vec();
+        let psqt_w = psqt_slice[..PSQ_DIMS * N_BUCKETS].to_vec();
+        let threat_psqt_w = psqt_slice[PSQ_DIMS * N_BUCKETS..(PSQ_DIMS + THREAT_DIMS) * N_BUCKETS].to_vec();
+        let pair_psqt_w = psqt_slice[(PSQ_DIMS + THREAT_DIMS) * N_BUCKETS..BIG_INPUT_DIMS * N_BUCKETS].to_vec();
+
+        let mut stacks = Vec::with_capacity(N_BUCKETS);
+        for b in 0..N_BUCKETS {
+            let mut fc0_bias = [0i32; FC0_OUT];
+            fc0_bias.copy_from_slice(&l1b_slice[b * FC0_OUT..(b + 1) * FC0_OUT]);
+
+            let mut fc0_w = vec![0i8; FC0_OUT * L1];
+            for o in 0..FC0_OUT {
+                for j in 0..L1 {
+                    fc0_w[o * L1 + j] = l1w_slice[j * (N_BUCKETS * FC0_OUT) + b * FC0_OUT + o];
+                }
+            }
+
+            let mut fc1_bias = [0i32; FC1_OUT];
+            fc1_bias.copy_from_slice(l2b_slice);
+
+            let mut fc1_w = vec![0i8; FC1_OUT * FC1_IN];
+            for o in 0..FC1_OUT {
+                for j in 0..FC1_IN {
+                    fc1_w[o * FC1_IN + j] = l2w_slice[j * FC1_OUT + o];
+                }
+            }
+
+            let fc2_bias = outb_slice[0];
+            let mut fc2_w = [0i8; FC0_OUT * 2 + FC1_OUT * 2];
+            fc2_w[..FC1_OUT].copy_from_slice(outw_slice);
+
+            stacks.push(SfnnArch {
+                fc0_bias,
+                fc0_w,
+                fc1_bias,
+                fc1_w,
+                fc2_bias,
+                fc2_w,
+                is_rudi: true,
+            });
+        }
+
+        Ok(Self {
+            l1: L1,
+            use_threats: false,
+            is_rudi: true,
+            transformer: SfnnTransformer {
+                bias,
+                weights,
+                threat_w: Vec::new(),
+                threat_w_i16,
+                psqt_w,
+                threat_psqt_w,
+                pair_w: Vec::new(),
+                pair_w_i16,
+                pair_psqt_w,
             },
             stacks,
         })
@@ -972,6 +1224,12 @@ impl Sfnn16Net {
 
     pub fn load_file(path: &str, use_threats: bool, l1: usize) -> Result<Self, &'static str> {
         let bytes = std::fs::read(path).map_err(|_| "cannot read network file")?;
+        if (bytes.len() >= 4 && &bytes[0..4] == b"RUDI")
+            || bytes.len() == 181_011_136
+            || bytes.len() == 181_011_108
+        {
+            return Self::load_rudi(&bytes);
+        }
         Self::load_bytes(&bytes, use_threats, l1)
     }
 }
@@ -986,53 +1244,95 @@ fn div_trunc(a: i32, b: i32) -> i32 {
 }
 
 fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
+    if arch.is_rudi {
+        let mut fc0 = [0.0f32; FC0_OUT];
+        for o in 0..FC0_OUT {
+            let mut sum = arch.fc0_bias[o];
+            let row = o * l1;
+            for j in 0..l1 {
+                sum += (input[j] as i32) * (arch.fc0_w[row + j] as i32);
+            }
+            fc0[o] = (sum as f32 / 16320.0).clamp(0.0, 1.0);
+        }
+
+        let mut pair = [0.0f32; FC1_IN];
+        for o in 0..FC0_OUT {
+            let c = fc0[o];
+            pair[o] = c * c;
+            pair[FC0_OUT + o] = c;
+        }
+
+        let mut fc1 = [0.0f32; FC1_OUT];
+        for o in 0..FC1_OUT {
+            let mut sum = arch.fc1_bias[o] as f32 / 16320.0;
+            let row = o * FC1_IN;
+            for j in 0..FC1_IN {
+                let w = arch.fc1_w[row + j] as f32 / 64.0;
+                sum += pair[j] * w;
+            }
+            fc1[o] = sum.clamp(0.0, 1.0);
+        }
+
+        let mut out = arch.fc2_bias as f32 / 16320.0;
+        for j in 0..FC1_OUT {
+            let w = arch.fc2_w[j] as f32 / 64.0;
+            out += fc1[j] * w;
+        }
+
+        let score_cp = ((out - 2.80) * 100.0).clamp(-29000.0, 29000.0) as i32;
+        return score_cp * OUTPUT_SCALE;
+    }
+
     let mut fc0 = [0i32; FC0_OUT];
+    let in_row = &input[..l1];
     for o in 0..FC0_OUT {
         let mut v = arch.fc0_bias[o];
         let row = o * l1;
-        v += input
-            .iter()
-            .zip(&arch.fc0_w[row..row + l1])
-            .map(|(&x, &w)| i32::from(x) * i32::from(w))
-            .sum::<i32>();
+        let w_row = &arch.fc0_w[row..row + l1];
+        for j in 0..l1 {
+            v += i32::from(in_row[j]) * i32::from(w_row[j]);
+        }
         fc0[o] = v;
     }
 
     let mut concat = [0u8; FC0_OUT * 2 + FC1_OUT * 2];
     for i in 0..FC0_OUT {
-        let v = (fc0[i] >> 7).clamp(0, 127) as i8;
-        concat[i] = ((v as i16 * v as i16) >> 7) as u8;
-        concat[FC0_OUT + i] = v as u8;
+        let sqr = (((fc0[i] as i64 * fc0[i] as i64) >> 21).min(127)) as u8;
+        let clip = (fc0[i] >> 7).clamp(0, 127) as u8;
+        concat[i] = sqr;
+        concat[FC0_OUT + i] = clip;
     }
 
     let mut fc1 = [0i32; FC1_OUT];
+    let concat_fc0 = &concat[0..FC0_OUT * 2];
     for o in 0..FC1_OUT {
         let mut v = arch.fc1_bias[o];
         let row = o * (FC0_OUT * 2);
-        v += concat[0..FC0_OUT * 2]
-            .iter()
-            .zip(&arch.fc1_w[row..row + FC0_OUT * 2])
-            .map(|(&x, &w)| i32::from(x) * i32::from(w))
-            .sum::<i32>();
+        let w_row = &arch.fc1_w[row..row + FC0_OUT * 2];
+        for j in 0..FC0_OUT * 2 {
+            v += i32::from(concat_fc0[j]) * i32::from(w_row[j]);
+        }
         fc1[o] = v;
     }
 
     for i in 0..FC1_OUT {
-        let v = (fc1[i] >> 6).clamp(0, 127) as i8;
-        concat[FC0_OUT * 2 + i] = ((v as i16 * v as i16) >> 7) as u8;
-        concat[FC0_OUT * 2 + FC1_OUT + i] = v as u8;
+        let sqr = (((fc1[i] as i64 * fc1[i] as i64) >> 19).min(127)) as u8;
+        let clip = (fc1[i] >> 6).clamp(0, 127) as u8;
+        concat[FC0_OUT * 2 + i] = sqr;
+        concat[FC0_OUT * 2 + FC1_OUT + i] = clip;
     }
 
     let mut out = arch.fc2_bias;
-    out += concat
-        .iter()
-        .zip(&arch.fc2_w[..])
-        .map(|(&x, &w)| i32::from(x) * i32::from(w))
-        .sum::<i32>();
-    out += fc0[FC0_OUT - 2] - fc0[FC0_OUT - 1];
+    let mut dot = 0i32;
+    for j in 0..arch.fc2_w.len() {
+        dot += i32::from(concat[j]) * i32::from(arch.fc2_w[j]);
+    }
+    out += dot;
+    let skip = fc0[FC0_OUT - 2] - fc0[FC0_OUT - 1];
+    out += skip;
 
     let multiplier = 600 * OUTPUT_SCALE as i64;
-    let denominator = 127 * (1 << WEIGHT_SCALE_BITS) as i64 * 2;
+    let denominator = 128 * 64 * 2;
     ((out as i64 * multiplier) / denominator) as i32
 }
 
@@ -1068,6 +1368,25 @@ static NETS: AtomicPtr<LoadedNets> = AtomicPtr::new(std::ptr::null_mut());
 static NETS_GEN: AtomicU64 = AtomicU64::new(0);
 static PENDING_PATH: RwLock<Option<String>> = RwLock::new(None);
 
+pub fn try_load_default() -> bool {
+    if !NETS.load(Ordering::Acquire).is_null() {
+        return true;
+    }
+    let candidates = [
+        "v16/rudim.nnue",
+        "v16/quantised.bin",
+        "rudim.nnue",
+        "quantised.bin",
+        "resources/sfnn16-big-checkpoint.bin",
+    ];
+    for path in candidates {
+        if std::path::Path::new(path).exists() && load_net(path).is_ok() {
+            return true;
+        }
+    }
+    false
+}
+
 pub fn maintenance_active() -> bool {
     !NETS.load(Ordering::Acquire).is_null()
 }
@@ -1080,7 +1399,8 @@ fn current_gen() -> u64 {
 /// generation so all accumulator entries refresh lazily); on failure the
 /// previous pair (if any) is kept.
 pub fn load_net(path: &str) -> Result<(), &'static str> {
-    let net = Sfnn16Net::load_file(path, false, L1)?;
+    let net = Sfnn16Net::load_file(path, true, L1)
+        .or_else(|_| Sfnn16Net::load_file(path, false, L1))?;
     let ptr = Box::into_raw(Box::new(LoadedNets { net }));
     NETS.store(ptr, Ordering::Release);
     NETS_GEN.fetch_add(1, Ordering::SeqCst);
@@ -1098,7 +1418,7 @@ pub fn set_eval_file(which: &str, path: &str) -> Result<&'static str, &'static s
     }
     if which.eq_ignore_ascii_case("EvalFile") {
         if let Ok(mut guard) = PENDING_PATH.write() {
-            *guard = if path.is_empty() {
+            *guard = if path.is_empty() || path == "<empty>" {
                 None
             } else {
                 Some(path.to_string())
@@ -1135,14 +1455,27 @@ fn scatter_halfka(
     for &f in feats {
         debug_assert!(f < PSQ_DIMS);
         let base = f * l1;
-        for (j, a) in acc.iter_mut().enumerate() {
-            let w = tr.weights[base + j];
-            *a = a.wrapping_add((w as i32 * sign as i32) as i16);
+        let w_slice = &tr.weights[base..base + l1];
+        let acc_slice = &mut acc[..l1];
+        if sign == 1 {
+            for (a, &w) in acc_slice.iter_mut().zip(w_slice) {
+                *a = a.wrapping_add(w);
+            }
+        } else {
+            for (a, &w) in acc_slice.iter_mut().zip(w_slice) {
+                *a = a.wrapping_sub(w);
+            }
         }
         let pbase = f * N_BUCKETS;
-        for b in 0..N_BUCKETS {
-            let w = tr.psqt_w[pbase + b];
-            psqt[b] = psqt[b].wrapping_add(w * sign as i32);
+        let pw_slice = &tr.psqt_w[pbase..pbase + N_BUCKETS];
+        if sign == 1 {
+            for b in 0..N_BUCKETS {
+                psqt[b] = psqt[b].wrapping_add(pw_slice[b]);
+            }
+        } else {
+            for b in 0..N_BUCKETS {
+                psqt[b] = psqt[b].wrapping_sub(pw_slice[b]);
+            }
         }
     }
 }
@@ -1198,8 +1531,8 @@ pub fn ensure_fresh(pos: &SfnnPosition, accs: &mut Sfnn16Accs) {
 pub fn apply_queued(
     pos: &SfnnPosition,
     accs: &mut Sfnn16Accs,
-    adds: &[SfnnEvent],
-    dels: &[SfnnEvent],
+    adds: &[Option<SfnnEvent>],
+    dels: &[Option<SfnnEvent>],
     king_moved: &[bool; 2],
 ) {
     let ptr = NETS.load(Ordering::Acquire);
@@ -1213,14 +1546,18 @@ pub fn apply_queued(
             let ksq = pos.king_square(*perspective);
             let slot = &mut accs.halfka[pi];
             let psqt = &mut accs.psqt[pi];
-            for &(sq_sf, side, piece) in dels {
-                if let Some(f) = halfka_index(*perspective, side, piece, sq_sf, ksq) {
-                    scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, -1);
+            for opt in dels {
+                if let Some((sq_sf, side, piece)) = *opt {
+                    if let Some(f) = halfka_index(*perspective, side, piece, sq_sf, ksq) {
+                        scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, -1);
+                    }
                 }
             }
-            for &(sq_sf, side, piece) in adds {
-                if let Some(f) = halfka_index(*perspective, side, piece, sq_sf, ksq) {
-                    scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, 1);
+            for opt in adds {
+                if let Some((sq_sf, side, piece)) = *opt {
+                    if let Some(f) = halfka_index(*perspective, side, piece, sq_sf, ksq) {
+                        scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, 1);
+                    }
                 }
             }
         }
@@ -1233,7 +1570,7 @@ pub fn apply_queued(
 // ---------------------------------------------------------------------------
 
 fn eval_with_net(
-    _pos: &SfnnPosition,
+    pos: &SfnnPosition,
     net: &Sfnn16Net,
     halfka_accs: [&[i16]; 2],
     psqt_accs: [&[i32; N_BUCKETS]; 2],
@@ -1245,33 +1582,64 @@ fn eval_with_net(
     let clip_max: i32 = if net.use_threats { 255 } else { 254 };
     let perspectives = [stm, stm.other()];
 
-    // Threat features + threat PSQT per perspective (recomputed per eval).
-    let threat_lists: [Vec<usize>; 2] = [Vec::new(), Vec::new()];
+    let mut threat_lists = [[0usize; MAX_ACTIVE]; 2];
+    let mut threat_lens = [0usize; 2];
+    let mut pair_lists = [[0usize; 64]; 2];
+    let mut pair_lens = [0usize; 2];
+
     if net.use_threats {
-        for &_persp in perspectives.iter() {}
+        for (slot, &persp) in perspectives.iter().enumerate() {
+            threat_lens[slot] = collect_threats(pos, persp, &mut threat_lists[slot]);
+            if !net.transformer.pair_w.is_empty() {
+                pair_lens[slot] = collect_pairs(pos, persp, &mut pair_lists[slot]);
+            }
+        }
     }
 
-    let mut feats = vec![0u8; l1];
+    let mut feats = [0u8; L1];
     let mut per_psqt = [[0i32; N_BUCKETS]; 2];
     for (slot, &persp) in perspectives.iter().enumerate() {
         let pi = persp as usize;
         let base_acc = halfka_accs[pi];
-        // Scatter this perspective's threat weights (big net only).
-        let mut threat_buf = vec![0i32; l1];
+        let mut threat_buf = [0i32; L1];
         if net.use_threats {
-            for &f in &threat_lists[slot] {
-                let t = f - PSQ_DIMS;
-                let base = t * l1;
-                for (j, acc) in threat_buf.iter_mut().enumerate() {
-                    *acc += i32::from(net.transformer.threat_w[base + j]);
+            if net.is_rudi {
+                for &f in &threat_lists[slot][..threat_lens[slot]] {
+                    let t = f - PSQ_DIMS;
+                    let base = t * l1;
+                    let w_slice = &net.transformer.threat_w_i16[base..base + l1];
+                    for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
+                        *acc += i32::from(w);
+                    }
                 }
-            }
-            for f in threat_lists[slot].iter() {
-                let t = f - PSQ_DIMS;
-                let base = t * N_BUCKETS;
-                for b in 0..N_BUCKETS {
-                    per_psqt[slot][b] =
-                        per_psqt[slot][b].wrapping_add(net.transformer.threat_psqt_w[base + b]);
+            } else {
+                for &f in &threat_lists[slot][..threat_lens[slot]] {
+                    let t = f - PSQ_DIMS;
+                    let base = t * l1;
+                    let w_slice = &net.transformer.threat_w[base..base + l1];
+                    for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
+                        *acc += i32::from(w);
+                    }
+                    let base_psqt = t * N_BUCKETS;
+                    let p_slice = &net.transformer.threat_psqt_w[base_psqt..base_psqt + N_BUCKETS];
+                    for b in 0..N_BUCKETS {
+                        per_psqt[slot][b] =
+                            per_psqt[slot][b].wrapping_add(p_slice[b]);
+                    }
+                }
+                for &f in &pair_lists[slot][..pair_lens[slot]] {
+                    let t = f - PSQ_DIMS - THREAT_DIMS;
+                    let base = t * l1;
+                    let w_slice = &net.transformer.pair_w[base..base + l1];
+                    for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
+                        *acc += i32::from(w);
+                    }
+                    let base_psqt = t * N_BUCKETS;
+                    let p_slice = &net.transformer.pair_psqt_w[base_psqt..base_psqt + N_BUCKETS];
+                    for b in 0..N_BUCKETS {
+                        per_psqt[slot][b] =
+                            per_psqt[slot][b].wrapping_add(p_slice[b]);
+                    }
                 }
             }
         }
@@ -1285,10 +1653,13 @@ fn eval_with_net(
             }
             let c0 = s0.clamp(0, clip_max);
             let c1 = s1.clamp(0, clip_max);
-            dst[j] = ((c0 * c1) / 512) as u8;
+            dst[j] = if net.is_rudi {
+                ((c0 * c1) / 255) as u8
+            } else {
+                ((c0 * c1) / 512) as u8
+            };
         }
     }
-    // PSQT term (stm - ntm); big net folds threat PSQT with /2.
     let mut psqt = psqt_accs[stm as usize][bucket] - psqt_accs[stm.other() as usize][bucket];
     if net.use_threats {
         psqt = div_trunc(psqt + per_psqt[0][bucket] - per_psqt[1][bucket], 2);
@@ -1296,11 +1667,15 @@ fn eval_with_net(
         psqt = div_trunc(psqt, 2);
     }
     let stack = &net.stacks[bucket];
-    let positional = propagate(stack, l1, &feats);
-    (
-        div_trunc(psqt, OUTPUT_SCALE),
-        div_trunc(positional, OUTPUT_SCALE),
-    )
+    let positional = propagate(stack, l1, &feats[..l1]);
+    if net.is_rudi {
+        (0, div_trunc(positional, OUTPUT_SCALE))
+    } else {
+        (
+            div_trunc(psqt, OUTPUT_SCALE),
+            div_trunc(positional, OUTPUT_SCALE),
+        )
+    }
 }
 
 pub struct SfnnEval {
@@ -1310,8 +1685,6 @@ pub struct SfnnEval {
     pub used_small: bool,
 }
 
-/// Evaluate with loaded SFNNv10 nets. Returns None when no nets are loaded.
-/// `small_halfka` / `small_psqt` are recomputed from scratch (cheap at L1 128).
 pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Option<SfnnEval> {
     let ptr = NETS.load(Ordering::Acquire);
     if ptr.is_null() {
@@ -1325,7 +1698,11 @@ pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Op
     let psqt_refs: [&[i32; N_BUCKETS]; 2] = [&accs.psqt[0], &accs.psqt[1]];
 
     let (psqt, positional) = eval_with_net(pos, &nets.net, refs, psqt_refs, stm, bucket);
-    let combined = div_trunc(125 * psqt + 131 * positional, 128);
+    let combined = if nets.net.is_rudi {
+        positional
+    } else {
+        psqt + positional
+    };
 
     Some(SfnnEval {
         psqt,
@@ -1337,6 +1714,9 @@ pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Op
 
 pub fn evaluate_board(board: &mut BoardState) -> Option<i16> {
     if NETS.load(Ordering::Acquire).is_null() {
+        try_load_default();
+    }
+    if NETS.load(Ordering::Acquire).is_null() {
         return None;
     }
     let pos = SfnnPosition::from_board(board);
@@ -1346,7 +1726,10 @@ pub fn evaluate_board(board: &mut BoardState) -> Option<i16> {
     }
     let accs = &mut board.history.sfnn16[idx];
     ensure_fresh(&pos, accs);
-    evaluate_nets(&pos, accs, board.side_to_move).map(|e| e.combined.clamp(-29000, 29000) as i16)
+    evaluate_nets(&pos, accs, board.side_to_move).map(|e| {
+        let cp = (e.combined as i64 * 100) / 256;
+        cp.clamp(-29000, 29000) as i16
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -1427,15 +1810,13 @@ pub fn flush_pending(pos: &SfnnPosition, accs: &mut Sfnn16Accs, pending: &mut Sf
         pending.clear();
         return;
     }
-    let adds: Vec<SfnnEvent> = pending.adds[..pending.n_adds]
-        .iter()
-        .filter_map(|&e| e)
-        .collect();
-    let dels: Vec<SfnnEvent> = pending.dels[..pending.n_dels]
-        .iter()
-        .filter_map(|&e| e)
-        .collect();
-    apply_queued(pos, accs, &adds, &dels, &pending.king_moved);
+    apply_queued(
+        pos,
+        accs,
+        &pending.adds[..pending.n_adds],
+        &pending.dels[..pending.n_dels],
+        &pending.king_moved,
+    );
     pending.clear();
 }
 
@@ -1473,3 +1854,53 @@ pub fn trainer_features(
 // ---------------------------------------------------------------------------
 // Tests.
 // ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_eval_breakdown() {
+        for net_path in ["v16/nn-1a298aa575a0.nnue", "v16/rudim.nnue"] {
+            println!("=== Testing net: {} ===", net_path);
+            let res = load_net(net_path);
+            if let Err(e) = res {
+                println!("Failed to load {}: {}", net_path, e);
+                continue;
+            }
+            let fens = [
+                ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
+                ("1. e4 e5 2. Ke2 (B)", "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPPKPPP/RNBQ1BNR b kq - 1 2"),
+                ("1. e4 e5 2. Nf3 (B)", "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"),
+                ("1. e4 (B)", "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"),
+            ];
+
+            for (name, fen) in fens {
+                let board = BoardState::parse_fen(fen);
+                let pos = SfnnPosition::from_board(&board);
+                let mut accs = Sfnn16Accs::empty();
+                refresh_all(&pos, &mut accs);
+                if let Some(eval) = evaluate_nets(&pos, &mut accs, board.side_to_move) {
+                    let cp = (eval.combined as i64 * 100) / 256;
+                    println!(
+                        "{:<22} | STM: {:?} | psqt: {:>6} | pos: {:>6} | comb: {:>6} | cp: {:>5}",
+                        name, board.side_to_move, eval.psqt, eval.positional, eval.combined, cp
+                    );
+                }
+            }
+        }
+        let ptr = NETS.load(Ordering::Acquire);
+        assert!(!ptr.is_null());
+        let nets = unsafe { &*ptr };
+        let stack = &nets.net.stacks[7];
+        println!("fc0_bias[30] = {}, fc0_bias[31] = {}", stack.fc0_bias[30], stack.fc0_bias[31]);
+        let w30 = &stack.fc0_w[30 * 1024..(30 + 1) * 1024];
+        let w31 = &stack.fc0_w[31 * 1024..(31 + 1) * 1024];
+        let sum_w30_us: i64 = w30[..512].iter().map(|&x| x as i64).sum();
+        let sum_w30_them: i64 = w30[512..].iter().map(|&x| x as i64).sum();
+        let sum_w31_us: i64 = w31[..512].iter().map(|&x| x as i64).sum();
+        let sum_w31_them: i64 = w31[512..].iter().map(|&x| x as i64).sum();
+        println!("w30 us sum = {}, them sum = {}", sum_w30_us, sum_w30_them);
+        println!("w31 us sum = {}, them sum = {}", sum_w31_us, sum_w31_them);
+    }
+}

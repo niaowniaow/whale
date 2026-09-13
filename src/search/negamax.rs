@@ -1,5 +1,6 @@
 use crate::board::state::BoardState;
 use crate::common::constants;
+use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::common::side::Side;
@@ -215,14 +216,15 @@ fn search_internal(
             return prob_beta;
         }
 
-        let probcut_ply = (ply + 1) as usize;
+        let mut prob_captures = MoveList::new();
+        let mut prob_quiets = MoveList::new();
         let mut prob_picker = MovePicker::new(None, tt_best, previous_move, ply as usize, None);
 
         while let Some(move_obj) = prob_picker.next(
             board_state,
             &ctx.search_state.move_ordering,
-            &mut ctx.search_state.captures_stack[probcut_ply],
-            &mut ctx.search_state.quiets_stack[probcut_ply],
+            &mut prob_captures,
+            &mut prob_quiets,
         ) {
             if !move_obj.is_capture() && !move_obj.is_promotion() {
                 continue;

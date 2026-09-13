@@ -80,7 +80,8 @@ pub fn search(
         }
 
         if completed {
-            let new_best_move = previous_pv.first().copied().unwrap_or(Move::NO_MOVE);
+            let current_pv = pv_table.line().to_vec();
+            let new_best_move = current_pv.first().copied().unwrap_or(Move::NO_MOVE);
             if current_depth > 1
                 && best_move_so_far != Move::NO_MOVE
                 && new_best_move != best_move_so_far
@@ -91,7 +92,7 @@ pub fn search(
 
             last_score = current_score;
             search_state.score = current_score;
-            previous_pv = pv_table.line().to_vec();
+            previous_pv = current_pv;
             search_state.best_move = best_move_so_far;
         }
 

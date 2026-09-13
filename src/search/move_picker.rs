@@ -127,8 +127,9 @@ impl MovePicker {
                     self.phase = SearchPhase::GoodCaptures;
                 }
                 SearchPhase::GoodCaptures => {
+                    let count = self.good_captures_count.min(captures.len());
                     if let Some(mv) = get_next_valid_move(
-                        &mut captures[..self.good_captures_count],
+                        &mut captures[..count],
                         &mut self.current_index,
                         self.pv_move,
                         self.tt_best,
@@ -162,7 +163,7 @@ impl MovePicker {
                         return Some(mv);
                     } else {
                         self.phase = SearchPhase::BadCaptures;
-                        self.current_index = self.good_captures_count;
+                        self.current_index = self.good_captures_count.min(captures.len());
                     }
                 }
                 SearchPhase::BadCaptures => {
