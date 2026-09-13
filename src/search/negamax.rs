@@ -147,7 +147,13 @@ fn search_internal(
             );
 
             if se_score < singular_beta {
-                singular_extension = 1;
+                if se_score < singular_beta - margin {
+                    singular_extension = 2;
+                } else {
+                    singular_extension = 1;
+                }
+            } else if singular_beta >= beta {
+                return singular_beta;
             }
         }
     }
@@ -395,8 +401,8 @@ fn search_internal(
         if extension > 0 {
             gives_check = board_state.is_in_check(board_state.side_to_move);
             gives_check_computed = true;
-            if gives_check {
-                extension = 2;
+            if gives_check && extension < 2 {
+                extension += 1;
             }
         } else {
             let prev_side = board_state.side_to_move.other();
@@ -414,7 +420,7 @@ fn search_internal(
                 }
             }
         }
-        let depth = depth + extension;
+        let depth = (depth + extension).min(constants::MAX_PLY as u8 - 1);
 
         // PRUNE: Futility Pruning
         if number_of_legal_moves > 0
