@@ -169,7 +169,7 @@ fn search_internal(
     // TODO: tune conditions
     let mut static_eval = 0;
     let mut raw_static_eval = 0;
-    let has_static_eval = !is_pv_node && !in_check;
+    let has_static_eval = !in_check;
 
     let mate_bound = constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16;
     let beta_is_mate = beta.abs() >= mate_bound;
@@ -191,11 +191,17 @@ fn search_internal(
         static_eval =
             (static_eval as i32 + correction).clamp(-mate_bound as i32, mate_bound as i32) as i16;
 
-        let margin = ctx.search_state.params.rfp_margin_mult * depth as i16;
-        if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
-            return static_eval;
+        if !is_pv_node {
+            let margin = ctx.search_state.params.rfp_margin_mult * depth as i16;
+            if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
+                return static_eval;
+            }
         }
     }
+
+    ctx.search_state.eval_stack[ply as usize] = static_eval;
+    let improving =
+        has_static_eval && ply >= 2 && static_eval > ctx.search_state.eval_stack[(ply - 2) as usize];
 
     // PRUNE: ProbCut
     if !is_pv_node && !in_check && depth >= 5 && !beta_is_mate {
@@ -430,7 +436,8 @@ fn search_internal(
 
         // PRUNE: Late Move Pruning
         // TODO: tune base and depth limit
-        if has_static_eval
+        if !is_pv_node
+            && has_static_eval
             && depth < 4
             && !cap_or_promo
             && !alpha_is_mate
@@ -475,38 +482,54 @@ fn search_internal(
 
         // REDUCTION: Late Move Reductions
         if needs_lmr {
-            let mut reduction = lmr::get_reduction(
+            let reduction = lmr::get_reduction(
                 depth,
                 number_of_legal_moves,
                 is_pv_node,
-                &ctx.search_state.params,
+                improving,
+                history_score,
             );
-            if gives_check {
-                reduction = reduction.saturating_sub(1);
-            }
-            if !cap_or_promo {
-                let history_bonus = history_score / 8192;
-                reduction = (reduction as i32 - history_bonus).clamp(0, depth as i32 - 1) as u8;
-            }
-            score = -search_internal(
-                board_state,
-                depth.saturating_sub(1 + reduction),
-                ply + 1,
-                -alpha - 1,
-                -alpha,
-                Some(move_obj),
-                &mut SearchContext {
-                    excluded_move: None,
-                    allow_null_move: true,
-                    on_pv_path: false,
-                    previous_pv: ctx.previous_pv,
-                    pv_table: &mut *ctx.pv_table,
-                    cancellation_token: ctx.cancellation_token,
-                    search_state: ctx.search_state,
-                },
-            );
+            if reduction > 0 {
+                score = -search_internal(
+                    board_state,
+                    depth.saturating_sub(1 + reduction),
+                    ply + 1,
+                    -alpha - 1,
+                    -alpha,
+                    Some(move_obj),
+                    &mut SearchContext {
+                        excluded_move: None,
+                        allow_null_move: true,
+                        on_pv_path: false,
+                        previous_pv: ctx.previous_pv,
+                        pv_table: &mut *ctx.pv_table,
+                        cancellation_token: ctx.cancellation_token,
+                        search_state: ctx.search_state,
+                    },
+                );
 
-            if score > alpha {
+                if score > alpha {
+                    let mut child_ctx = SearchContext {
+                        excluded_move: None,
+                        allow_null_move: true,
+                        on_pv_path: next_on_pv,
+                        previous_pv: ctx.previous_pv,
+                        pv_table: &mut *ctx.pv_table,
+                        cancellation_token: ctx.cancellation_token,
+                        search_state: ctx.search_state,
+                    };
+                    score = search_deeper(
+                        board_state,
+                        depth,
+                        ply,
+                        alpha,
+                        beta,
+                        found_pv,
+                        Some(move_obj),
+                        &mut child_ctx,
+                    );
+                }
+            } else {
                 let mut child_ctx = SearchContext {
                     excluded_move: None,
                     allow_null_move: true,

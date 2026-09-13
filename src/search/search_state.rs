@@ -46,6 +46,7 @@ pub struct SearchState {
 
     pub captures_stack: [MoveList; MAX_PLY],
     pub quiets_stack: [MoveList; MAX_PLY],
+    pub eval_stack: [i16; MAX_PLY],
 
     pub pawn_correction_history: Box<[[i32; 16384]; 2]>,
     pub non_pawn_correction_history: Box<[[i32; 16384]; 2]>,
@@ -63,6 +64,7 @@ impl SearchState {
             tt: TranspositionTable::new(TranspositionTable::DEFAULT_CAPACITY),
             captures_stack: [MoveList::new(); MAX_PLY],
             quiets_stack: [MoveList::new(); MAX_PLY],
+            eval_stack: [0; MAX_PLY],
             pawn_correction_history: Box::new([[0; 16384]; 2]),
             non_pawn_correction_history: Box::new([[0; 16384]; 2]),
         }
@@ -72,6 +74,7 @@ impl SearchState {
         self.best_move = Move::NO_MOVE;
         self.score = 0;
         self.nodes = 0;
+        self.eval_stack = [0; MAX_PLY];
     }
 
     pub fn reset_heuristics(&mut self) {
