@@ -1,5 +1,6 @@
 use crate::board::state::BoardState;
 use crate::common::constants::{ASPIRATION_WINDOW_MARGIN, MAX_CENTIPAWN_EVAL, MAX_PLY};
+use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
 use crate::search::negamax;
 use crate::search::pv_table::PvTable;
@@ -22,10 +23,40 @@ pub fn search(
     let mut last_score: i16 = 0;
     let mut best_move_so_far = Move::NO_MOVE;
     let mut bm_changes = 0;
+    let mut stable_count = 0;
+
+    // Time management is only active in clock-based searches; fixed-depth
+    // searches always run to full depth for predictable testing.
+    let use_tm = search_state.opt_time > 0;
+
+    // TM 1 — Easy move: a single legal move needs no deep thought. Still run
+    // one shallow iteration so the score/PV stay sane, then stop.
+    let mut legal_root_moves = 0;
+    {
+        let mut root_moves = MoveList::new();
+        board_state.generate_moves(&mut root_moves);
+        for i in 0..root_moves.len() {
+            let m = root_moves[i].mv;
+            board_state.make_move(m);
+            let legal = !board_state.is_in_check(board_state.side_to_move.other());
+            board_state.unmake_move(m);
+            if legal {
+                legal_root_moves += 1;
+                if legal_root_moves > 1 {
+                    break;
+                }
+            }
+        }
+    }
+    let max_depth = if use_tm && legal_root_moves <= 1 {
+        1
+    } else {
+        depth
+    };
 
     let timer = Instant::now();
 
-    for current_depth in 1..=depth {
+    for current_depth in 1..=max_depth {
         // Aspiration Windows
         let mut alpha = i16::MIN + 1;
         let mut beta = i16::MAX - 1;
@@ -94,12 +125,28 @@ pub fn search(
         if completed {
             let current_pv = pv_table.line().to_vec();
             let new_best_move = current_pv.first().copied().unwrap_or(Move::NO_MOVE);
-            if current_depth > 1
+            let move_changed = current_depth > 1
                 && best_move_so_far != Move::NO_MOVE
-                && new_best_move != best_move_so_far
                 && new_best_move != Move::NO_MOVE
-            {
+                && new_best_move != best_move_so_far;
+            // TM 3 — Instability: a changing best move or a swinging score
+            // means trouble; earn extra time for the next iteration.
+            let score_swing =
+                current_depth > 1 && (current_score as i32 - last_score as i32).abs() > 80;
+            if move_changed || score_swing {
                 bm_changes += 1;
+            }
+            // TM 2 — Stability: same best move and nearly the same score over
+            // consecutive depths means the position is solved; stop early.
+            let stable = use_tm
+                && !move_changed
+                && new_best_move != Move::NO_MOVE
+                && current_depth > 2
+                && (current_score as i32 - last_score as i32).abs() <= 12;
+            if stable {
+                stable_count += 1;
+            } else {
+                stable_count = 0;
             }
             // Never throw away a known best move for an empty PV.
             if new_best_move != Move::NO_MOVE {
@@ -112,6 +159,10 @@ pub fn search(
                 previous_pv = current_pv;
             }
             search_state.best_move = best_move_so_far;
+
+            if use_tm && stable_count >= 2 && current_depth >= 6 {
+                break;
+            }
         }
 
         // TM: Soft limit with BM instability
