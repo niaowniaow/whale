@@ -15,6 +15,7 @@ Thumbs.db
 
 
 venv/
+scratch/
 
 # Training outputs and datasets
 /checkpoints/
