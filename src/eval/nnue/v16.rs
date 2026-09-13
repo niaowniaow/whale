@@ -1795,6 +1795,17 @@ unsafe fn add_threat_w_avx2(buf: &mut [i32; L1], w: &[i8]) {
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+unsafe fn add_psqt_avx2(dst: &mut [i32; N_BUCKETS], src: &[i32]) {
+    unsafe {
+        use std::arch::x86_64::*;
+        let d = _mm256_loadu_si256(dst.as_ptr() as *const __m256i);
+        let s = _mm256_loadu_si256(src.as_ptr() as *const __m256i);
+        _mm256_storeu_si256(dst.as_mut_ptr() as *mut __m256i, _mm256_add_epi32(d, s));
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
 unsafe fn pairwise_transform_threats_avx2(
     base_acc: &[i16],
     threat_buf: &[i32; L1],
@@ -1968,8 +1979,19 @@ fn eval_with_net(
                     }
                     let base_psqt = t * N_BUCKETS;
                     let p_slice = &net.transformer.threat_psqt_w[base_psqt..base_psqt + N_BUCKETS];
-                    for b in 0..N_BUCKETS {
-                        per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
+                    if use_avx2 {
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            add_psqt_avx2(&mut per_psqt[slot], p_slice);
+                        }
+                        #[cfg(not(target_arch = "x86_64"))]
+                        for b in 0..N_BUCKETS {
+                            per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
+                        }
+                    } else {
+                        for b in 0..N_BUCKETS {
+                            per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
+                        }
                     }
                 }
                 for &f in &pair_lists[slot][..pair_lens[slot]] {
@@ -1988,8 +2010,19 @@ fn eval_with_net(
                     }
                     let base_psqt = t * N_BUCKETS;
                     let p_slice = &net.transformer.pair_psqt_w[base_psqt..base_psqt + N_BUCKETS];
-                    for b in 0..N_BUCKETS {
-                        per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
+                    if use_avx2 {
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            add_psqt_avx2(&mut per_psqt[slot], p_slice);
+                        }
+                        #[cfg(not(target_arch = "x86_64"))]
+                        for b in 0..N_BUCKETS {
+                            per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
+                        }
+                    } else {
+                        for b in 0..N_BUCKETS {
+                            per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
+                        }
                     }
                 }
             }
