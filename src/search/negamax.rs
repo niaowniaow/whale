@@ -197,12 +197,27 @@ fn search_internal(
         let stm = board_state.side_to_move as usize;
         let pawn_hash = crate::common::zobrist::get_pawn_hash(board_state);
         let pawn_idx = (pawn_hash & 0x3FFF) as usize;
+        let minor_idx = ((pawn_hash >> 4) & 0x3FFF) as usize;
         let non_pawn_hash = board_state.board_hash ^ pawn_hash;
         let non_pawn_idx = (non_pawn_hash & 0x3FFF) as usize;
 
         let pawn_corr = ctx.search_state.pawn_correction_history[stm][pawn_idx];
+        let minor_corr = ctx.search_state.minor_correction_history[stm][minor_idx];
         let non_pawn_corr = ctx.search_state.non_pawn_correction_history[stm][non_pawn_idx];
-        let correction = ((pawn_corr + non_pawn_corr) / 256).clamp(-150, 150);
+        let mut cont_corr = 0;
+        if let Some(prev) = previous_move {
+            let pc = board_state.piece_mapping[prev.target as usize];
+            if pc != Piece::None {
+                let prev_side = board_state.side_to_move.other();
+                let idx = prev_side as usize * 6 + pc as usize;
+                if idx < 12 {
+                    cont_corr = ctx.search_state.continuation_correction_history[idx]
+                        [prev.target as usize];
+                }
+            }
+        }
+        let correction = ((pawn_corr + minor_corr + non_pawn_corr + cont_corr) / 256)
+            .clamp(-250, 250);
 
         static_eval =
             (static_eval as i32 + correction).clamp(-mate_bound as i32, mate_bound as i32) as i16;
@@ -516,7 +531,9 @@ fn search_internal(
                 reduction = reduction.saturating_sub(1);
             }
             if !cap_or_promo {
-                let history_bonus = history_score / 8192;
+                let d_idx = (depth as usize).min(16).saturating_sub(1);
+                let divisor = ctx.search_state.params.lmr_divisor[d_idx];
+                let history_bonus = history_score / divisor;
                 reduction = (reduction as i32 - history_bonus).clamp(0, depth as i32 - 1) as u8;
             }
             score = -search_internal(
@@ -652,15 +669,39 @@ fn search_internal(
             let stm = board_state.side_to_move as usize;
             let pawn_hash = crate::common::zobrist::get_pawn_hash(board_state);
             let pawn_idx = (pawn_hash & 0x3FFF) as usize;
+            let minor_idx = ((pawn_hash >> 4) & 0x3FFF) as usize;
             let non_pawn_hash = board_state.board_hash ^ pawn_hash;
             let non_pawn_idx = (non_pawn_hash & 0x3FFF) as usize;
 
             let pawn_corr = &mut ctx.search_state.pawn_correction_history[stm][pawn_idx];
             *pawn_corr = (*pawn_corr * (256 - weight) + (diff / 2) * weight * 256) / 256;
 
+            let minor_corr = &mut ctx.search_state.minor_correction_history[stm][minor_idx];
+            let minor_weight = weight * 150 / 128;
+            *minor_corr =
+                (*minor_corr * (256 - minor_weight) + (diff / 2) * minor_weight * 256) / 256;
+
             let non_pawn_corr =
                 &mut ctx.search_state.non_pawn_correction_history[stm][non_pawn_idx];
-            *non_pawn_corr = (*non_pawn_corr * (256 - weight) + (diff / 2) * weight * 256) / 256;
+            let non_pawn_weight = weight * 100 / 128;
+            *non_pawn_corr =
+                (*non_pawn_corr * (256 - non_pawn_weight) + (diff / 2) * non_pawn_weight * 256)
+                    / 256;
+
+            if let Some(prev) = previous_move {
+                let pc = board_state.piece_mapping[prev.target as usize];
+                if pc != Piece::None {
+                    let prev_side = board_state.side_to_move.other();
+                    let idx = prev_side as usize * 6 + pc as usize;
+                    if idx < 12 {
+                        let cont = &mut ctx.search_state.continuation_correction_history[idx]
+                            [prev.target as usize];
+                        let cont_weight = weight * 130 / 128;
+                        *cont = (*cont * (256 - cont_weight) + (diff / 2) * cont_weight * 256)
+                            / 256;
+                    }
+                }
+            }
         }
 
         if entry_type == TranspositionEntryType::Exact

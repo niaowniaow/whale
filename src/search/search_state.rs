@@ -14,6 +14,7 @@ pub struct SearchParameters {
     pub nmp_depth_div: u8,
     pub lmr_base: f64,
     pub lmr_div: f64,
+    pub lmr_divisor: [i32; 16],
     pub history_weight_mult: i32,
     pub history_weight_max: i32,
 }
@@ -29,6 +30,10 @@ impl Default for SearchParameters {
             nmp_depth_div: 4,
             lmr_base: 0.5,
             lmr_div: 1.95,
+            lmr_divisor: [
+                3637, 2787, 2761, 2939, 3171, 3347, 3147, 2762, 2772, 3106, 3107, 3060, 3112, 2991,
+                3090, 3542,
+            ],
             history_weight_mult: 1,
             history_weight_max: 16,
         }
@@ -44,11 +49,13 @@ pub struct SearchState {
     pub move_ordering: MoveOrdering,
     pub tt: TranspositionTable,
 
-    pub captures_stack: [MoveList; MAX_PLY],
-    pub quiets_stack: [MoveList; MAX_PLY],
+    pub captures_stack: Box<[MoveList; MAX_PLY]>,
+    pub quiets_stack: Box<[MoveList; MAX_PLY]>,
 
     pub pawn_correction_history: Box<[[i32; 16384]; 2]>,
+    pub minor_correction_history: Box<[[i32; 16384]; 2]>,
     pub non_pawn_correction_history: Box<[[i32; 16384]; 2]>,
+    pub continuation_correction_history: Box<[[i32; 64]; 12]>,
 }
 
 impl SearchState {
@@ -61,10 +68,12 @@ impl SearchState {
             nodes: 0,
             move_ordering: MoveOrdering::new(),
             tt: TranspositionTable::new(TranspositionTable::DEFAULT_CAPACITY),
-            captures_stack: [MoveList::new(); MAX_PLY],
-            quiets_stack: [MoveList::new(); MAX_PLY],
+            captures_stack: Box::new([MoveList::new(); MAX_PLY]),
+            quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
             pawn_correction_history: Box::new([[0; 16384]; 2]),
+            minor_correction_history: Box::new([[0; 16384]; 2]),
             non_pawn_correction_history: Box::new([[0; 16384]; 2]),
+            continuation_correction_history: Box::new([[0; 64]; 12]),
         }
     }
 
@@ -77,7 +86,9 @@ impl SearchState {
     pub fn reset_heuristics(&mut self) {
         self.move_ordering.reset();
         *self.pawn_correction_history = [[0; 16384]; 2];
+        *self.minor_correction_history = [[0; 16384]; 2];
         *self.non_pawn_correction_history = [[0; 16384]; 2];
+        *self.continuation_correction_history = [[0; 64]; 12];
     }
 }
 
