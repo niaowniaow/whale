@@ -14,6 +14,9 @@ pub struct MoveOrdering {
     pub continuation_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
     pub counter_moves: [[[Move; SQUARES]; PIECES]; SIDES],
     pub capture_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
+    pub low_ply_history: Box<[[i32; 4096]; 5]>,
+    pub pawn_history: Box<[[i32; 64]; 12]>,
+    pub tt_move_history: Box<[i32; 8192]>,
 }
 
 #[rustfmt::skip]
@@ -37,6 +40,9 @@ impl MoveOrdering {
             continuation_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
             counter_moves: [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES],
             capture_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
+            low_ply_history: Box::new([[0; 4096]; 5]),
+            pawn_history: Box::new([[0; 64]; 12]),
+            tt_move_history: Box::new([0; 8192]),
         }
     }
 
@@ -62,6 +68,9 @@ impl MoveOrdering {
         self.continuation_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
         self.counter_moves = [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES];
         self.capture_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
+        *self.low_ply_history = [[0; 4096]; 5];
+        *self.pawn_history = [[0; 64]; 12];
+        *self.tt_move_history = [0; 8192];
     }
 
     pub fn decay_history(&mut self) {
@@ -91,6 +100,19 @@ impl MoveOrdering {
                 }
             }
         }
+        for ply in self.low_ply_history.iter_mut() {
+            for score in ply.iter_mut() {
+                *score /= 2;
+            }
+        }
+        for row in self.pawn_history.iter_mut() {
+            for score in row.iter_mut() {
+                *score /= 2;
+            }
+        }
+        for score in self.tt_move_history.iter_mut() {
+            *score /= 2;
+        }
     }
 
     pub fn is_move_heuristic_empty(&self) -> bool {
@@ -114,6 +136,15 @@ impl MoveOrdering {
                     .iter()
                     .all(|piece_row| piece_row.iter().all(|&m| m == Move::NO_MOVE))
             })
+            && self
+                .low_ply_history
+                .iter()
+                .all(|ply| ply.iter().all(|&s| s == 0))
+            && self
+                .pawn_history
+                .iter()
+                .all(|row| row.iter().all(|&s| s == 0))
+            && self.tt_move_history.iter().all(|&s| s == 0)
     }
 
     #[inline(always)]

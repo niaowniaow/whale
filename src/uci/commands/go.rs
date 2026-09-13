@@ -40,6 +40,10 @@ impl UciClient {
             }
         };
 
+        let ply = {
+            let board = self.board.lock().unwrap();
+            board.move_count as i32
+        };
         let allotted_time = if movetime == -1 {
             if clock == -1 {
                 -1
@@ -48,6 +52,11 @@ impl UciClient {
             }
         } else {
             movetime
+        };
+        let (opt_time_tmp, max_time_tmp) = if movetime == -1 && clock != -1 {
+            time_management::calculate_optimum_with_ply(clock, increment, movestogo, ply)
+        } else {
+            (allotted_time, allotted_time)
         };
 
         let board_snapshot = self.board.lock().unwrap().clone();
@@ -58,13 +67,17 @@ impl UciClient {
         let is_movetime = movetime != -1;
         let opt_time = if is_movetime {
             (allotted_time * 9) / 10
+        } else if allotted_time == -1 {
+            -1
         } else {
-            allotted_time
+            opt_time_tmp
         };
         let max_time = if is_movetime {
             (allotted_time as u64).saturating_sub(10)
+        } else if allotted_time == -1 {
+            u64::MAX
         } else {
-            (allotted_time as f32 * 1.5) as u64
+            max_time_tmp as u64
         };
 
         if allotted_time != -1 {

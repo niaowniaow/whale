@@ -5,15 +5,57 @@ pub fn calculate_move_time(clock: i32, increment: i32) -> i32 {
 }
 
 pub fn calculate_move_time_with_moves(clock: i32, increment: i32, movestogo: i32) -> i32 {
-    let move_time = if movestogo > 0 {
-        clock / movestogo + increment / 2
+    calculate_optimum_with_ply(clock, increment, movestogo, 0).0
+}
+
+pub fn calculate_optimum_with_ply(
+    clock: i32,
+    increment: i32,
+    movestogo: i32,
+    ply: i32,
+) -> (i32, i32) {
+    if clock <= 0 {
+        return (10, 10);
+    }
+    let move_overhead = constants::BUFFER_TIME as i32;
+    let scaled_time = clock.max(1);
+    let mut mtg = if movestogo > 0 { movestogo.min(50) } else { 50 };
+    if scaled_time < 1000 && movestogo <= 0 {
+        mtg = (scaled_time as f64 * 0.05) as i32;
+        if mtg < 1 {
+            mtg = 1;
+        }
+    }
+    let time_left = (clock + increment * (mtg - 1) - move_overhead * (2 + mtg)).max(1);
+    let (opt_scale, max_scale) = if movestogo <= 0 {
+        let log_time = (scaled_time as f64 / 1000.0).log10();
+        let opt_constant = (0.0029869 + 0.00033554 * log_time).min(0.004905);
+        let max_constant = (3.3744 + 3.0608 * log_time).max(3.1441);
+        let mut opt = (0.012112 + (ply as f64 + 3.22713).powf(0.46866) * opt_constant)
+            .min(0.19404 * clock as f64 / time_left as f64);
+        // originalTimeAdjust
+        let mut original_adjust = 0.3272 * (time_left as f64).log10() - 0.4141;
+        if original_adjust < 0.0 {
+            original_adjust = 0.0;
+        }
+        if original_adjust != 0.0 {
+            opt *= original_adjust;
+        }
+        let max = (6.873_f64).min(max_constant + ply as f64 / 12.352);
+        (opt, max)
     } else {
-        clock / 20 + increment / 2
+        let opt =
+            ((0.88 + ply as f64 / 116.4) / mtg as f64).min(0.88 * clock as f64 / time_left as f64);
+        let max = 1.3 + 0.11 * mtg as f64;
+        (opt, max)
     };
-    std::cmp::max(
-        10,
-        std::cmp::min(move_time, clock - constants::BUFFER_TIME as i32),
-    )
+    let mut optimum = (opt_scale * time_left as f64).max(1.0) as i32;
+    let mut maximum = (max_scale * optimum as f64)
+        .min(0.8097 * clock as f64 - move_overhead as f64)
+        .max(optimum as f64) as i32;
+    optimum = optimum.max(10).min(clock - move_overhead);
+    maximum = maximum.max(optimum).min(clock - move_overhead).max(10);
+    (optimum, maximum)
 }
 
 #[cfg(test)]

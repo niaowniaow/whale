@@ -68,26 +68,60 @@ pub fn clear_eval_cache() {
 
 #[inline(always)]
 pub fn evaluate(board: &mut BoardState) -> i16 {
-    let mut score = if let Some(hit) = probe_eval_cache(board.board_hash) {
+    let score = if let Some(hit) = probe_eval_cache(board.board_hash) {
         hit
     } else {
-        let raw = if let Some(score) = v16::evaluate_board(board) {
-            score
+        let raw = if v16::maintenance_active() {
+            if let Some(ev) = v16::evaluate_board_detailed(board) {
+                // Stockfish outer blend: optimism + complexity + material
+                let psqt = ev.psqt as i64;
+                let positional = ev.positional as i64;
+                let mut nnue = psqt + positional;
+                let complexity = (psqt - positional).abs();
+                // optimism = 0 for now (no thread optimism tracking yet)
+                let optimism: i64 = 0;
+                let nnue_complexity = complexity;
+                let optimism = optimism + optimism * nnue_complexity / 476;
+                nnue -= nnue * nnue_complexity / 18236;
+                // material: 534*Pawns + non_pawn (Stockfish mg values)
+                let pawn_cnt = board.pieces[crate::common::piece::Piece::Pawn]
+                    .0
+                    .count_ones() as i64;
+                let knight_cnt = board.pieces[crate::common::piece::Piece::Knight]
+                    .0
+                    .count_ones() as i64;
+                let bishop_cnt = board.pieces[crate::common::piece::Piece::Bishop]
+                    .0
+                    .count_ones() as i64;
+                let rook_cnt = board.pieces[crate::common::piece::Piece::Rook]
+                    .0
+                    .count_ones() as i64;
+                let queen_cnt = board.pieces[crate::common::piece::Piece::Queen]
+                    .0
+                    .count_ones() as i64;
+                let non_pawn_mat =
+                    knight_cnt * 300 + bishop_cnt * 300 + rook_cnt * 500 + queen_cnt * 900;
+                let material = 534 * pawn_cnt + non_pawn_mat;
+                let mut v = nnue + (nnue * material + optimism * 7675) / 91000;
+                v -= v * board.half_move_clock as i64 / 199;
+                v.clamp(-29000, 29000) as i16
+            } else {
+                v16::evaluate_board(board).unwrap_or(0)
+            }
         } else {
             let network = Network::get_embedded();
-            evaluate_internal(board, network)
+            let mut s = evaluate_internal(board, network);
+            if board.half_move_clock > 0 {
+                s -= (s as i32 * board.half_move_clock as i32 / 199) as i16;
+            }
+            s
         };
         store_eval_cache(board.board_hash, raw);
         raw
     };
 
-    // Rudim-specific outer scaling (not Stockfish): damp the score linearly
-    // with the fifty-move counter, like Stockfish's rule50 term (/199).
-    if board.half_move_clock > 0 {
-        score -= (score as i32 * board.half_move_clock as i32 / 199) as i16;
-    }
-
-    score
+    // Clamp to TB range like Stockfish evaluate.cpp:66
+    score.clamp(-29000, 29000)
 }
 
 #[inline(always)]

@@ -2120,6 +2120,20 @@ pub fn evaluate_board(board: &mut BoardState) -> Option<i16> {
     })
 }
 
+pub fn evaluate_board_detailed(board: &mut BoardState) -> Option<SfnnEval> {
+    if !maintenance_active() {
+        return None;
+    }
+    let pos = SfnnPosition::from_board(board);
+    let idx = board.history.index;
+    if idx >= board.history.sfnn16.len() {
+        return None;
+    }
+    let accs = &mut board.history.sfnn16[idx];
+    ensure_fresh(&pos, accs);
+    evaluate_nets(&pos, accs, board.side_to_move)
+}
+
 // ---------------------------------------------------------------------------
 // Board integration helpers (wired from board/nnue.rs).
 // ---------------------------------------------------------------------------

@@ -16,6 +16,7 @@ pub fn search(
     search_state: &mut SearchState,
 ) {
     search_state.reset_search();
+    search_state.tt.new_search();
 
     let mut previous_pv = Vec::new();
     let mut pv_table = PvTable::new();

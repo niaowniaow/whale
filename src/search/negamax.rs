@@ -211,13 +211,13 @@ fn search_internal(
                 let prev_side = board_state.side_to_move.other();
                 let idx = prev_side as usize * 6 + pc as usize;
                 if idx < 12 {
-                    cont_corr = ctx.search_state.continuation_correction_history[idx]
-                        [prev.target as usize];
+                    cont_corr =
+                        ctx.search_state.continuation_correction_history[idx][prev.target as usize];
                 }
             }
         }
-        let correction = ((pawn_corr + minor_corr + non_pawn_corr + cont_corr) / 256)
-            .clamp(-250, 250);
+        let correction =
+            ((pawn_corr + minor_corr + non_pawn_corr + cont_corr) / 256).clamp(-250, 250);
 
         static_eval =
             (static_eval as i32 + correction).clamp(-mate_bound as i32, mate_bound as i32) as i16;
@@ -684,9 +684,9 @@ fn search_internal(
             let non_pawn_corr =
                 &mut ctx.search_state.non_pawn_correction_history[stm][non_pawn_idx];
             let non_pawn_weight = weight * 100 / 128;
-            *non_pawn_corr =
-                (*non_pawn_corr * (256 - non_pawn_weight) + (diff / 2) * non_pawn_weight * 256)
-                    / 256;
+            *non_pawn_corr = (*non_pawn_corr * (256 - non_pawn_weight)
+                + (diff / 2) * non_pawn_weight * 256)
+                / 256;
 
             if let Some(prev) = previous_move {
                 let pc = board_state.piece_mapping[prev.target as usize];
@@ -697,8 +697,8 @@ fn search_internal(
                         let cont = &mut ctx.search_state.continuation_correction_history[idx]
                             [prev.target as usize];
                         let cont_weight = weight * 130 / 128;
-                        *cont = (*cont * (256 - cont_weight) + (diff / 2) * cont_weight * 256)
-                            / 256;
+                        *cont =
+                            (*cont * (256 - cont_weight) + (diff / 2) * cont_weight * 256) / 256;
                     }
                 }
             }

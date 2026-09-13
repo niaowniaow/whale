@@ -15,14 +15,14 @@ pub struct TranspositionTableEntry {
     pub depth: u8,
     pub best_move: Move,
     pub entry_type: TranspositionEntryType,
+    pub generation: u8,
 }
 
-// TODO: profile, tune
-// TODO: bucketed instead of 2-tier
 pub struct TranspositionTable {
     depth_replaced_entries: Vec<Option<TranspositionTableEntry>>,
     always_replaced_entries: Vec<Option<TranspositionTableEntry>>,
     capacity: usize,
+    pub generation: u8,
 }
 
 impl TranspositionTable {
@@ -38,7 +38,12 @@ impl TranspositionTable {
             depth_replaced_entries: vec![None; capacity],
             always_replaced_entries: vec![None; capacity],
             capacity,
+            generation: 0,
         }
+    }
+
+    pub fn new_search(&mut self) {
+        self.generation = self.generation.wrapping_add(8);
     }
 
     pub fn resize(&mut self, mb_size: usize) {
@@ -165,10 +170,11 @@ impl TranspositionTable {
             depth,
             best_move,
             entry_type,
+            generation: self.generation,
         });
 
         if let Some(existing) = self.depth_replaced_entries[index] {
-            if existing.depth >= depth {
+            if existing.generation == self.generation && existing.depth >= depth {
                 self.always_replaced_entries[index] = new_entry;
             } else {
                 self.always_replaced_entries[index] = self.depth_replaced_entries[index];
