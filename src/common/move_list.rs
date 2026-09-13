@@ -25,7 +25,7 @@ impl ScoredMove {
 
 pub const MAX_MOVES: usize = 218;
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 pub struct MoveList {
     // TODO: optz, have an Uninit list to avoid unnecessary mem ops
     pub moves: [ScoredMove; MAX_MOVES],

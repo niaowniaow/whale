@@ -11,9 +11,10 @@ pub struct MoveOrdering {
     pub killer_moves: [[Move; MAX_PLY]; 2],
     pub history_moves: [[i32; SQUARES]; PIECES * 2],
     pub quiet_history: [[[i16; SQUARES]; SQUARES]; SIDES],
-    pub continuation_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
+    pub continuation_history: Box<[[[i16; SQUARES]; SQUARES]; PIECES * 2]>,
+    pub continuation_history_2: Box<[[[i16; SQUARES]; SQUARES]; PIECES * 2]>,
     pub counter_moves: [[[Move; SQUARES]; PIECES]; SIDES],
-    pub capture_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
+    pub capture_history: Box<[[[i16; SQUARES]; SQUARES]; PIECES * 2]>,
 }
 
 #[rustfmt::skip]
@@ -34,9 +35,19 @@ impl MoveOrdering {
             killer_moves: [[Move::NO_MOVE; MAX_PLY]; 2],
             history_moves: [[0; SQUARES]; PIECES * 2],
             quiet_history: [[[0; SQUARES]; SQUARES]; SIDES],
-            continuation_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
+            continuation_history: vec![[[0; SQUARES]; SQUARES]; PIECES * 2]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap(),
+            continuation_history_2: vec![[[0; SQUARES]; SQUARES]; PIECES * 2]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap(),
             counter_moves: [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES],
-            capture_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
+            capture_history: vec![[[0; SQUARES]; SQUARES]; PIECES * 2]
+                .into_boxed_slice()
+                .try_into()
+                .unwrap(),
         }
     }
 
@@ -59,9 +70,10 @@ impl MoveOrdering {
         self.killer_moves = [[Move::NO_MOVE; MAX_PLY]; 2];
         self.history_moves = [[0; SQUARES]; PIECES * 2];
         self.quiet_history = [[[0; SQUARES]; SQUARES]; SIDES];
-        self.continuation_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
+        self.continuation_history.fill([[0; SQUARES]; SQUARES]);
+        self.continuation_history_2.fill([[0; SQUARES]; SQUARES]);
         self.counter_moves = [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES];
-        self.capture_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
+        self.capture_history.fill([[0; SQUARES]; SQUARES]);
     }
 
     pub fn decay_history(&mut self) {
@@ -78,6 +90,13 @@ impl MoveOrdering {
             }
         }
         for piece in &mut self.continuation_history {
+            for row in piece {
+                for score in row {
+                    *score /= 2;
+                }
+            }
+        }
+        for piece in &mut self.continuation_history_2 {
             for row in piece {
                 for score in row {
                     *score /= 2;
@@ -109,6 +128,10 @@ impl MoveOrdering {
                 .continuation_history
                 .iter()
                 .all(|piece| piece.iter().all(|row| row.iter().all(|&s| s == 0)))
+            && self
+                .continuation_history_2
+                .iter()
+                .all(|piece| piece.iter().all(|row| row.iter().all(|&s| s == 0)))
             && self.counter_moves.iter().all(|side_row| {
                 side_row
                     .iter()
@@ -134,6 +157,7 @@ impl MoveOrdering {
         board_state: &BoardState,
         move_obj: Move,
         previous_move: Option<Move>,
+        previous_move_2: Option<Move>,
     ) -> i32 {
         let piece = board_state.get_piece_on(move_obj.source);
         if piece == -1 {
@@ -151,7 +175,16 @@ impl MoveOrdering {
                 })
             })
             .unwrap_or(0) as i32;
-        history_score + i32::from(from_to_score) + continuation_score
+        let continuation_score_2 = previous_move_2
+            .and_then(|prev_mv| {
+                let prev_piece = board_state.get_piece_on_side(prev_mv.target, board_state.side_to_move);
+                (prev_piece != Piece::None as usize).then(|| {
+                    self.continuation_history_2[prev_piece][prev_mv.target as usize]
+                        [move_obj.target as usize]
+                })
+            })
+            .unwrap_or(0) as i32;
+        history_score + i32::from(from_to_score) + continuation_score + continuation_score_2
     }
 
     pub fn populate_quiet_scores(
@@ -160,6 +193,7 @@ impl MoveOrdering {
         board_state: &BoardState,
         ply: usize,
         previous_move: Option<Move>,
+        previous_move_2: Option<Move>,
     ) {
         let counter_move = if let Some(prev_mv) = previous_move {
             let prev_side = board_state.side_to_move.other();
@@ -202,7 +236,17 @@ impl MoveOrdering {
                             })
                         })
                         .unwrap_or(0) as i32;
-                    move_obj.score = history_score + i32::from(from_to_score) + continuation_score;
+                    let continuation_score_2 = previous_move_2
+                        .and_then(|prev_mv| {
+                            let prev_piece = board_state.get_piece_on_side(prev_mv.target, board_state.side_to_move);
+                            (prev_piece != Piece::None as usize).then(|| {
+                                self.continuation_history_2[prev_piece]
+                                    [prev_mv.target as usize]
+                                    [move_obj.mv.target as usize]
+                            })
+                        })
+                        .unwrap_or(0) as i32;
+                    move_obj.score = history_score + i32::from(from_to_score) + continuation_score + continuation_score_2;
                 }
             }
         }
@@ -249,6 +293,25 @@ impl MoveOrdering {
         if previous_piece != Piece::None {
             Self::update_gravity_i16(
                 &mut self.continuation_history[previous_piece as usize][previous_target as usize]
+                    [target],
+                bonus,
+                i16::MAX as i32,
+            );
+        }
+    }
+
+    #[inline(always)]
+    pub fn update_continuation_history_2(
+        &mut self,
+        previous_piece: Piece,
+        previous_target: Square,
+        move_obj: Move,
+        bonus: i32,
+    ) {
+        let target = move_obj.target as usize;
+        if previous_piece != Piece::None {
+            Self::update_gravity_i16(
+                &mut self.continuation_history_2[previous_piece as usize][previous_target as usize]
                     [target],
                 bonus,
                 i16::MAX as i32,
@@ -422,7 +485,7 @@ mod tests {
             },
         ];
 
-        move_ordering.populate_quiet_scores(&mut quiet_moves, &board, 0, None);
+        move_ordering.populate_quiet_scores(&mut quiet_moves, &board, 0, None, None);
 
         assert_eq!(quiet_moves[0].score, 25000);
         assert_eq!(quiet_moves[1].score, -20000);
@@ -439,7 +502,7 @@ mod tests {
             mv: under_prom,
             score: 0,
         }];
-        move_ordering.populate_quiet_scores(&mut killer_quiet_moves, &board, 0, None);
+        move_ordering.populate_quiet_scores(&mut killer_quiet_moves, &board, 0, None, None);
         assert_eq!(killer_quiet_moves[0].score, 22000);
 
         let mut capture_moves = vec![
@@ -511,6 +574,25 @@ mod tests {
         );
         assert_eq!(
             ordering.continuation_history[Piece::Bishop as usize][Square::F3 as usize]
+                [Square::E4 as usize],
+            0
+        );
+    }
+
+    #[test]
+    fn continuation_history_2_uses_previous_piece_and_target() {
+        let mut ordering = MoveOrdering::new();
+        let current = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+
+        ordering.update_continuation_history_2(Piece::Bishop, Square::C4, current, 800);
+
+        assert!(
+            ordering.continuation_history_2[Piece::Bishop as usize][Square::C4 as usize]
+                [Square::E4 as usize]
+                > 0
+        );
+        assert_eq!(
+            ordering.continuation_history_2[Piece::Knight as usize][Square::C4 as usize]
                 [Square::E4 as usize],
             0
         );

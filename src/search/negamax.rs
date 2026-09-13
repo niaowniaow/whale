@@ -33,7 +33,7 @@ pub fn search(
         search_state,
     };
 
-    search_internal(board_state, depth, 0, alpha, beta, None, &mut ctx)
+    search_internal(board_state, depth, 0, alpha, beta, None, None, &mut ctx)
 }
 
 fn search_internal(
@@ -43,6 +43,7 @@ fn search_internal(
     mut alpha: i16,
     beta: i16,
     previous_move: Option<Move>,
+    previous_move_2: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
     if ctx.cancellation_token.load(Ordering::Relaxed) {
@@ -143,6 +144,7 @@ fn search_internal(
                 singular_beta - 1,
                 singular_beta,
                 previous_move,
+                previous_move_2,
                 &mut se_ctx,
             );
 
@@ -230,7 +232,7 @@ fn search_internal(
 
         let mut prob_captures = MoveList::new();
         let mut prob_quiets = MoveList::new();
-        let mut prob_picker = MovePicker::new(None, tt_best, previous_move, ply as usize, None);
+        let mut prob_picker = MovePicker::new(None, tt_best, previous_move, previous_move_2, ply as usize, None);
 
         while let Some(move_obj) = prob_picker.next(
             board_state,
@@ -265,6 +267,7 @@ fn search_internal(
                 -prob_beta,
                 -prob_beta + 1,
                 Some(move_obj),
+                previous_move,
                 &mut prob_ctx,
             );
             board_state.unmake_move(move_obj);
@@ -294,6 +297,7 @@ fn search_internal(
             ply + 1,
             -beta,
             -beta + 1,
+            None,
             None,
             &mut SearchContext {
                 excluded_move: None,
@@ -338,6 +342,7 @@ fn search_internal(
         pv_move,
         tt_best,
         previous_move,
+        previous_move_2,
         ply as usize,
         ctx.excluded_move,
     );
@@ -369,6 +374,7 @@ fn search_internal(
                 board_state,
                 move_obj,
                 previous_move,
+                previous_move_2,
             );
         }
 
@@ -392,6 +398,7 @@ fn search_internal(
         }
 
         has_legal_moves = true;
+        ctx.search_state.move_stack[ply as usize] = move_obj;
 
         let alpha_is_mate = alpha.abs() >= mate_bound;
 
@@ -436,6 +443,7 @@ fn search_internal(
             gives_check_computed = true;
             if !gives_check {
                 board_state.unmake_move(move_obj);
+                ctx.search_state.move_stack[ply as usize] = Move::NO_MOVE;
                 continue;
             }
         }
@@ -455,6 +463,7 @@ fn search_internal(
             }
             if !gives_check {
                 board_state.unmake_move(move_obj);
+                ctx.search_state.move_stack[ply as usize] = Move::NO_MOVE;
                 continue;
             }
         }
@@ -480,6 +489,7 @@ fn search_internal(
             && history_score < -4000 * depth as i32
         {
             board_state.unmake_move(move_obj);
+            ctx.search_state.move_stack[ply as usize] = Move::NO_MOVE;
             continue;
         }
 
@@ -503,6 +513,7 @@ fn search_internal(
                     -alpha - 1,
                     -alpha,
                     Some(move_obj),
+                    previous_move,
                     &mut SearchContext {
                         excluded_move: None,
                         allow_null_move: true,
@@ -532,6 +543,7 @@ fn search_internal(
                         beta,
                         found_pv,
                         Some(move_obj),
+                        previous_move,
                         &mut child_ctx,
                     );
                 }
@@ -553,6 +565,7 @@ fn search_internal(
                     beta,
                     found_pv,
                     Some(move_obj),
+                    previous_move,
                     &mut child_ctx,
                 );
             }
@@ -574,6 +587,7 @@ fn search_internal(
                 beta,
                 found_pv,
                 Some(move_obj),
+                previous_move,
                 &mut child_ctx,
             );
         }
@@ -581,6 +595,7 @@ fn search_internal(
         number_of_legal_moves += 1;
 
         board_state.unmake_move(move_obj);
+        ctx.search_state.move_stack[ply as usize] = Move::NO_MOVE;
 
         if ctx.cancellation_token.load(Ordering::Relaxed) {
             return 0;
@@ -606,6 +621,7 @@ fn search_internal(
                 board_state,
                 depth,
                 previous_move,
+                previous_move_2,
                 ctx.search_state,
                 &tried_quiets[..tried_quiets_count],
                 ctx.excluded_move,
@@ -670,6 +686,7 @@ fn search_internal(
                 best_move,
                 depth,
                 previous_move,
+                previous_move_2,
                 &tried_quiets[..tried_quiets_count],
             );
         }
@@ -687,10 +704,20 @@ fn search_deeper(
     beta: i16,
     found_pv: bool,
     previous_move: Option<Move>,
+    previous_move_2: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
     if found_pv {
-        principal_variation_search(board_state, depth, ply, alpha, beta, previous_move, ctx)
+        principal_variation_search(
+            board_state,
+            depth,
+            ply,
+            alpha,
+            beta,
+            previous_move,
+            previous_move_2,
+            ctx,
+        )
     } else {
         -search_internal(
             board_state,
@@ -699,6 +726,7 @@ fn search_deeper(
             -beta,
             -alpha,
             previous_move,
+            previous_move_2,
             &mut SearchContext {
                 excluded_move: None,
                 allow_null_move: ctx.allow_null_move,
@@ -719,6 +747,7 @@ fn principal_variation_search(
     alpha: i16,
     beta: i16,
     previous_move: Option<Move>,
+    previous_move_2: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
     let mut score = -search_internal(
@@ -728,6 +757,7 @@ fn principal_variation_search(
         -alpha - 1,
         -alpha,
         previous_move,
+        previous_move_2,
         &mut SearchContext {
             excluded_move: None,
             allow_null_move: ctx.allow_null_move,
@@ -746,6 +776,7 @@ fn principal_variation_search(
             -beta,
             -alpha,
             previous_move,
+            previous_move_2,
             &mut SearchContext {
                 excluded_move: None,
                 allow_null_move: ctx.allow_null_move,
@@ -766,6 +797,7 @@ fn update_history_stats(
     best_move: Move,
     depth: u8,
     previous_move: Option<Move>,
+    previous_move_2: Option<Move>,
     tried_quiets: &[Move],
 ) {
     let bonus = (300 * depth as i32) - 250;
@@ -777,7 +809,14 @@ fn update_history_stats(
     search_state
         .move_ordering
         .update_quiet_history(side, best_move, bonus);
-    update_continuation(search_state, board_state, previous_move, best_move, bonus);
+    update_continuation(
+        search_state,
+        board_state,
+        previous_move,
+        previous_move_2,
+        best_move,
+        bonus,
+    );
 
     for &quiet_move in tried_quiets {
         if quiet_move != best_move {
@@ -793,6 +832,7 @@ fn update_history_stats(
                 search_state,
                 board_state,
                 previous_move,
+                previous_move_2,
                 quiet_move,
                 penalty,
             );
@@ -804,6 +844,7 @@ fn update_continuation(
     search_state: &mut SearchState,
     board_state: &BoardState,
     previous_move: Option<Move>,
+    previous_move_2: Option<Move>,
     move_obj: Move,
     bonus: i32,
 ) {
@@ -813,6 +854,17 @@ fn update_continuation(
             search_state.move_ordering.update_continuation_history(
                 previous_piece,
                 previous_move.target,
+                move_obj,
+                bonus,
+            );
+        }
+    }
+    if let Some(previous_move_2) = previous_move_2 {
+        let piece_idx = board_state.get_piece_on_side(previous_move_2.target, board_state.side_to_move);
+        if piece_idx != Piece::None as usize {
+            search_state.move_ordering.update_continuation_history_2(
+                Piece::from(piece_idx),
+                previous_move_2.target,
                 move_obj,
                 bonus,
             );
@@ -834,6 +886,7 @@ fn beta_cutoff(
     board_state: &BoardState,
     depth: u8,
     previous_move: Option<Move>,
+    previous_move_2: Option<Move>,
     search_state: &mut SearchState,
     tried_quiets: &[Move],
     excluded_move: Option<Move>,
@@ -857,6 +910,7 @@ fn beta_cutoff(
             move_obj,
             depth,
             previous_move,
+            previous_move_2,
             tried_quiets,
         );
 
