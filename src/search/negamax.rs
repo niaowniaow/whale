@@ -211,6 +211,85 @@ fn search_internal(
         if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
             return static_eval;
         }
+
+        // PRUNE: ProbCut (depth >=5, non-PV, non-check, non-mate beta)
+        if !is_pv_node
+            && !in_check
+            && depth >= 5
+            && ctx.excluded_move.is_none()
+            && !beta_is_mate
+            && has_static_eval
+        {
+            let prob_beta = beta.saturating_add(ctx.search_state.params.probcut_margin);
+            if prob_beta < mate_bound && prob_beta > -mate_bound {
+                // Cheap filter: only try if static_eval is reasonably close
+                if static_eval >= prob_beta.saturating_sub(50) {
+                    let prob_depth = depth.saturating_sub(4).max(1);
+                    let mut prob_captures = crate::common::move_list::MoveList::new();
+                    board_state.generate_captures(&mut prob_captures);
+                    crate::eval::move_ordering::populate_capture_scores(
+                        &mut prob_captures,
+                        board_state,
+                        &ctx.search_state.move_ordering,
+                    );
+                    // Simple selection sort by score (small list)
+                    for i in 0..prob_captures.len() {
+                        let mut best_idx = i;
+                        for j in (i + 1)..prob_captures.len() {
+                            if prob_captures[j].score > prob_captures[best_idx].score {
+                                best_idx = j;
+                            }
+                        }
+                        if best_idx != i {
+                            prob_captures.swap(i, best_idx);
+                        }
+                        let mv = prob_captures[i].mv;
+                        let see_threshold = prob_beta.saturating_sub(static_eval);
+                        if board_state.see(mv) < see_threshold {
+                            continue;
+                        }
+                        board_state.make_move(mv);
+                        if board_state.is_in_check(board_state.side_to_move.other()) {
+                            board_state.unmake_move(mv);
+                            continue;
+                        }
+                        let score = -search_internal(
+                            board_state,
+                            prob_depth,
+                            ply + 1,
+                            -prob_beta,
+                            -prob_beta + 1,
+                            Some(mv),
+                            &mut SearchContext {
+                                allow_null_move: false,
+                                on_pv_path: false,
+                                previous_pv: ctx.previous_pv,
+                                excluded_move: None,
+                                pv_table: &mut *ctx.pv_table,
+                                cancellation_token: ctx.cancellation_token,
+                                search_state: ctx.search_state,
+                            },
+                        );
+                        board_state.unmake_move(mv);
+                        if ctx.cancellation_token.load(Ordering::Relaxed) {
+                            return 0;
+                        }
+                        if score >= prob_beta {
+                            if ctx.excluded_move.is_none() {
+                                ctx.search_state.tt.submit_entry(
+                                    board_state.board_hash,
+                                    tt::TranspositionTable::adjust_score(score, ply as i32),
+                                    prob_depth,
+                                    mv,
+                                    TranspositionEntryType::Beta,
+                                );
+                            }
+                            return score;
+                        }
+                    }
+                }
+            }
+        }
     }
 
     // PRUNE: Null Move Pruning
