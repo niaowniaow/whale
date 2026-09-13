@@ -29,24 +29,24 @@ pub fn search(
         // Aspiration Windows
         let mut alpha = i16::MIN + 1;
         let mut beta = i16::MAX - 1;
-        let mut delta = ASPIRATION_WINDOW_MARGIN;
 
         if current_depth > 1 {
-            if last_score.abs() > 1000 {
+            if last_score.abs() as i32 > MAX_CENTIPAWN_EVAL as i32 - MAX_PLY as i32 {
                 alpha = i16::MIN + 1;
                 beta = i16::MAX - 1;
             } else {
                 alpha = last_score
-                    .saturating_sub(delta)
+                    .saturating_sub(ASPIRATION_WINDOW_MARGIN)
                     .max(i16::MIN + 1);
                 beta = last_score
-                    .saturating_add(delta)
+                    .saturating_add(ASPIRATION_WINDOW_MARGIN)
                     .min(i16::MAX - 1);
             }
         }
 
         let mut current_score = last_score;
         let mut completed = false;
+        let mut delta = ASPIRATION_WINDOW_MARGIN;
 
         loop {
             let score = negamax::search(
@@ -65,22 +65,22 @@ pub fn search(
             }
 
             current_score = score;
+            // Geometric widening: each fail strictly expands the window, so
+            // this terminates (worst case falls back to a full window).
             if current_score <= alpha {
-                alpha = current_score
-                    .saturating_sub(delta)
-                    .max(i16::MIN + 1);
-                delta = delta.saturating_add(delta * 2);
-                if delta >= 90 || alpha <= -MAX_CENTIPAWN_EVAL + MAX_PLY as i16 {
-                    alpha = i16::MIN + 1;
+                if alpha == i16::MIN + 1 {
+                    completed = true;
+                    break;
                 }
+                delta = delta.saturating_mul(4).min(1500);
+                alpha = current_score.saturating_sub(delta).max(i16::MIN + 1);
             } else if current_score >= beta {
-                beta = current_score
-                    .saturating_add(delta)
-                    .min(i16::MAX - 1);
-                delta = delta.saturating_add(delta * 2);
-                if delta >= 90 || beta >= MAX_CENTIPAWN_EVAL - MAX_PLY as i16 {
-                    beta = i16::MAX - 1;
+                if beta == i16::MAX - 1 {
+                    completed = true;
+                    break;
                 }
+                delta = delta.saturating_mul(4).min(1500);
+                beta = current_score.saturating_add(delta).min(i16::MAX - 1);
             } else {
                 completed = true;
                 break;
@@ -97,9 +97,11 @@ pub fn search(
             if current_depth > 1
                 && best_move_so_far != Move::NO_MOVE
                 && new_best_move != best_move_so_far
+                && new_best_move != Move::NO_MOVE
             {
                 bm_changes += 1;
             }
+            // Never throw away a known best move for an empty PV.
             if new_best_move != Move::NO_MOVE {
                 best_move_so_far = new_best_move;
             }

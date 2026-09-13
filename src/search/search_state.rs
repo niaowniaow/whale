@@ -44,10 +44,8 @@ pub struct SearchState {
     pub move_ordering: MoveOrdering,
     pub tt: TranspositionTable,
 
-    pub captures_stack: Box<[MoveList; MAX_PLY]>,
-    pub quiets_stack: Box<[MoveList; MAX_PLY]>,
-    pub eval_stack: [i16; MAX_PLY],
-    pub move_stack: [Move; MAX_PLY],
+    pub captures_stack: [MoveList; MAX_PLY],
+    pub quiets_stack: [MoveList; MAX_PLY],
 
     pub pawn_correction_history: Box<[[i32; 16384]; 2]>,
     pub non_pawn_correction_history: Box<[[i32; 16384]; 2]>,
@@ -63,24 +61,10 @@ impl SearchState {
             nodes: 0,
             move_ordering: MoveOrdering::new(),
             tt: TranspositionTable::new(TranspositionTable::DEFAULT_CAPACITY),
-            captures_stack: vec![MoveList::new(); MAX_PLY]
-                .into_boxed_slice()
-                .try_into()
-                .unwrap(),
-            quiets_stack: vec![MoveList::new(); MAX_PLY]
-                .into_boxed_slice()
-                .try_into()
-                .unwrap(),
-            eval_stack: [0; MAX_PLY],
-            move_stack: [Move::NO_MOVE; MAX_PLY],
-            pawn_correction_history: vec![[0i32; 16384]; 2]
-                .into_boxed_slice()
-                .try_into()
-                .unwrap(),
-            non_pawn_correction_history: vec![[0i32; 16384]; 2]
-                .into_boxed_slice()
-                .try_into()
-                .unwrap(),
+            captures_stack: [MoveList::new(); MAX_PLY],
+            quiets_stack: [MoveList::new(); MAX_PLY],
+            pawn_correction_history: Box::new([[0; 16384]; 2]),
+            non_pawn_correction_history: Box::new([[0; 16384]; 2]),
         }
     }
 
@@ -88,14 +72,12 @@ impl SearchState {
         self.best_move = Move::NO_MOVE;
         self.score = 0;
         self.nodes = 0;
-        self.eval_stack = [0; MAX_PLY];
-        self.move_stack = [Move::NO_MOVE; MAX_PLY];
     }
 
     pub fn reset_heuristics(&mut self) {
         self.move_ordering.reset();
-        self.pawn_correction_history.fill([0; 16384]);
-        self.non_pawn_correction_history.fill([0; 16384]);
+        *self.pawn_correction_history = [[0; 16384]; 2];
+        *self.non_pawn_correction_history = [[0; 16384]; 2];
     }
 }
 

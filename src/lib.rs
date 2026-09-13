@@ -4,6 +4,7 @@ pub mod common;
 pub mod eval;
 pub mod nnue_pipeline;
 pub mod search;
+pub mod syzygy;
 pub mod teacher;
 pub mod uci;
 

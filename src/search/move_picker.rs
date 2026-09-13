@@ -20,7 +20,6 @@ pub struct MovePicker {
     pv_move: Option<Move>,
     tt_best: Option<Move>,
     previous_move: Option<Move>,
-    previous_move_2: Option<Move>,
     excluded_move: Option<Move>,
     good_captures_count: usize,
     current_index: usize,
@@ -33,7 +32,6 @@ impl MovePicker {
         pv_move: Option<Move>,
         tt_best: Option<Move>,
         previous_move: Option<Move>,
-        previous_move_2: Option<Move>,
         ply: usize,
         excluded_move: Option<Move>,
     ) -> Self {
@@ -42,7 +40,6 @@ impl MovePicker {
             pv_move,
             tt_best,
             previous_move,
-            previous_move_2,
             excluded_move,
             good_captures_count: 0,
             current_index: 0,
@@ -57,7 +54,6 @@ impl MovePicker {
             pv_move: None,
             tt_best: None,
             previous_move: None,
-            previous_move_2: None,
             excluded_move: None,
             good_captures_count: 0,
             current_index: 0,
@@ -76,9 +72,10 @@ impl MovePicker {
         loop {
             let m = self.next_internal(board_state, move_ordering, captures, quiets);
             if let Some(mv) = m
-                && Some(mv) == self.excluded_move {
-                    continue;
-                }
+                && Some(mv) == self.excluded_move
+            {
+                continue;
+            }
             return m;
         }
     }
@@ -154,7 +151,6 @@ impl MovePicker {
                         board_state,
                         self.ply,
                         self.previous_move,
-                        self.previous_move_2,
                     );
                     self.phase = SearchPhase::Quiets;
                 }
@@ -245,7 +241,7 @@ mod tests {
     fn test_move_picker_normal_search_all_phases() {
         let mut board = BoardState::parse_fen("k7/8/8/5n2/1p1p4/2B5/3R4/K7 w - - 0 1");
 
-        let mut picker = MovePicker::new(None, None, None, None, 0, None);
+        let mut picker = MovePicker::new(None, None, None, 0, None);
         let mut captures = MoveList::new();
         let mut quiets = MoveList::new();
         let mut returned_moves = Vec::new();

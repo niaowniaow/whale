@@ -240,6 +240,27 @@ impl BoardState {
             if (knights | bishops).is_not_empty() {
                 return true;
             }
+        } else if num_pieces == 4 {
+            let pawns = self.pieces[Piece::Pawn];
+            let rooks = self.pieces[Piece::Rook];
+            let queens = self.pieces[Piece::Queen];
+            if pawns.is_empty() && rooks.is_empty() && queens.is_empty() {
+                let w_minors = (self.get_pieces(Side::White, Piece::Bishop)
+                    | self.get_pieces(Side::White, Piece::Knight))
+                .count_ones();
+                let b_minors = (self.get_pieces(Side::Black, Piece::Bishop)
+                    | self.get_pieces(Side::Black, Piece::Knight))
+                .count_ones();
+                if w_minors == 1 && b_minors == 1 {
+                    return true;
+                }
+                if w_minors == 2 && self.get_pieces(Side::White, Piece::Knight).count_ones() == 2 {
+                    return true;
+                }
+                if b_minors == 2 && self.get_pieces(Side::Black, Piece::Knight).count_ones() == 2 {
+                    return true;
+                }
+            }
         }
 
         if self.half_move_clock >= 100 {

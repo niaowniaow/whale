@@ -26,6 +26,48 @@ pub const CASTLING_CONSTANTS: [u8; SQUARES] = [
     13, 15, 15, 15, 12, 15, 15, 14,
 ];
 
+const fn generate_passed_pawn_masks() -> [[u64; SQUARES]; SIDES] {
+    let mut masks = [[0u64; SQUARES]; SIDES];
+    let mut sq = 0;
+    while sq < 64 {
+        let file = (sq % 8) as i32;
+        let rank = (sq / 8) as i32;
+
+        let mut w_mask = 0u64;
+        let mut r = 0;
+        while r < rank {
+            let mut f = file - 1;
+            while f <= file + 1 {
+                if f >= 0 && f <= 7 {
+                    w_mask |= 1u64 << (r * 8 + f);
+                }
+                f += 1;
+            }
+            r += 1;
+        }
+        masks[0][sq] = w_mask;
+
+        let mut b_mask = 0u64;
+        let mut r = rank + 1;
+        while r <= 7 {
+            let mut f = file - 1;
+            while f <= file + 1 {
+                if f >= 0 && f <= 7 {
+                    b_mask |= 1u64 << (r * 8 + f);
+                }
+                f += 1;
+            }
+            r += 1;
+        }
+        masks[1][sq] = b_mask;
+
+        sq += 1;
+    }
+    masks
+}
+
+pub const PASSED_PAWN_MASKS: [[u64; SQUARES]; SIDES] = generate_passed_pawn_masks();
+
 #[derive(Debug, Clone)]
 pub struct BoardState {
     pub pieces: PieceMap<Bitboard>,
@@ -85,6 +127,34 @@ impl BoardState {
     #[inline(always)]
     pub fn get_pieces(&self, side: Side, piece: Piece) -> Bitboard {
         self.pieces[piece] & self.occupancies[side]
+    }
+
+    #[inline(always)]
+    pub fn has_non_pawn_material(&self, side: Side) -> bool {
+        (self.occupancies[side]
+            ^ self.get_pieces(side, Piece::Pawn)
+            ^ self.get_pieces(side, Piece::King))
+        .is_not_empty()
+    }
+
+    #[inline(always)]
+    pub fn is_passed_pawn(&self, sq: usize, side: Side) -> bool {
+        let enemy_pawns = self.get_pieces(side.other(), Piece::Pawn).0;
+        (enemy_pawns & PASSED_PAWN_MASKS[side as usize][sq]) == 0
+    }
+
+    #[inline(always)]
+    pub fn get_passed_pawns(&self, side: Side) -> Bitboard {
+        let mut passed = Bitboard::EMPTY;
+        let mut pawns = self.get_pieces(side, Piece::Pawn);
+        while pawns.is_not_empty() {
+            let sq = pawns.get_lsb() as usize;
+            if self.is_passed_pawn(sq, side) {
+                passed.set_bit(sq);
+            }
+            pawns.clear_lsb();
+        }
+        passed
     }
 
     #[inline(always)]
@@ -230,7 +300,8 @@ impl BoardState {
                 if m.is_castle() || m.is_promotion() {
                     return false;
                 }
-                let attacks = crate::bitboard::lookups::get_bishop_attacks_from_table(m.source, occ);
+                let attacks =
+                    crate::bitboard::lookups::get_bishop_attacks_from_table(m.source, occ);
                 if (attacks.0 & (1u64 << tgt)) == 0 {
                     return false;
                 }

@@ -1,22 +1,24 @@
-//! SFNNv10 trainers (big + small) on the old bullet value API.
+//! SFNNv16 trainer (single big net) on the old bullet value API.
 //!
-//! Structural match with Stockfish SFNNv10 (commit 8e5392d):
-//! - inputs: big = HalfKAv2_hm (22_528) ++ FullThreats (79_856); small = HalfKA.
+//! Structural match with Stockfish SFNNv16:
+//! - inputs: HalfKAv2_hm (22_528) ++ FullThreats (59_808) ++ PP_3Wide (4_560).
 //! - feature emission is paired per element: one `f(white_idx, black_idx)`
-//!   call per piece / threat (the framework fills stm/nstm tensors from it).
+//!   call per piece / threat / pawn-pair (the framework fills stm/ntm tensors).
 //! - buckets: 8 material buckets `(popcount - 1) / 4`, selected in-graph.
-//! - transformer with pairwise products of accumulator halves.
-//! - fc_0 per bucket (1024/128 -> 16), pair [sqr, clip] on the first 15,
-//!   forwarded fc_0[15] output term, fc_1 (30 -> 32) + clip, fc_2 (32 -> 1).
+//! - transformer with pairwise products of accumulator halves (/512).
+//! - per-bucket fc_0 (1024 -> 32), pair [sqr, clip] (64 -> 32) on fc_1,
+//!   fc_2 (128 -> 1) plus the forwarded fc_0[30] - fc_0[31] term.
 //! - PSQT as a second output (no bias) with a small auxiliary loss.
 //!
 //! CONVERTER CONTRACT (GPU session): bullet checkpoints use float-friendly
 //! scales (see save_format below). A converter must map them to the exact
-//! SF .nnue layout (LEB128, split PSQ/threat columns, i8 threat weights,
-//! 8 arch stacks, hashes) and then verify with a roundtrip test comparing
-//! converted-net evals against `ValueTrainer::eval_raw_output` on test FENs.
+//! SF .nnue layout (version + file/transformer/arch hashes, LEB128 sections,
+//! raw threat then pair weights, split PSQ/threat/pair columns, i8 threat and
+//! pair weights, 8 arch stacks, no trailing bytes) and then verify with a
+//! roundtrip test comparing converted-net evals against
+//! `ValueTrainer::eval_raw_output` on test FENs.
 //! Known calibration points: transformer QA=255, linears QB=64, the fixed
-//! /512 product divisor, fwd scale 9600/8128, PSQT save scale 16 with aux
+//! /512 product divisor, fwd scale 9600/16384, PSQT save scale 16 with aux
 //! target `sigmoid(psqt / 600)`. Bullet save fails hard on out-of-range
 //! values, so per-weight clipping ranges must be set before a long run.
 
@@ -41,12 +43,10 @@ use bulletformat::ChessBoard;
 use crate::common::piece::Piece;
 use crate::common::side::Side;
 use crate::eval::nnue::v16::{
-    BIG_INPUT_DIMS, FC0_OUT, FC1_IN, FC1_OUT, N_BUCKETS, PSQ_DIMS,
-    SMALL_MAX_ACTIVE, SfnnPosition, for_each_threat, halfka_index, threat_index_for,
-    L1 as BIG_L1, MAX_ACTIVE as BIG_MAX_ACTIVE,
+    BIG_INPUT_DIMS, FC0_OUT, FC1_IN, FC1_OUT, L1 as BIG_L1, MAX_ACTIVE as BIG_MAX_ACTIVE,
+    N_BUCKETS, PSQ_DIMS, SfnnPosition, THREAT_DIMS, for_each_pair, for_each_threat, halfka_index,
+    pair_index_for, threat_index_for,
 };
-
-const SMALL_L1: usize = 128;
 
 const PSQT_AUX_WEIGHT: f32 = 0.1;
 const PSQT_NORM: f32 = 600.0;
@@ -96,9 +96,9 @@ fn chessboard_to_sfnn(pos: &ChessBoard) -> SfnnPosition {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-struct Sfnn10BigInput;
+struct Sfnn16BigInput;
 
-impl SparseInputType for Sfnn10BigInput {
+impl SparseInputType for Sfnn16BigInput {
     type RequiredDataType = ChessBoard;
 
     fn num_inputs(&self) -> usize {
@@ -144,64 +144,20 @@ impl SparseInputType for Sfnn10BigInput {
                 f(PSQ_DIMS + w, PSQ_DIMS + b);
             }
         });
+        // One paired call per pawn-pair.
+        for_each_pair(&sfnn, |color, from, to, paired| {
+            let w = pair_index_for(Side::White, color, from, to, paired, w_ksq);
+            let b = pair_index_for(Side::Black, color, from, to, paired, b_ksq);
+            f(PSQ_DIMS + THREAT_DIMS + w, PSQ_DIMS + THREAT_DIMS + b);
+        });
     }
 
     fn shorthand(&self) -> String {
-        "sfnn16-big-102384".to_string()
+        "sfnn16-big-86896".to_string()
     }
 
     fn description(&self) -> String {
-        "SFNNv10 big inputs 102384 (HalfKA 22528 + threats 79856)".to_string()
-    }
-}
-
-#[derive(Clone, Copy, Debug, Default)]
-struct Sfnn10SmallInput;
-
-impl SparseInputType for Sfnn10SmallInput {
-    type RequiredDataType = ChessBoard;
-
-    fn num_inputs(&self) -> usize {
-        PSQ_DIMS
-    }
-
-    fn max_active(&self) -> usize {
-        SMALL_MAX_ACTIVE
-    }
-
-    fn map_features<F: FnMut(usize, usize)>(&self, pos: &ChessBoard, mut f: F) {
-        let sfnn = chessboard_to_sfnn(pos);
-        let w_ksq = sfnn.king_square(Side::White);
-        let b_ksq = sfnn.king_square(Side::Black);
-        let mut bb = sfnn.white | sfnn.black;
-        while bb != 0 {
-            let s = bb.trailing_zeros() as usize;
-            bb &= bb - 1;
-            let side = if (sfnn.white >> s) & 1 == 1 {
-                Side::White
-            } else {
-                Side::Black
-            };
-            let pt = sfnn.mapping[s] as usize;
-            if pt > 5 {
-                continue;
-            }
-            let piece = Piece::ALL[pt];
-            if let (Some(w), Some(b)) = (
-                halfka_index(Side::White, side, piece, s, w_ksq),
-                halfka_index(Side::Black, side, piece, s, b_ksq),
-            ) {
-                f(w, b);
-            }
-        }
-    }
-
-    fn shorthand(&self) -> String {
-        "sfnn16-small-22528".to_string()
-    }
-
-    fn description(&self) -> String {
-        "SFNNv10 small inputs 22528 (HalfKA only)".to_string()
+        "SFNNv16 big inputs 86896 (HalfKA 22528 + threats 59808 + pairs 4560)".to_string()
     }
 }
 
@@ -231,17 +187,6 @@ fn run_with_mode(custom_dataset_path: Option<&str>, smoke_mode: bool) {
         &settings,
         &dataloader,
     );
-    println!(
-        "Starting bullet training loop (small net){}...",
-        if smoke_mode { " (smoke mode)" } else { "" }
-    );
-    let mut small = build_small_trainer();
-    let dataloader = build_dataloader(dataset_path);
-    small.run(
-        &build_schedule(SMALL_NET_ID, smoke_mode),
-        &settings,
-        &dataloader,
-    );
     println!("Bullet training completed successfully!");
     if smoke_mode {
         println!("Smoke training finished; keeping production NNUE unchanged.");
@@ -253,14 +198,12 @@ fn run_with_mode(custom_dataset_path: Option<&str>, smoke_mode: bool) {
 const DEFAULT_DATASET_PATH: &str = "data/v1_gen3_1m_d7.binpack";
 const OUTPUT_DIRECTORY: &str = "checkpoints";
 const BIG_KEEPER_PATH: &str = "resources/sfnn16-big-checkpoint.bin";
-const SMALL_KEEPER_PATH: &str = "resources/sfnn16-small-checkpoint.bin";
 const INITIAL_LR: f32 = 0.001;
 const FINAL_LR: f32 = 0.00001;
 const WDL_START: f32 = 0.2;
 const WDL_END: f32 = 0.7;
 const EVAL_SCALE: f32 = 400.0;
 const BIG_NET_ID: &str = "rudim-sfnn16-big";
-const SMALL_NET_ID: &str = "rudim-sfnn16-small";
 const BATCH_SIZE: usize = 16_384;
 const BATCHES_PER_SUPERBATCH: usize = 6104;
 const START_SUPERBATCH: usize = 1;
@@ -270,8 +213,7 @@ const THREADS: usize = 4;
 const BATCH_QUEUE_SIZE: usize = 4;
 const DATALOADER_PER_THREAD_BUFFERS: usize = 512;
 
-type BigTrainer = ValueTrainer<AdamWOptimiser, Sfnn10BigInput, SfnnBuckets>;
-type SmallTrainer = ValueTrainer<AdamWOptimiser, Sfnn10SmallInput, SfnnBuckets>;
+type BigTrainer = ValueTrainer<AdamWOptimiser, Sfnn16BigInput, SfnnBuckets>;
 
 fn sfnn_save_format(prefix: &str, psqt_scale: i32) -> Vec<SavedFormat> {
     vec![
@@ -310,7 +252,7 @@ fn build_big_trainer() -> BigTrainer {
         .dual_perspective()
         .output_buckets(SfnnBuckets)
         .optimiser(AdamW)
-        .inputs(Sfnn10BigInput)
+        .inputs(Sfnn16BigInput)
         .save_format(&sfnn_save_format("", 16))
         .build_custom(|builder, (stm_inputs, ntm_inputs, buckets), targets| {
             let l0 = builder.new_affine("l0", BIG_INPUT_DIMS, BIG_L1);
@@ -328,50 +270,13 @@ fn build_big_trainer() -> BigTrainer {
             let ntm_p = l0.forward(ntm_inputs).max(0.0).min(1.0).pairwise_mul();
             let trans = stm_p.concat(ntm_p);
 
-            // Per-bucket fc_0, pair [sqr, clip] on the first 15, forward [15].
+            // Per-bucket fc_0, pair [sqr, clip] over all 32 outputs.
             let fc0 = l1.forward(trans).select(buckets);
             let pair = fc0.abs_pow(2.0).crelu().concat(fc0.crelu());
             let fc1 = l2.forward(pair).crelu();
             let final_out = out.forward(fc1);
 
             // PSQT second output (stm - ntm over the selected bucket).
-            let psqt_stm = psqt_w.matmul(stm_inputs).select(buckets);
-            let psqt_ntm = psqt_w.matmul(ntm_inputs).select(buckets);
-            let psqt_out = (psqt_stm - psqt_ntm) / 2.0;
-
-            let main = final_out.sigmoid().squared_error(targets);
-            let aux = (psqt_out / PSQT_NORM).sigmoid().squared_error(targets);
-            (final_out, main + aux * PSQT_AUX_WEIGHT)
-        })
-}
-
-fn build_small_trainer() -> SmallTrainer {
-    ValueTrainerBuilder::default()
-        .dual_perspective()
-        .output_buckets(SfnnBuckets)
-        .optimiser(AdamW)
-        .inputs(Sfnn10SmallInput)
-        .save_format(&sfnn_save_format("s", 16))
-        .build_custom(|builder, (stm_inputs, ntm_inputs, buckets), targets| {
-            let l0 = builder.new_affine("sl0", PSQ_DIMS, SMALL_L1);
-            let l1 = builder.new_affine("sl1", SMALL_L1, N_BUCKETS * FC0_OUT);
-            let l2 = builder.new_affine("sl2", FC1_IN, FC1_OUT);
-            let out = builder.new_affine("sout", FC1_OUT, 1);
-            let psqt_w = builder.new_weights(
-                "spsqt",
-                bullet_lib::nn::Shape::new(N_BUCKETS, PSQ_DIMS),
-                bullet_lib::nn::InitSettings::Zeroed,
-            );
-
-            let stm_p = l0.forward(stm_inputs).max(0.0).min(1.0).pairwise_mul();
-            let ntm_p = l0.forward(ntm_inputs).max(0.0).min(1.0).pairwise_mul();
-            let trans = stm_p.concat(ntm_p);
-
-            let fc0 = l1.forward(trans).select(buckets);
-            let pair = fc0.abs_pow(2.0).crelu().concat(fc0.crelu());
-            let fc1 = l2.forward(pair).crelu();
-            let final_out = out.forward(fc1);
-
             let psqt_stm = psqt_w.matmul(stm_inputs).select(buckets);
             let psqt_ntm = psqt_w.matmul(ntm_inputs).select(buckets);
             let psqt_out = (psqt_stm - psqt_ntm) / 2.0;
@@ -453,7 +358,12 @@ fn sf_filter(_: &TrainingDataEntry) -> bool {
 }
 
 fn build_dataloader(dataset_path: &str) -> SfBinpackLoader<fn(&TrainingDataEntry) -> bool> {
-    SfBinpackLoader::new(dataset_path, DATALOADER_PER_THREAD_BUFFERS, THREADS, sf_filter)
+    SfBinpackLoader::new(
+        dataset_path,
+        DATALOADER_PER_THREAD_BUFFERS,
+        THREADS,
+        sf_filter,
+    )
 }
 
 fn copy_trained_weights() {
@@ -463,14 +373,5 @@ fn copy_trained_weights() {
     println!("Copying big weights from {} to {}", big_cp, BIG_KEEPER_PATH);
     if let Err(e) = std::fs::copy(&big_cp, BIG_KEEPER_PATH) {
         eprintln!("Error copying big weights: {}", e);
-    }
-    let small_cp = format!("{}/{}-{}", OUTPUT_DIRECTORY, SMALL_NET_ID, END_SUPERBATCH);
-    let small_cp = format!("{}/quantised.bin", small_cp);
-    println!(
-        "Copying small weights from {} to {}",
-        small_cp, SMALL_KEEPER_PATH
-    );
-    if let Err(e) = std::fs::copy(&small_cp, SMALL_KEEPER_PATH) {
-        eprintln!("Error copying small weights: {}", e);
     }
 }

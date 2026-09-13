@@ -49,7 +49,7 @@ pub fn search(
     let mut move_picker = if !in_check {
         MovePicker::new_qsearch(ply as usize)
     } else {
-        MovePicker::new(None, None, None, None, ply as usize, None)
+        MovePicker::new(None, None, None, ply as usize, None)
     };
 
     let mut has_legal_moves = false;

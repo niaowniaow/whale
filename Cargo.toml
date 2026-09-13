@@ -6,6 +6,8 @@ edition = "2024"
 [dependencies]
 bulletformat = "1.8.0"
 bullet_lib = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82", package = "bullet_lib", optional = true }
+shakmaty = "0.30"
+shakmaty-syzygy = "0.28"
 
 
 [features]

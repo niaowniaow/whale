@@ -40,6 +40,15 @@ impl UciClient {
                 Err(e) => crate::uci::cli::write_line(&format!("info string EvalFile error: {e}")),
             }
         }
+
+        if name.eq_ignore_ascii_case("SyzygyPath") {
+            match crate::syzygy::set_path(&value) {
+                Ok(n) => {
+                    crate::uci::cli::write_line(&format!("info string Syzygy tables loaded: {n}"))
+                }
+                Err(e) => crate::uci::cli::write_line(&format!("info string Syzygy error: {e}")),
+            }
+        }
     }
 }
 

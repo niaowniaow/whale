@@ -45,6 +45,11 @@ impl UciClient {
 
     fn run(&mut self) {
         self.write_id();
+        // Pick up a local SFNNv16 net (e.g. v16/nn-*.nnue) so real games use
+        // it without requiring an explicit `setoption EvalFile`.
+        if crate::eval::nnue::v16::try_load_default() {
+            cli::write_line("info string SFNNv16 default network loaded");
+        }
 
         let stdin = std::io::stdin();
         loop {
@@ -85,6 +90,7 @@ impl UciClient {
         cli::write_line("option name Hash type spin default 64 min 1 max 2048");
         cli::write_line("option name EvalFile type string default <empty>");
         cli::write_line("option name EvalFileSmall type string default <empty>");
+        cli::write_line("option name SyzygyPath type string default <empty>");
 
         cli::write_line("uciok");
     }

@@ -96,13 +96,10 @@ impl BoardState {
         self.pending_adds = 0;
         self.pending_removes = 0;
 
-        // SFNNv10 incremental HalfKA + PSQT for the target ply.
         if sfnn16::maintenance_active() {
             let pos = SfnnPosition::from_board(self);
             let accs = &mut self.history.sfnn16[target_idx];
             sfnn16::flush_pending(&pos, accs, &mut self.sfnn16_pending);
-        } else {
-            self.sfnn16_pending.clear();
         }
     }
 

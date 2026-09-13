@@ -1,6 +1,5 @@
 use crate::board::state::BoardState;
 use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
-use crate::common::piece::Piece;
 
 // TODO: tune conditions and reduction
 
@@ -15,10 +14,7 @@ pub fn can_prune(
     beta: i16,
 ) -> bool {
     let side = board_state.side_to_move;
-    let has_non_pawn_material = (board_state.occupancies[side]
-        ^ board_state.get_pieces(side, Piece::Pawn)
-        ^ board_state.get_pieces(side, Piece::King))
-    .is_not_empty();
+    let has_non_pawn_material = board_state.has_non_pawn_material(side);
 
     let mate_bound = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
     allow_null_move

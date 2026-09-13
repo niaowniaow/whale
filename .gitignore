@@ -38,3 +38,8 @@ checksum.md5
 *.pgn
 /nnue-pytorch/
 /v16/
+
+# Syzygy tablebases (large, download separately)
+/tables/
+*.rtbw
+*.rtbz

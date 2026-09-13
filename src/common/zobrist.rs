@@ -1,4 +1,5 @@
 use crate::board::state::BoardState;
+use crate::common::piece::Piece;
 use crate::common::side::Side;
 use crate::common::square::Square;
 
@@ -92,16 +93,36 @@ mod tests {
         let hash = get_board_hash(&board);
         assert_eq!(hash, 17316932686648747093);
     }
+
+    #[test]
+    fn test_pawn_hash_matches_starting_fen() {
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let mut expected = 0;
+        for square in 0..64 {
+            let piece = board.get_piece_on(Square::from(square));
+            if piece == 0 || piece == 6 {
+                expected ^= zobrist_table()[piece as usize][square];
+            }
+        }
+        assert_eq!(get_pawn_hash(&board), expected);
+    }
 }
 
 pub fn get_pawn_hash(board_state: &BoardState) -> u64 {
     let mut current_hash = 0;
-    for square in 0..64 {
-        let piece = board_state.get_piece_on(crate::common::square::Square::from(square));
-        // WhitePawn = 0, BlackPawn = 6 in ZOBRIST_TABLE
-        if piece == 0 || piece == 6 {
-            current_hash ^= zobrist_table()[piece as usize][square];
-        }
+    let mut white_pawns =
+        (board_state.pieces[Piece::Pawn] & board_state.occupancies[Side::White]).0;
+    while white_pawns != 0 {
+        let sq = white_pawns.trailing_zeros() as usize;
+        current_hash ^= zobrist_table()[0][sq];
+        white_pawns &= white_pawns - 1;
+    }
+    let mut black_pawns =
+        (board_state.pieces[Piece::Pawn] & board_state.occupancies[Side::Black]).0;
+    while black_pawns != 0 {
+        let sq = black_pawns.trailing_zeros() as usize;
+        current_hash ^= zobrist_table()[6][sq];
+        black_pawns &= black_pawns - 1;
     }
     current_hash
 }

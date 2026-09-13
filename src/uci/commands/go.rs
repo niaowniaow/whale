@@ -55,10 +55,20 @@ impl UciClient {
         let cancel_for_search = Arc::clone(&cancel_token);
         let search_state = Arc::clone(&self.search_state);
 
+        let is_movetime = movetime != -1;
+        let opt_time = if is_movetime {
+            (allotted_time * 9) / 10
+        } else {
+            allotted_time
+        };
+        let max_time = if is_movetime {
+            (allotted_time as u64).saturating_sub(10)
+        } else {
+            (allotted_time as f32 * 1.5) as u64
+        };
+
         if allotted_time != -1 {
             let cancel_for_timer = std::sync::Arc::clone(&cancel_token);
-            // max_time is 150% of opt_time for stability extensions
-            let max_time = (allotted_time as f32 * 1.5) as u64;
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(max_time));
                 cancel_for_timer.store(true, std::sync::atomic::Ordering::Relaxed);
@@ -77,7 +87,7 @@ impl UciClient {
             let mut board = board_snapshot;
             let mut debug_mode = debug.load(Ordering::Relaxed);
             let mut search_state_guard = search_state.lock().unwrap();
-            search_state_guard.opt_time = allotted_time;
+            search_state_guard.opt_time = opt_time;
             let best_move = board.find_best_move(
                 search_depth,
                 &cancel_for_search,

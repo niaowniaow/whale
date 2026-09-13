@@ -1,6 +1,5 @@
 use crate::board::state::BoardState;
 use crate::common::constants;
-use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::common::side::Side;
@@ -24,16 +23,16 @@ pub fn search(
     search_state: &mut SearchState,
 ) -> i16 {
     let mut ctx = SearchContext {
-        excluded_move: None,
         allow_null_move: true,
         on_pv_path: true,
         previous_pv,
+        excluded_move: None,
         pv_table,
         cancellation_token,
         search_state,
     };
 
-    search_internal(board_state, depth, 0, alpha, beta, None, None, &mut ctx)
+    search_internal(board_state, depth, 0, alpha, beta, None, &mut ctx)
 }
 
 fn search_internal(
@@ -43,7 +42,6 @@ fn search_internal(
     mut alpha: i16,
     beta: i16,
     previous_move: Option<Move>,
-    previous_move_2: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
     if ctx.cancellation_token.load(Ordering::Relaxed) {
@@ -58,9 +56,17 @@ fn search_internal(
     let is_pv_node = beta > 1 + alpha;
     let in_check = board_state.is_in_check(board_state.side_to_move);
 
-    if board_state.is_draw_in_search(ply as u16) {
+    if ply > 0 && board_state.is_draw_in_search(ply as u16) {
         ctx.search_state.nodes += 1;
         return 0;
+    }
+
+    // Syzygy tablebase bounds: never walk out of a won ending (or into a
+    // lost one) once few enough pieces remain.
+    if ply > 0 {
+        if let Some(tb) = crate::syzygy::probe_bound(board_state, ply) {
+            return tb;
+        }
     }
 
     let mated = -constants::MAX_CENTIPAWN_EVAL + ply as i16;
@@ -76,7 +82,7 @@ fn search_internal(
         return alpha;
     }
 
-    let mut depth = if in_check {
+    let depth = if in_check {
         (depth + 1).min(constants::MAX_PLY as u8)
     } else {
         depth
@@ -96,9 +102,10 @@ fn search_internal(
     let tt_entry = ctx.search_state.tt.probe(board_state.board_hash);
     let mut tt_best = None;
     if let Some(entry) = tt_entry
-        && entry.best_move != Move::NO_MOVE {
-            tt_best = Some(entry.best_move);
-        }
+        && entry.best_move != Move::NO_MOVE
+    {
+        tt_best = Some(entry.best_move);
+    }
 
     let (has_value, tt_score, _) =
         ctx.search_state
@@ -110,6 +117,8 @@ fn search_internal(
         return tt_score;
     }
 
+    // Singular extension: if the TT move looks clearly best, verify by
+    // searching without it and extend when it stands alone.
     let mut singular_extension = 0;
     if !in_check
         && ctx.excluded_move.is_none()
@@ -144,7 +153,6 @@ fn search_internal(
                 singular_beta - 1,
                 singular_beta,
                 previous_move,
-                previous_move_2,
                 &mut se_ctx,
             );
 
@@ -158,16 +166,6 @@ fn search_internal(
                 return singular_beta;
             }
         }
-    }
-
-    if !is_pv_node
-        && ply > 0
-        && !in_check
-        && depth >= 5
-        && tt_best.is_none()
-        && ctx.excluded_move.is_none()
-    {
-        depth -= 1;
     }
 
     if depth == 0 {
@@ -187,7 +185,7 @@ fn search_internal(
     // TODO: tune conditions
     let mut static_eval = 0;
     let mut raw_static_eval = 0;
-    let has_static_eval = !in_check;
+    let has_static_eval = !is_pv_node && !in_check;
 
     let mate_bound = constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16;
     let beta_is_mate = beta.abs() >= mate_bound;
@@ -204,87 +202,14 @@ fn search_internal(
 
         let pawn_corr = ctx.search_state.pawn_correction_history[stm][pawn_idx];
         let non_pawn_corr = ctx.search_state.non_pawn_correction_history[stm][non_pawn_idx];
-        let correction = (pawn_corr + non_pawn_corr) / 256;
+        let correction = ((pawn_corr + non_pawn_corr) / 256).clamp(-150, 150);
 
         static_eval =
             (static_eval as i32 + correction).clamp(-mate_bound as i32, mate_bound as i32) as i16;
 
-        if !is_pv_node && depth <= 6 {
-            let margin = ctx.search_state.params.rfp_margin_mult * depth as i16;
-            if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
-                return static_eval;
-            }
-        }
-    }
-
-    ctx.search_state.eval_stack[ply as usize] = static_eval;
-    let improving =
-        has_static_eval && ply >= 2 && static_eval > ctx.search_state.eval_stack[(ply - 2) as usize];
-
-    // PRUNE: ProbCut
-    if !is_pv_node && !in_check && depth >= 5 && !beta_is_mate {
-        let prob_beta = beta + ctx.search_state.params.probcut_margin;
-
-        let mut probcut_success = false;
-        if let Some(entry) = &tt_entry {
-            let tt_score = tt::TranspositionTable::retrieve_score(entry.score, ply as i32);
-            if entry.depth >= depth - 3
-                && entry.entry_type != tt::TranspositionEntryType::Alpha
-                && tt_score >= prob_beta
-            {
-                probcut_success = true;
-            }
-        }
-
-        if probcut_success {
-            return prob_beta;
-        }
-
-        let mut prob_captures = MoveList::new();
-        let mut prob_quiets = MoveList::new();
-        let mut prob_picker = MovePicker::new(None, tt_best, previous_move, previous_move_2, ply as usize, None);
-
-        while let Some(move_obj) = prob_picker.next(
-            board_state,
-            &ctx.search_state.move_ordering,
-            &mut prob_captures,
-            &mut prob_quiets,
-        ) {
-            if !move_obj.is_capture() && !move_obj.is_promotion() {
-                continue;
-            }
-
-            board_state.make_move(move_obj);
-            if board_state.is_in_check(board_state.side_to_move.other()) {
-                board_state.unmake_move(move_obj);
-                continue;
-            }
-
-            let mut prob_ctx = SearchContext {
-                excluded_move: None,
-                allow_null_move: false,
-                on_pv_path: false,
-                previous_pv: ctx.previous_pv,
-                pv_table: &mut *ctx.pv_table,
-                cancellation_token: ctx.cancellation_token,
-                search_state: ctx.search_state,
-            };
-
-            let score = -search_internal(
-                board_state,
-                depth.saturating_sub(4).max(1),
-                ply + 1,
-                -prob_beta,
-                -prob_beta + 1,
-                Some(move_obj),
-                previous_move,
-                &mut prob_ctx,
-            );
-            board_state.unmake_move(move_obj);
-
-            if score >= prob_beta {
-                return prob_beta;
-            }
+        let margin = ctx.search_state.params.rfp_margin_mult * depth as i16;
+        if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
+            return static_eval;
         }
     }
 
@@ -308,12 +233,11 @@ fn search_internal(
             -beta,
             -beta + 1,
             None,
-            None,
             &mut SearchContext {
-                excluded_move: None,
                 allow_null_move: false,
                 on_pv_path: false,
                 previous_pv: ctx.previous_pv,
+                excluded_move: None,
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -352,7 +276,6 @@ fn search_internal(
         pv_move,
         tt_best,
         previous_move,
-        previous_move_2,
         ply as usize,
         ctx.excluded_move,
     );
@@ -360,6 +283,7 @@ fn search_internal(
     let mut has_legal_moves = false;
     let mut tried_quiets = [Move::NO_MOVE; 64];
     let mut tried_quiets_count = 0;
+    let has_non_pawn_material = board_state.has_non_pawn_material(board_state.side_to_move);
 
     while let Some(move_obj) = move_picker.next(
         board_state,
@@ -371,12 +295,6 @@ fn search_internal(
             break;
         }
 
-        let mut extension = if Some(move_obj) == tt_best {
-            singular_extension
-        } else {
-            0
-        };
-
         let cap_or_promo = move_obj.is_capture() || move_obj.is_promotion();
         let mut history_score = 0;
         if !cap_or_promo {
@@ -384,7 +302,6 @@ fn search_internal(
                 board_state,
                 move_obj,
                 previous_move,
-                previous_move_2,
             );
         }
 
@@ -393,10 +310,12 @@ fn search_internal(
         if !is_pv_node && !in_check && depth <= 6 && has_legal_moves {
             let see_threshold = if cap_or_promo {
                 -100 * depth as i16
-            } else {
+            } else if has_non_pawn_material {
                 -35 * (depth as i16) * (depth as i16)
+            } else {
+                i16::MIN
             };
-            if board_state.see(move_obj) < see_threshold {
+            if see_threshold > i16::MIN && board_state.see(move_obj) < see_threshold {
                 continue;
             }
         }
@@ -408,36 +327,34 @@ fn search_internal(
         }
 
         has_legal_moves = true;
-        ctx.search_state.move_stack[ply as usize] = move_obj;
 
         let alpha_is_mate = alpha.abs() >= mate_bound;
 
         let mut gives_check = false;
         let mut gives_check_computed = false;
 
-        if extension > 0 {
-            gives_check = board_state.is_in_check(board_state.side_to_move);
-            gives_check_computed = true;
-            if gives_check && extension < 2 {
-                extension += 1;
-            }
+        let mut extension = if Some(move_obj) == tt_best {
+            singular_extension
         } else {
-            let prev_side = board_state.side_to_move.other();
-            let piece = board_state.get_piece_on_side(move_obj.target, prev_side);
-            if piece == Piece::Pawn as usize {
-                let target_rank = (move_obj.target as usize) / 8;
-                if (prev_side == Side::White && target_rank == 1)
-                    || (prev_side == Side::Black && target_rank == 6)
-                {
-                    extension = 1;
-                }
-            } else if let Some(prev) = previous_move {
-                if prev.is_capture() && move_obj.is_capture() && move_obj.target == prev.target {
-                    extension = 1;
-                }
+            0
+        };
+
+        let prev_side = board_state.side_to_move.other();
+        let piece = board_state.get_piece_on_side(move_obj.target, prev_side);
+        if piece == Piece::Pawn as usize {
+            let target_rank = (move_obj.target as usize) / 8;
+            if (prev_side == Side::White && target_rank == 1)
+                || (prev_side == Side::Black && target_rank == 6)
+            {
+                extension = extension.max(1);
+            }
+        } else if let Some(prev) = previous_move {
+            // Recapture extension: extend tactical exchanges on the same square.
+            if prev.is_capture() && move_obj.is_capture() && move_obj.target == prev.target {
+                extension = extension.max(1);
             }
         }
-        let depth = (depth + extension).min(constants::MAX_PLY as u8 - 1);
+        let depth = depth + extension;
 
         // PRUNE: Futility Pruning
         if number_of_legal_moves > 0
@@ -445,6 +362,7 @@ fn search_internal(
             && depth < 3
             && !cap_or_promo
             && !alpha_is_mate
+            && has_non_pawn_material
             && static_eval
                 .saturating_add(ctx.search_state.params.futility_margin_mult * depth as i16)
                 <= alpha
@@ -453,18 +371,17 @@ fn search_internal(
             gives_check_computed = true;
             if !gives_check {
                 board_state.unmake_move(move_obj);
-                ctx.search_state.move_stack[ply as usize] = Move::NO_MOVE;
                 continue;
             }
         }
 
         // PRUNE: Late Move Pruning
         // TODO: tune base and depth limit
-        if !is_pv_node
-            && has_static_eval
+        if has_static_eval
             && depth < 4
             && !cap_or_promo
             && !alpha_is_mate
+            && has_non_pawn_material
             && number_of_legal_moves >= 3 + (depth as usize * depth as usize)
         {
             if !gives_check_computed {
@@ -473,7 +390,6 @@ fn search_internal(
             }
             if !gives_check {
                 board_state.unmake_move(move_obj);
-                ctx.search_state.move_stack[ply as usize] = Move::NO_MOVE;
                 continue;
             }
         }
@@ -496,10 +412,10 @@ fn search_internal(
             && !is_pv_node
             && !in_check
             && !cap_or_promo
+            && has_non_pawn_material
             && history_score < -4000 * depth as i32
         {
             board_state.unmake_move(move_obj);
-            ctx.search_state.move_stack[ply as usize] = Move::NO_MOVE;
             continue;
         }
 
@@ -508,61 +424,46 @@ fn search_internal(
 
         // REDUCTION: Late Move Reductions
         if needs_lmr {
-            let reduction = lmr::get_reduction(
+            let mut reduction = lmr::get_reduction(
                 depth,
                 number_of_legal_moves,
                 is_pv_node,
-                improving,
-                history_score,
+                &ctx.search_state.params,
             );
-            if reduction > 0 {
-                score = -search_internal(
-                    board_state,
-                    depth.saturating_sub(1 + reduction),
-                    ply + 1,
-                    -alpha - 1,
-                    -alpha,
-                    Some(move_obj),
-                    previous_move,
-                    &mut SearchContext {
-                        excluded_move: None,
-                        allow_null_move: true,
-                        on_pv_path: false,
-                        previous_pv: ctx.previous_pv,
-                        pv_table: &mut *ctx.pv_table,
-                        cancellation_token: ctx.cancellation_token,
-                        search_state: ctx.search_state,
-                    },
-                );
-
-                if score > alpha {
-                    let mut child_ctx = SearchContext {
-                        excluded_move: None,
-                        allow_null_move: true,
-                        on_pv_path: next_on_pv,
-                        previous_pv: ctx.previous_pv,
-                        pv_table: &mut *ctx.pv_table,
-                        cancellation_token: ctx.cancellation_token,
-                        search_state: ctx.search_state,
-                    };
-                    score = search_deeper(
-                        board_state,
-                        depth,
-                        ply,
-                        alpha,
-                        beta,
-                        found_pv,
-                        Some(move_obj),
-                        previous_move,
-                        &mut child_ctx,
-                    );
-                }
-            } else {
-                let mut child_ctx = SearchContext {
+            if gives_check {
+                reduction = reduction.saturating_sub(1);
+            }
+            if !has_non_pawn_material {
+                reduction = reduction.saturating_sub(1);
+            }
+            if !cap_or_promo {
+                let history_bonus = history_score / 8192;
+                reduction = (reduction as i32 - history_bonus).clamp(0, depth as i32 - 1) as u8;
+            }
+            score = -search_internal(
+                board_state,
+                depth.saturating_sub(1 + reduction),
+                ply + 1,
+                -alpha - 1,
+                -alpha,
+                Some(move_obj),
+                &mut SearchContext {
+                    allow_null_move: true,
+                    on_pv_path: false,
+                    previous_pv: ctx.previous_pv,
                     excluded_move: None,
+                    pv_table: &mut *ctx.pv_table,
+                    cancellation_token: ctx.cancellation_token,
+                    search_state: ctx.search_state,
+                },
+            );
+
+            if score > alpha {
+                let mut child_ctx = SearchContext {
                     allow_null_move: true,
                     on_pv_path: next_on_pv,
                     previous_pv: ctx.previous_pv,
+                    excluded_move: None,
                     pv_table: &mut *ctx.pv_table,
                     cancellation_token: ctx.cancellation_token,
                     search_state: ctx.search_state,
@@ -575,16 +476,15 @@ fn search_internal(
                     beta,
                     found_pv,
                     Some(move_obj),
-                    previous_move,
                     &mut child_ctx,
                 );
             }
         } else {
             let mut child_ctx = SearchContext {
-                excluded_move: None,
                 allow_null_move: true,
                 on_pv_path: next_on_pv,
                 previous_pv: ctx.previous_pv,
+                excluded_move: None,
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -597,7 +497,6 @@ fn search_internal(
                 beta,
                 found_pv,
                 Some(move_obj),
-                previous_move,
                 &mut child_ctx,
             );
         }
@@ -605,7 +504,6 @@ fn search_internal(
         number_of_legal_moves += 1;
 
         board_state.unmake_move(move_obj);
-        ctx.search_state.move_stack[ply as usize] = Move::NO_MOVE;
 
         if ctx.cancellation_token.load(Ordering::Relaxed) {
             return 0;
@@ -620,9 +518,6 @@ fn search_internal(
                 found_pv = true;
 
                 ctx.pv_table.update(ply as usize, move_obj);
-            } else if ply == 0 {
-                best_move = move_obj;
-                ctx.pv_table.update(0, move_obj);
             }
         }
 
@@ -634,7 +529,6 @@ fn search_internal(
                 board_state,
                 depth,
                 previous_move,
-                previous_move_2,
                 ctx.search_state,
                 &tried_quiets[..tried_quiets_count],
                 ctx.excluded_move,
@@ -667,9 +561,10 @@ fn search_internal(
 
         if has_static_eval
             && !in_check
+            && entry_type == TranspositionEntryType::Exact
             && best_score.abs() < (constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16)
         {
-            let diff = best_score as i32 - raw_static_eval as i32;
+            let diff = (best_score as i32 - raw_static_eval as i32).clamp(-512, 512);
             let weight = std::cmp::min(
                 (1 + depth as i32) * ctx.search_state.params.history_weight_mult,
                 ctx.search_state.params.history_weight_max,
@@ -682,11 +577,11 @@ fn search_internal(
             let non_pawn_idx = (non_pawn_hash & 0x3FFF) as usize;
 
             let pawn_corr = &mut ctx.search_state.pawn_correction_history[stm][pawn_idx];
-            *pawn_corr = (*pawn_corr * (256 - weight) + diff * weight * 256) / 256;
+            *pawn_corr = (*pawn_corr * (256 - weight) + (diff / 2) * weight * 256) / 256;
 
             let non_pawn_corr =
                 &mut ctx.search_state.non_pawn_correction_history[stm][non_pawn_idx];
-            *non_pawn_corr = (*non_pawn_corr * (256 - weight) + diff * weight * 256) / 256;
+            *non_pawn_corr = (*non_pawn_corr * (256 - weight) + (diff / 2) * weight * 256) / 256;
         }
 
         if entry_type == TranspositionEntryType::Exact
@@ -699,7 +594,6 @@ fn search_internal(
                 best_move,
                 depth,
                 previous_move,
-                previous_move_2,
                 &tried_quiets[..tried_quiets_count],
             );
         }
@@ -717,20 +611,10 @@ fn search_deeper(
     beta: i16,
     found_pv: bool,
     previous_move: Option<Move>,
-    previous_move_2: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
     if found_pv {
-        principal_variation_search(
-            board_state,
-            depth,
-            ply,
-            alpha,
-            beta,
-            previous_move,
-            previous_move_2,
-            ctx,
-        )
+        principal_variation_search(board_state, depth, ply, alpha, beta, previous_move, ctx)
     } else {
         -search_internal(
             board_state,
@@ -739,12 +623,11 @@ fn search_deeper(
             -beta,
             -alpha,
             previous_move,
-            previous_move_2,
             &mut SearchContext {
-                excluded_move: None,
                 allow_null_move: ctx.allow_null_move,
                 on_pv_path: ctx.on_pv_path,
                 previous_pv: ctx.previous_pv,
+                excluded_move: None,
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -760,7 +643,6 @@ fn principal_variation_search(
     alpha: i16,
     beta: i16,
     previous_move: Option<Move>,
-    previous_move_2: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
     let mut score = -search_internal(
@@ -770,12 +652,11 @@ fn principal_variation_search(
         -alpha - 1,
         -alpha,
         previous_move,
-        previous_move_2,
         &mut SearchContext {
-            excluded_move: None,
             allow_null_move: ctx.allow_null_move,
             on_pv_path: ctx.on_pv_path,
             previous_pv: ctx.previous_pv,
+            excluded_move: None,
             pv_table: &mut *ctx.pv_table,
             cancellation_token: ctx.cancellation_token,
             search_state: ctx.search_state,
@@ -789,12 +670,11 @@ fn principal_variation_search(
             -beta,
             -alpha,
             previous_move,
-            previous_move_2,
             &mut SearchContext {
-                excluded_move: None,
                 allow_null_move: ctx.allow_null_move,
                 on_pv_path: ctx.on_pv_path,
                 previous_pv: ctx.previous_pv,
+                excluded_move: None,
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -810,7 +690,6 @@ fn update_history_stats(
     best_move: Move,
     depth: u8,
     previous_move: Option<Move>,
-    previous_move_2: Option<Move>,
     tried_quiets: &[Move],
 ) {
     let bonus = (300 * depth as i32) - 250;
@@ -822,14 +701,7 @@ fn update_history_stats(
     search_state
         .move_ordering
         .update_quiet_history(side, best_move, bonus);
-    update_continuation(
-        search_state,
-        board_state,
-        previous_move,
-        previous_move_2,
-        best_move,
-        bonus,
-    );
+    update_continuation(search_state, board_state, previous_move, best_move, bonus);
 
     for &quiet_move in tried_quiets {
         if quiet_move != best_move {
@@ -845,7 +717,6 @@ fn update_history_stats(
                 search_state,
                 board_state,
                 previous_move,
-                previous_move_2,
                 quiet_move,
                 penalty,
             );
@@ -857,7 +728,6 @@ fn update_continuation(
     search_state: &mut SearchState,
     board_state: &BoardState,
     previous_move: Option<Move>,
-    previous_move_2: Option<Move>,
     move_obj: Move,
     bonus: i32,
 ) {
@@ -867,17 +737,6 @@ fn update_continuation(
             search_state.move_ordering.update_continuation_history(
                 previous_piece,
                 previous_move.target,
-                move_obj,
-                bonus,
-            );
-        }
-    }
-    if let Some(previous_move_2) = previous_move_2 {
-        let piece_idx = board_state.get_piece_on_side(previous_move_2.target, board_state.side_to_move);
-        if piece_idx != Piece::None as usize {
-            search_state.move_ordering.update_continuation_history_2(
-                Piece::from(piece_idx),
-                previous_move_2.target,
                 move_obj,
                 bonus,
             );
@@ -899,7 +758,6 @@ fn beta_cutoff(
     board_state: &BoardState,
     depth: u8,
     previous_move: Option<Move>,
-    previous_move_2: Option<Move>,
     search_state: &mut SearchState,
     tried_quiets: &[Move],
     excluded_move: Option<Move>,
@@ -923,7 +781,6 @@ fn beta_cutoff(
             move_obj,
             depth,
             previous_move,
-            previous_move_2,
             tried_quiets,
         );
 
@@ -943,7 +800,9 @@ fn beta_cutoff(
         let piece = board_state.piece_mapping[move_obj.source as usize];
         if piece != Piece::None {
             let bonus = (300 * depth as i32) - 250;
-            search_state.move_ordering.update_capture_history(piece as usize, move_obj, bonus);
+            search_state
+                .move_ordering
+                .update_capture_history(piece as usize, move_obj, bonus);
         }
     }
 

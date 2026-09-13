@@ -13,13 +13,81 @@ pub const INPUT_SIZE: usize = 768;
 
 pub const SCALE: i32 = 400;
 
+// Hash-keyed cache for the raw network score (before the fifty-move damp,
+// which is not part of the board hash). The score is a pure function of the
+// position, so caching it is exact. Thread-local: each search thread gets
+// its own table, no locking on the hot path.
+const EVAL_CACHE_BITS: u32 = 16;
+const EVAL_CACHE_SIZE: usize = 1 << EVAL_CACHE_BITS;
+const EVAL_CACHE_MASK: u64 = (EVAL_CACHE_SIZE as u64) - 1;
+
+#[derive(Clone, Copy)]
+struct EvalCacheEntry {
+    hash: u64,
+    score: i16,
+}
+
+std::thread_local! {
+    static EVAL_CACHE: std::cell::RefCell<Box<[EvalCacheEntry]>> = std::cell::RefCell::new(
+        vec![
+            EvalCacheEntry {
+                hash: u64::MAX,
+                score: 0
+            };
+            EVAL_CACHE_SIZE
+        ]
+        .into_boxed_slice(),
+    );
+}
+
+#[inline(always)]
+fn probe_eval_cache(hash: u64) -> Option<i16> {
+    EVAL_CACHE.with(|cache| {
+        let entry = cache.borrow()[(hash & EVAL_CACHE_MASK) as usize];
+        (entry.hash == hash).then_some(entry.score)
+    })
+}
+
+#[inline(always)]
+fn store_eval_cache(hash: u64, score: i16) {
+    EVAL_CACHE.with(|cache| {
+        cache.borrow_mut()[(hash & EVAL_CACHE_MASK) as usize] = EvalCacheEntry { hash, score };
+    });
+}
+
+/// Drop all cached raw scores. Called when the active network changes so a
+/// stale score from the previous net can never be served.
+pub fn clear_eval_cache() {
+    EVAL_CACHE.with(|cache| {
+        cache.borrow_mut().fill(EvalCacheEntry {
+            hash: u64::MAX,
+            score: 0,
+        });
+    });
+}
+
 #[inline(always)]
 pub fn evaluate(board: &mut BoardState) -> i16 {
-    if let Some(score) = v16::evaluate_board(board) {
-        return score;
+    let mut score = if let Some(hit) = probe_eval_cache(board.board_hash) {
+        hit
+    } else {
+        let raw = if let Some(score) = v16::evaluate_board(board) {
+            score
+        } else {
+            let network = Network::get_embedded();
+            evaluate_internal(board, network)
+        };
+        store_eval_cache(board.board_hash, raw);
+        raw
+    };
+
+    // Rudim-specific outer scaling (not Stockfish): damp the score linearly
+    // with the fifty-move counter, like Stockfish's rule50 term (/199).
+    if board.half_move_clock > 0 {
+        score -= (score as i32 * board.half_move_clock as i32 / 199) as i16;
     }
-    let network = Network::get_embedded();
-    evaluate_internal(board, network)
+
+    score
 }
 
 #[inline(always)]
@@ -59,7 +127,6 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
         output += screlu * i64::from(weight);
     }
 
-    // QA=255, QB=64, SCALE=400
     output /= 255;
     output += i64::from(network.output_bias);
     output *= i64::from(SCALE);

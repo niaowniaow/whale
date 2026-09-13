@@ -1,21 +1,22 @@
-// Exact port of Stockfish SFNNv10 (Stockfish 18, commit 8e5392d).
+// Stockfish SFNNv16 inference path (HalfKAv2_hm + FullThreats + PP_3Wide).
 //
-// Feature sets: HalfKAv2_hm (22_528) + FullThreats (79_856).
-// Dual nets: big (L1 1024, with threats) + small (L1 128, HalfKA only),
-// L2 = 15, L3 = 32, 8 material buckets shared by one transformer.
+// Feature sets: HalfKAv2_hm (22_528) + FullThreats (59_808) + PP_3Wide (4_560).
+// Big net: L1 1024, FC0 32, FC1 32, 8 material buckets sharing one transformer.
 // Transformer uses pairwise products (/512), per-feature PSQT (8 buckets),
-// paired Sqr/Clip activations on fc_0, single Clip on fc_1, and a forwarded
-// fc_0[15] output term. All integer math follows the scalar paths of the
-// Stockfish sources, so real SFNNv10 .nnue files load and evaluate bit-exact.
+// paired Sqr/Clip activations on fc_0 and fc_1, plus the forwarded
+// fc_0[30] - fc_0[31] output term. Integer math follows the Stockfish paths,
+// so official SFNNv16 .nnue files load and evaluate through the same model.
+// Outer UCI/search score scaling remains Rudim-specific.
 //
 // What is intentionally Rudim-specific:
-// - no SIMD (scalar fallback paths only),
-// - threat features recomputed per eval (HalfKA/PSQT are incremental),
-// - small-net HalfKA/PSQT recomputed per eval (cheap at L1 128),
+// - HalfKA/PSQT are incrementally maintained; threats/pairs recompute per eval,
+// - optional custom "RUDI" checkpoint layout,
 // - file loading only (no embedding of Stockfish weights in this repo).
+// - the engine only uses a v16 net after an explicit `setoption EvalFile`;
+//   there is no implicit auto-load during evaluation.
 
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 
 use crate::board::state::BoardState;
 use crate::common::piece::Piece;
@@ -47,7 +48,8 @@ pub const WEIGHT_SCALE_BITS: u32 = 6;
 pub const SF_FILE_VERSION: u32 = 0x7AF32F20;
 pub const SF17_FILE_VERSION: u32 = 0x6A448AFA;
 pub const PSQ_HASH: u32 = 0x7f234cb8;
-pub const THREAT_HASH: u32 = 0x8f234cb8; // TODO update hash
+pub const THREAT_HASH: u32 = 0x2e6b9d04;
+pub const PAIR_HASH: u32 = 0x86f2b1dd;
 const LEB128_MAGIC: &[u8] = b"COMPRESSED_LEB128";
 
 // ---- Gate / combine (evaluate.cpp) ----
@@ -59,9 +61,10 @@ pub const QUEEN_VALUE: i32 = 2538;
 pub const SMALL_GATE: i32 = 962;
 pub const SMALL_FALLBACK: i32 = 236;
 
-// max active features per perspective (HalfKA 32 + threats 128, with headroom)
-pub const MAX_ACTIVE: usize = 280;
-pub const SMALL_MAX_ACTIVE: usize = 64;
+// max active features: HalfKA pieces (<=32) + official threat/pair lists.
+pub const MAX_THREAT_ACTIVE: usize = 256;
+pub const MAX_PAIR_ACTIVE: usize = 256;
+pub const MAX_ACTIVE: usize = 32 + MAX_THREAT_ACTIVE + MAX_PAIR_ACTIVE;
 
 // ---------------------------------------------------------------------------
 // Square helpers. Internal feature math uses Stockfish numbering (A1 = 0);
@@ -588,8 +591,21 @@ pub fn pair_make_index(
     hi * (hi - 1) / 2 + lo + PSQ_DIMS + THREAT_DIMS
 }
 
-pub fn append_pairs(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>) {
-    let ksq = pos.king_square(perspective);
+pub fn pair_index_for(
+    perspective: Side,
+    color: Side,
+    from_sf: usize,
+    to_sf: usize,
+    paired_color: Side,
+    ksq_sf: usize,
+) -> usize {
+    pair_make_index(perspective, color, from_sf, to_sf, paired_color, ksq_sf)
+        - (PSQ_DIMS + THREAT_DIMS)
+}
+
+/// Enumerates every pawn-pair relationship once as
+/// `(color, from_sf, to_sf, paired_color)`.
+pub fn for_each_pair(pos: &SfnnPosition, mut emit: impl FnMut(Side, usize, usize, Side)) {
     let white = pos.pieces[Piece::Pawn as usize] & pos.white;
     let black = pos.pieces[Piece::Pawn as usize] & pos.black;
 
@@ -603,28 +619,14 @@ pub fn append_pairs(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>)
         while ww != 0 {
             let to = ww.trailing_zeros() as usize;
             ww &= ww - 1;
-            out.push(pair_make_index(
-                perspective,
-                Side::White,
-                from,
-                to,
-                Side::White,
-                ksq,
-            ));
+            emit(Side::White, from, to, Side::White);
         }
 
         let mut wb = band & black; // Pair with all black pawns
         while wb != 0 {
             let to = wb.trailing_zeros() as usize;
             wb &= wb - 1;
-            out.push(pair_make_index(
-                perspective,
-                Side::White,
-                from,
-                to,
-                Side::Black,
-                ksq,
-            ));
+            emit(Side::White, from, to, Side::Black);
         }
     }
 
@@ -638,24 +640,28 @@ pub fn append_pairs(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>)
         while bbk != 0 {
             let to = bbk.trailing_zeros() as usize;
             bbk &= bbk - 1;
-            out.push(pair_make_index(
-                perspective,
-                Side::Black,
-                from,
-                to,
-                Side::Black,
-                ksq,
-            ));
+            emit(Side::Black, from, to, Side::Black);
         }
     }
 }
 
-pub fn collect_threats(pos: &SfnnPosition, perspective: Side, out: &mut [usize; MAX_ACTIVE]) -> usize {
+pub fn append_pairs(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>) {
+    let ksq = pos.king_square(perspective);
+    for_each_pair(pos, |color, from, to, paired| {
+        out.push(pair_make_index(perspective, color, from, to, paired, ksq));
+    });
+}
+
+pub fn collect_threats(
+    pos: &SfnnPosition,
+    perspective: Side,
+    out: &mut [usize; MAX_THREAT_ACTIVE],
+) -> usize {
     let ksq = pos.king_square(perspective);
     let mut len = 0;
     for_each_threat(pos, |attacker, from, to, attacked| {
         if let Some(idx) = threat_make_index(perspective, attacker, from, to, attacked, ksq) {
-            if len < MAX_ACTIVE {
+            if len < MAX_THREAT_ACTIVE {
                 out[len] = PSQ_DIMS + idx;
                 len += 1;
             }
@@ -664,7 +670,11 @@ pub fn collect_threats(pos: &SfnnPosition, perspective: Side, out: &mut [usize; 
     len
 }
 
-pub fn collect_pairs(pos: &SfnnPosition, perspective: Side, out: &mut [usize; 64]) -> usize {
+pub fn collect_pairs(
+    pos: &SfnnPosition,
+    perspective: Side,
+    out: &mut [usize; MAX_PAIR_ACTIVE],
+) -> usize {
     let ksq = pos.king_square(perspective);
     let white = pos.pieces[Piece::Pawn as usize] & pos.white;
     let black = pos.pieces[Piece::Pawn as usize] & pos.black;
@@ -680,7 +690,7 @@ pub fn collect_pairs(pos: &SfnnPosition, perspective: Side, out: &mut [usize; 64
         while ww != 0 {
             let to = ww.trailing_zeros() as usize;
             ww &= ww - 1;
-            if len < 64 {
+            if len < MAX_PAIR_ACTIVE {
                 out[len] = pair_make_index(perspective, Side::White, from, to, Side::White, ksq);
                 len += 1;
             }
@@ -690,7 +700,7 @@ pub fn collect_pairs(pos: &SfnnPosition, perspective: Side, out: &mut [usize; 64
         while wb != 0 {
             let to = wb.trailing_zeros() as usize;
             wb &= wb - 1;
-            if len < 64 {
+            if len < MAX_PAIR_ACTIVE {
                 out[len] = pair_make_index(perspective, Side::White, from, to, Side::Black, ksq);
                 len += 1;
             }
@@ -707,7 +717,7 @@ pub fn collect_pairs(pos: &SfnnPosition, perspective: Side, out: &mut [usize; 64
         while bbk != 0 {
             let to = bbk.trailing_zeros() as usize;
             bbk &= bbk - 1;
-            if len < 64 {
+            if len < MAX_PAIR_ACTIVE {
                 out[len] = pair_make_index(perspective, Side::Black, from, to, Side::Black, ksq);
                 len += 1;
             }
@@ -761,6 +771,18 @@ fn relu_hash(prev: u32) -> u32 {
     0x538D24C7u32.wrapping_add(prev)
 }
 
+fn rotl1(x: u32) -> u32 {
+    (x << 1) | (x >> 31)
+}
+
+fn combine_hash(hashes: &[u32]) -> u32 {
+    let mut h = 0u32;
+    for &c in hashes {
+        h = rotl1(h) ^ c;
+    }
+    h
+}
+
 pub fn arch_hash(l1: u32) -> u32 {
     // fc_0 -> ac_0 -> fc_1 -> ac_1 -> fc_2 (ac_sqr omitted, like Stockfish).
     let mut h = 0xEC42E90Du32 ^ (l1 * 2);
@@ -774,7 +796,7 @@ pub fn arch_hash(l1: u32) -> u32 {
 
 pub fn transformer_hash(use_threats: bool, l1: u32) -> u32 {
     if use_threats {
-        0x81155E38u32 ^ (l1 * 2) ^ 0x7f234cb8u32 ^ 0x2e6b9d04u32 ^ 0x86f2b1ddu32
+        combine_hash(&[THREAT_HASH, PAIR_HASH, PSQ_HASH]) ^ (l1 * 2)
     } else {
         PSQ_HASH ^ (l1 * 2)
     }
@@ -881,9 +903,12 @@ impl SfnnArch {
         data: &[u8],
         pos: &mut usize,
         fc0_in: usize,
-        _expected_hash: u32,
+        expected_hash: u32,
     ) -> Result<Self, &'static str> {
-        let _hash = read_u32_le(data, pos)?;
+        let hash = read_u32_le(data, pos)?;
+        if hash != expected_hash {
+            return Err("bad arch hash");
+        }
         let mut fc0_bias = [0i32; FC0_OUT];
         for b in fc0_bias.iter_mut() {
             *b = read_i32_le(data, pos)?;
@@ -940,11 +965,11 @@ pub struct SfnnTransformer {
     pub bias: Vec<i16>,
     pub weights: Vec<i16>,       // PSQ_DIMS x l1, [feat * l1 + j]
     pub threat_w: Vec<i8>,       // THREAT_DIMS x l1 (empty for small net)
-    pub threat_w_i16: Vec<i16>,   // For Rudi net
+    pub threat_w_i16: Vec<i16>,  // For Rudi net
     pub psqt_w: Vec<i32>,        // PSQ_DIMS x 8, [feat * 8 + b]
     pub threat_psqt_w: Vec<i32>, // THREAT_DIMS x 8 (empty for small net)
     pub pair_w: Vec<i8>,         // PAIR_DIMS x l1 (empty for small net)
-    pub pair_w_i16: Vec<i16>,     // For Rudi net
+    pub pair_w_i16: Vec<i16>,    // For Rudi net
     pub pair_psqt_w: Vec<i32>,   // PAIR_DIMS x 8 (empty for small net)
 }
 
@@ -964,14 +989,20 @@ impl Sfnn16Net {
         if version != SF_FILE_VERSION && version != SF17_FILE_VERSION {
             return Err("bad SFNN file version");
         }
-        let _file_hash = read_u32_le(data, &mut pos)?;
+        let file_hash = read_u32_le(data, &mut pos)?;
+        if use_threats && file_hash != network_hash(true, l1 as u32) {
+            return Err("bad SFNN file hash");
+        }
         let desc_len = read_u32_le(data, &mut pos)? as usize;
         if pos + desc_len > data.len() {
             return Err("truncated description");
         }
         pos += desc_len;
 
-        let _thash = read_u32_le(data, &mut pos)?;
+        let thash = read_u32_le(data, &mut pos)?;
+        if use_threats && thash != transformer_hash(true, l1 as u32) {
+            return Err("bad transformer hash");
+        }
         let mut bias = read_leb128_section(data, &mut pos, l1, decode_leb128_i16)?;
 
         let psq_inputs = PSQ_DIMS;
@@ -984,22 +1015,35 @@ impl Sfnn16Net {
                 && &data[pos + thr_bytes..pos + thr_bytes + LEB128_MAGIC.len()] == LEB128_MAGIC;
 
             if is_sf17 {
-                let tw = data[pos..pos + thr_bytes].iter().map(|&b| b as i8).collect::<Vec<i8>>();
+                let tw = data[pos..pos + thr_bytes]
+                    .iter()
+                    .map(|&b| b as i8)
+                    .collect::<Vec<i8>>();
                 pos += thr_bytes;
 
-                let tp = read_leb128_section(data, &mut pos, thr_inputs * N_BUCKETS, decode_leb128_i32)?;
+                let tp =
+                    read_leb128_section(data, &mut pos, thr_inputs * N_BUCKETS, decode_leb128_i32)?;
 
                 let pair_bytes = pair_inputs * l1;
                 if pos + pair_bytes > data.len() {
                     return Err("truncated pair weights");
                 }
-                let pw = data[pos..pos + pair_bytes].iter().map(|&b| b as i8).collect::<Vec<i8>>();
+                let pw = data[pos..pos + pair_bytes]
+                    .iter()
+                    .map(|&b| b as i8)
+                    .collect::<Vec<i8>>();
                 pos += pair_bytes;
 
-                let pp = read_leb128_section(data, &mut pos, pair_inputs * N_BUCKETS, decode_leb128_i32)?;
+                let pp = read_leb128_section(
+                    data,
+                    &mut pos,
+                    pair_inputs * N_BUCKETS,
+                    decode_leb128_i32,
+                )?;
 
                 let w = read_leb128_section(data, &mut pos, psq_inputs * l1, decode_leb128_i16)?;
-                let pw_psqt = read_leb128_section(data, &mut pos, psq_inputs * N_BUCKETS, decode_leb128_i32)?;
+                let pw_psqt =
+                    read_leb128_section(data, &mut pos, psq_inputs * N_BUCKETS, decode_leb128_i32)?;
 
                 (w, pw_psqt, tw, tp, pw, pp)
             } else {
@@ -1027,7 +1071,8 @@ impl Sfnn16Net {
             }
         } else {
             let w = read_leb128_section(data, &mut pos, psq_inputs * l1, decode_leb128_i16)?;
-            let pw_psqt = read_leb128_section(data, &mut pos, psq_inputs * N_BUCKETS, decode_leb128_i32)?;
+            let pw_psqt =
+                read_leb128_section(data, &mut pos, psq_inputs * N_BUCKETS, decode_leb128_i32)?;
             (w, pw_psqt, Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
 
@@ -1044,6 +1089,9 @@ impl Sfnn16Net {
         let mut stacks = Vec::with_capacity(N_BUCKETS);
         for _ in 0..N_BUCKETS {
             stacks.push(SfnnArch::load(data, &mut pos, l1, ahash)?);
+        }
+        if pos != data.len() {
+            return Err("trailing data after network");
         }
 
         Ok(Self {
@@ -1078,84 +1126,23 @@ impl Sfnn16Net {
         };
 
         let mut offset = 0;
-        let l0w_bytes = BIG_INPUT_DIMS * L1 * 2;
-        if offset + l0w_bytes > raw_payload.len() {
-            return Err("truncated l0w");
-        }
-        let l0w_slice: &[i16] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + l0w_bytes].as_ptr() as *const i16, BIG_INPUT_DIMS * L1)
-        };
-        offset += l0w_bytes;
+        let l0w_slice = read_rudi_i16(raw_payload, &mut offset, BIG_INPUT_DIMS * L1)?;
 
-        let l0b_bytes = L1 * 2;
-        if offset + l0b_bytes > raw_payload.len() {
-            return Err("truncated l0b");
-        }
-        let l0b_slice: &[i16] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + l0b_bytes].as_ptr() as *const i16, L1)
-        };
-        offset += l0b_bytes;
+        let l0b_slice = read_rudi_i16(raw_payload, &mut offset, L1)?;
 
-        let l1w_bytes = L1 * N_BUCKETS * FC0_OUT;
-        if offset + l1w_bytes > raw_payload.len() {
-            return Err("truncated l1w");
-        }
-        let l1w_slice: &[i8] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + l1w_bytes].as_ptr() as *const i8, l1w_bytes)
-        };
-        offset += l1w_bytes;
+        let l1w_slice = read_rudi_i8(raw_payload, &mut offset, L1 * N_BUCKETS * FC0_OUT)?;
 
-        let l1b_bytes = N_BUCKETS * FC0_OUT * 4;
-        if offset + l1b_bytes > raw_payload.len() {
-            return Err("truncated l1b");
-        }
-        let l1b_slice: &[i32] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + l1b_bytes].as_ptr() as *const i32, N_BUCKETS * FC0_OUT)
-        };
-        offset += l1b_bytes;
+        let l1b_slice = read_rudi_i32(raw_payload, &mut offset, N_BUCKETS * FC0_OUT)?;
 
-        let l2w_bytes = FC1_IN * FC1_OUT;
-        if offset + l2w_bytes > raw_payload.len() {
-            return Err("truncated l2w");
-        }
-        let l2w_slice: &[i8] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + l2w_bytes].as_ptr() as *const i8, l2w_bytes)
-        };
-        offset += l2w_bytes;
+        let l2w_slice = read_rudi_i8(raw_payload, &mut offset, FC1_IN * FC1_OUT)?;
 
-        let l2b_bytes = FC1_OUT * 4;
-        if offset + l2b_bytes > raw_payload.len() {
-            return Err("truncated l2b");
-        }
-        let l2b_slice: &[i32] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + l2b_bytes].as_ptr() as *const i32, FC1_OUT)
-        };
-        offset += l2b_bytes;
+        let l2b_slice = read_rudi_i32(raw_payload, &mut offset, FC1_OUT)?;
 
-        let outw_bytes = FC1_OUT;
-        if offset + outw_bytes > raw_payload.len() {
-            return Err("truncated outw");
-        }
-        let outw_slice: &[i8] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + outw_bytes].as_ptr() as *const i8, outw_bytes)
-        };
-        offset += outw_bytes;
+        let outw_slice = read_rudi_i8(raw_payload, &mut offset, FC1_OUT)?;
 
-        if offset + 4 > raw_payload.len() {
-            return Err("truncated outb");
-        }
-        let outb_slice: &[i32] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + 4].as_ptr() as *const i32, 1)
-        };
-        offset += 4;
+        let outb_slice = read_rudi_i32(raw_payload, &mut offset, 1)?;
 
-        let psqt_bytes = N_BUCKETS * BIG_INPUT_DIMS * 4;
-        if offset + psqt_bytes > raw_payload.len() {
-            return Err("truncated psqt");
-        }
-        let psqt_slice: &[i32] = unsafe {
-            std::slice::from_raw_parts(raw_payload[offset..offset + psqt_bytes].as_ptr() as *const i32, N_BUCKETS * BIG_INPUT_DIMS)
-        };
+        let psqt_slice = read_rudi_i32(raw_payload, &mut offset, N_BUCKETS * BIG_INPUT_DIMS)?;
 
         let weights = l0w_slice[..PSQ_DIMS * L1].to_vec();
         let threat_w_i16 = l0w_slice[PSQ_DIMS * L1..(PSQ_DIMS + THREAT_DIMS) * L1].to_vec();
@@ -1163,8 +1150,10 @@ impl Sfnn16Net {
 
         let bias = l0b_slice.to_vec();
         let psqt_w = psqt_slice[..PSQ_DIMS * N_BUCKETS].to_vec();
-        let threat_psqt_w = psqt_slice[PSQ_DIMS * N_BUCKETS..(PSQ_DIMS + THREAT_DIMS) * N_BUCKETS].to_vec();
-        let pair_psqt_w = psqt_slice[(PSQ_DIMS + THREAT_DIMS) * N_BUCKETS..BIG_INPUT_DIMS * N_BUCKETS].to_vec();
+        let threat_psqt_w =
+            psqt_slice[PSQ_DIMS * N_BUCKETS..(PSQ_DIMS + THREAT_DIMS) * N_BUCKETS].to_vec();
+        let pair_psqt_w =
+            psqt_slice[(PSQ_DIMS + THREAT_DIMS) * N_BUCKETS..BIG_INPUT_DIMS * N_BUCKETS].to_vec();
 
         let mut stacks = Vec::with_capacity(N_BUCKETS);
         for b in 0..N_BUCKETS {
@@ -1179,7 +1168,7 @@ impl Sfnn16Net {
             }
 
             let mut fc1_bias = [0i32; FC1_OUT];
-            fc1_bias.copy_from_slice(l2b_slice);
+            fc1_bias.copy_from_slice(&l2b_slice);
 
             let mut fc1_w = vec![0i8; FC1_OUT * FC1_IN];
             for o in 0..FC1_OUT {
@@ -1190,7 +1179,7 @@ impl Sfnn16Net {
 
             let fc2_bias = outb_slice[0];
             let mut fc2_w = [0i8; FC0_OUT * 2 + FC1_OUT * 2];
-            fc2_w[..FC1_OUT].copy_from_slice(outw_slice);
+            fc2_w[..FC1_OUT].copy_from_slice(&outw_slice);
 
             stacks.push(SfnnArch {
                 fc0_bias,
@@ -1234,8 +1223,46 @@ impl Sfnn16Net {
     }
 }
 
+fn read_rudi_i8(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i8>, &'static str> {
+    if *offset + count > data.len() {
+        return Err("truncated rudim payload");
+    }
+    let out = data[*offset..*offset + count]
+        .iter()
+        .map(|&b| b as i8)
+        .collect();
+    *offset += count;
+    Ok(out)
+}
+
+fn read_rudi_i16(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i16>, &'static str> {
+    let bytes = count.checked_mul(2).ok_or("bad rudim length")?;
+    if *offset + bytes > data.len() {
+        return Err("truncated rudim payload");
+    }
+    let mut out = Vec::with_capacity(count);
+    for chunk in data[*offset..*offset + bytes].chunks_exact(2) {
+        out.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+    }
+    *offset += bytes;
+    Ok(out)
+}
+
+fn read_rudi_i32(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i32>, &'static str> {
+    let bytes = count.checked_mul(4).ok_or("bad rudim length")?;
+    if *offset + bytes > data.len() {
+        return Err("truncated rudim payload");
+    }
+    let mut out = Vec::with_capacity(count);
+    for chunk in data[*offset..*offset + bytes].chunks_exact(4) {
+        out.push(i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    }
+    *offset += bytes;
+    Ok(out)
+}
+
 // ---------------------------------------------------------------------------
-// Exact scalar inference.
+// Inference (scalar + AVX2 paths).
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -1487,13 +1514,16 @@ pub struct LoadedNets {
     pub net: Sfnn16Net,
 }
 
-use std::sync::atomic::AtomicPtr;
-static NETS: AtomicPtr<LoadedNets> = AtomicPtr::new(std::ptr::null_mut());
+static NETS: RwLock<Option<Arc<LoadedNets>>> = RwLock::new(None);
 static NETS_GEN: AtomicU64 = AtomicU64::new(0);
 static PENDING_PATH: RwLock<Option<String>> = RwLock::new(None);
 
+fn loaded_nets() -> Option<Arc<LoadedNets>> {
+    NETS.read().ok().and_then(|guard| guard.clone())
+}
+
 pub fn try_load_default() -> bool {
-    if !NETS.load(Ordering::Acquire).is_null() {
+    if maintenance_active() {
         return true;
     }
     let candidates = [
@@ -1512,33 +1542,38 @@ pub fn try_load_default() -> bool {
 }
 
 pub fn maintenance_active() -> bool {
-    !NETS.load(Ordering::Acquire).is_null()
+    loaded_nets().is_some()
 }
 
 fn current_gen() -> u64 {
     NETS_GEN.load(Ordering::SeqCst)
 }
 
-/// Load big+small SFNNv10 files. On success the pair activates (bumps the
+/// Load an SFNNv16 file. On success the network activates (bumps the
 /// generation so all accumulator entries refresh lazily); on failure the
-/// previous pair (if any) is kept.
+/// previous network (if any) is kept.
 pub fn load_net(path: &str) -> Result<(), &'static str> {
-    let net = Sfnn16Net::load_file(path, true, L1)
-        .or_else(|_| Sfnn16Net::load_file(path, false, L1))?;
-    let ptr = Box::into_raw(Box::new(LoadedNets { net }));
-    NETS.store(ptr, Ordering::Release);
+    let net =
+        Sfnn16Net::load_file(path, true, L1).or_else(|_| Sfnn16Net::load_file(path, false, L1))?;
+    if let Ok(mut guard) = NETS.write() {
+        *guard = Some(Arc::new(LoadedNets { net }));
+    }
     NETS_GEN.fetch_add(1, Ordering::SeqCst);
+    crate::eval::nnue::clear_eval_cache();
     Ok(())
 }
 
 pub fn unload_nets() {
-    NETS.store(std::ptr::null_mut(), Ordering::Release);
+    if let Ok(mut guard) = NETS.write() {
+        *guard = None;
+    }
     NETS_GEN.fetch_add(1, Ordering::SeqCst);
+    crate::eval::nnue::clear_eval_cache();
 }
 
 pub fn set_eval_file(which: &str, path: &str) -> Result<&'static str, &'static str> {
     if which.eq_ignore_ascii_case("EvalFileSmall") {
-        return Ok("EvalFileSmall ignored for SF19");
+        return Ok("EvalFileSmall is deprecated and ignored (SFNNv16 uses a single network)");
     }
     if which.eq_ignore_ascii_case("EvalFile") {
         if let Ok(mut guard) = PENDING_PATH.write() {
@@ -1677,9 +1712,8 @@ pub fn refresh_all(pos: &SfnnPosition, accs: &mut Sfnn16Accs) {
     if !kings_present(pos) {
         return;
     }
-    let ptr = NETS.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        let nets = unsafe { &*ptr };
+    let nets = loaded_nets();
+    if let Some(nets) = nets.as_ref() {
         refresh_perspective(pos, nets, Side::White, accs);
         refresh_perspective(pos, nets, Side::Black, accs);
         // Threat PSQT is recomputed per eval; keep stored part zeroed.
@@ -1696,8 +1730,7 @@ pub fn ensure_fresh(pos: &SfnnPosition, accs: &mut Sfnn16Accs) {
     }
 }
 
-// Queued HalfKA deltas applied at flush time (both nets share features;
-// the small net recomputes from scratch per eval).
+// Queued HalfKA deltas applied at flush time. Threats/pairs recompute per eval.
 pub fn apply_queued(
     pos: &SfnnPosition,
     accs: &mut Sfnn16Accs,
@@ -1705,9 +1738,8 @@ pub fn apply_queued(
     dels: &[Option<SfnnEvent>],
     king_moved: &[bool; 2],
 ) {
-    let ptr = NETS.load(Ordering::Acquire);
-    if !ptr.is_null() {
-        let nets = unsafe { &*ptr };
+    let nets = loaded_nets();
+    if let Some(nets) = nets.as_ref() {
         for (pi, perspective) in [Side::White, Side::Black].iter().enumerate() {
             if king_moved[pi] {
                 refresh_perspective(pos, nets, *perspective, accs);
@@ -1884,9 +1916,9 @@ fn eval_with_net(
     let clip_max: i32 = if net.use_threats { 255 } else { 254 };
     let perspectives = [stm, stm.other()];
 
-    let mut threat_lists = [[0usize; MAX_ACTIVE]; 2];
+    let mut threat_lists = [[0usize; MAX_THREAT_ACTIVE]; 2];
     let mut threat_lens = [0usize; 2];
-    let mut pair_lists = [[0usize; 64]; 2];
+    let mut pair_lists = [[0usize; MAX_PAIR_ACTIVE]; 2];
     let mut pair_lens = [0usize; 2];
 
     if net.use_threats {
@@ -1937,8 +1969,7 @@ fn eval_with_net(
                     let base_psqt = t * N_BUCKETS;
                     let p_slice = &net.transformer.threat_psqt_w[base_psqt..base_psqt + N_BUCKETS];
                     for b in 0..N_BUCKETS {
-                        per_psqt[slot][b] =
-                            per_psqt[slot][b].wrapping_add(p_slice[b]);
+                        per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
                     }
                 }
                 for &f in &pair_lists[slot][..pair_lens[slot]] {
@@ -1958,8 +1989,7 @@ fn eval_with_net(
                     let base_psqt = t * N_BUCKETS;
                     let p_slice = &net.transformer.pair_psqt_w[base_psqt..base_psqt + N_BUCKETS];
                     for b in 0..N_BUCKETS {
-                        per_psqt[slot][b] =
-                            per_psqt[slot][b].wrapping_add(p_slice[b]);
+                        per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
                     }
                 }
             }
@@ -2018,11 +2048,7 @@ pub struct SfnnEval {
 }
 
 pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Option<SfnnEval> {
-    let ptr = NETS.load(Ordering::Acquire);
-    if ptr.is_null() {
-        return None;
-    }
-    let nets = unsafe { &*ptr };
+    let nets = loaded_nets()?;
     ensure_fresh(pos, accs);
 
     let bucket = material_bucket(pos.piece_count());
@@ -2045,10 +2071,7 @@ pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Op
 }
 
 pub fn evaluate_board(board: &mut BoardState) -> Option<i16> {
-    if NETS.load(Ordering::Acquire).is_null() {
-        try_load_default();
-    }
-    if NETS.load(Ordering::Acquire).is_null() {
+    if !maintenance_active() {
         return None;
     }
     let pos = SfnnPosition::from_board(board);
@@ -2193,18 +2216,36 @@ mod tests {
 
     #[test]
     fn test_eval_breakdown() {
+        let mut loaded_any = false;
         for net_path in ["v16/nn-1a298aa575a0.nnue", "v16/rudim.nnue"] {
             println!("=== Testing net: {} ===", net_path);
-            let res = load_net(net_path);
-            if let Err(e) = res {
-                println!("Failed to load {}: {}", net_path, e);
+            if !std::path::Path::new(net_path).exists() {
+                println!("Missing {net_path}, skipping (network files are git-ignored fixtures)");
                 continue;
             }
+            if let Err(e) = load_net(net_path) {
+                println!("Failed to load {net_path}: {e}");
+                continue;
+            }
+            loaded_any = true;
+            let is_official = net_path.contains("nn-1a298aa575a0");
             let fens = [
-                ("startpos", "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"),
-                ("1. e4 e5 2. Ke2 (B)", "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPPKPPP/RNBQ1BNR b kq - 1 2"),
-                ("1. e4 e5 2. Nf3 (B)", "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2"),
-                ("1. e4 (B)", "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1"),
+                (
+                    "startpos",
+                    "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+                ),
+                (
+                    "1. e4 e5 2. Ke2 (B)",
+                    "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPPKPPP/RNBQ1BNR b kq - 1 2",
+                ),
+                (
+                    "1. e4 e5 2. Nf3 (B)",
+                    "rnbqkbnr/pppp1ppp/8/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2",
+                ),
+                (
+                    "1. e4 (B)",
+                    "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+                ),
             ];
 
             for (name, fen) in fens {
@@ -2213,6 +2254,10 @@ mod tests {
                 let mut accs = Sfnn16Accs::empty();
                 refresh_all(&pos, &mut accs);
                 if let Some(eval) = evaluate_nets(&pos, &mut accs, board.side_to_move) {
+                    // Sanity anchor: the official net evaluates startpos near zero.
+                    if is_official && name == "startpos" {
+                        assert_eq!(eval.combined, -1);
+                    }
                     let cp = (eval.combined as i64 * 100) / 256;
                     println!(
                         "{:<22} | STM: {:?} | psqt: {:>6} | pos: {:>6} | comb: {:>6} | cp: {:>5}",
@@ -2221,11 +2266,16 @@ mod tests {
                 }
             }
         }
-        let ptr = NETS.load(Ordering::Acquire);
-        assert!(!ptr.is_null());
-        let nets = unsafe { &*ptr };
+        if !loaded_any {
+            println!("No network fixtures present; skipping breakdown assertions");
+            return;
+        }
+        let nets = loaded_nets().expect("network should be active after load");
         let stack = &nets.net.stacks[7];
-        println!("fc0_bias[30] = {}, fc0_bias[31] = {}", stack.fc0_bias[30], stack.fc0_bias[31]);
+        println!(
+            "fc0_bias[30] = {}, fc0_bias[31] = {}",
+            stack.fc0_bias[30], stack.fc0_bias[31]
+        );
         let w30 = &stack.fc0_w[30 * 1024..(30 + 1) * 1024];
         let w31 = &stack.fc0_w[31 * 1024..(31 + 1) * 1024];
         let sum_w30_us: i64 = w30[..512].iter().map(|&x| x as i64).sum();

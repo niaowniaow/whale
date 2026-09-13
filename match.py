@@ -17,7 +17,7 @@ def calculate_elo(score, total_games):
     p = score / total_games
     return -400.0 * math.log10(1.0 / p - 1.0)
 
-def play_match(games=10, time_limit=2.0, depth=None):
+def play_match(games=10, time_limit=2.0, depth=None, book_path=None, show=False):
     print("=" * 60)
     print("      RUDIM NEW (SFNNv16) VS RUDIM v3.0.5 ORIGINAL")
     print("=" * 60)
@@ -27,6 +27,14 @@ def play_match(games=10, time_limit=2.0, depth=None):
         print(f"Games: {games}, Time per move: {time_limit}s")
     print(f"Mine:   {MINE_EXE}")
     print(f"Orig:   {ORIG_EXE}")
+    start_fens = []
+    if book_path:
+        with open(book_path) as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    start_fens.append(line.split(";")[0].strip())
+        print(f"Book:   {book_path} ({len(start_fens)} positions)")
     print("=" * 60)
 
     wins = 0
@@ -34,7 +42,12 @@ def play_match(games=10, time_limit=2.0, depth=None):
     losses = 0
 
     for g in range(1, games + 1):
-        board = chess.Board()
+        if start_fens:
+            start_fen = start_fens[(g - 1) % len(start_fens)]
+            board = chess.Board(start_fen)
+        else:
+            start_fen = None
+            board = chess.Board()
         mine_is_white = (g % 2 == 1)
 
         white_name = "Rudim-Mine" if mine_is_white else "Rudim-v3.0.5"
@@ -42,7 +55,9 @@ def play_match(games=10, time_limit=2.0, depth=None):
 
         # Start engines
         mine_engine = chess.engine.SimpleEngine.popen_uci(MINE_EXE)
-        mine_engine.configure({"EvalFile": os.path.abspath("v16/nn-1a298aa575a0.nnue")})
+        eval_file = os.environ.get("RUDIM_EVAL_FILE")
+        if eval_file:
+            mine_engine.configure({"EvalFile": os.path.abspath(eval_file)})
         orig_engine = chess.engine.SimpleEngine.popen_uci(ORIG_EXE)
 
         engines = {
@@ -58,14 +73,26 @@ def play_match(games=10, time_limit=2.0, depth=None):
         game_moves = []
         while not board.is_game_over(claim_draw=True) and move_count < 200:
             current_engine = engines[board.turn]
-            result = current_engine.play(board, limit)
+            try:
+                result = current_engine.play(board, limit)
+            except Exception as e:
+                print(f"  Engine error during play: {e}", flush=True)
+                break
             if result.move is None:
                 break
             san = board.san(result.move)
             board.push(result.move)
             game_moves.append(result.move)
             move_count += 1
-            if move_count % 10 == 0:
+            if show:
+                mover = white_name if board.turn == chess.BLACK else black_name
+                num = f"{(move_count + 1) // 2}." if board.turn == chess.BLACK else f"{move_count // 2}..."
+                print(f"\n  {num} {mover}: {san}", flush=True)
+                print("  +-----------------+", flush=True)
+                for rank_row in str(board).split("\n"):
+                    print("  | " + rank_row + " |", flush=True)
+                print("  +-----------------+", flush=True)
+            elif move_count % 10 == 0:
                 print(f"  ply {move_count}: {san} ({result.move.uci()})", flush=True)
 
         mine_engine.quit()
@@ -101,8 +128,11 @@ def play_match(games=10, time_limit=2.0, depth=None):
         game.headers["White"] = white_name
         game.headers["Black"] = black_name
         game.headers["Result"] = outcome.result() if outcome else "1/2-1/2"
+        if start_fen:
+            game.headers["SetUp"] = "1"
+            game.headers["FEN"] = start_fen
         node = game
-        b_replay = chess.Board()
+        b_replay = chess.Board(start_fen) if start_fen else chess.Board()
         for m in game_moves:
             node = node.add_variation(m)
             b_replay.push(m)
@@ -125,8 +155,10 @@ def play_match(games=10, time_limit=2.0, depth=None):
 if __name__ == "__main__":
     n = int(sys.argv[1]) if len(sys.argv) > 1 else 4
     arg2 = sys.argv[2] if len(sys.argv) > 2 else "d7"
+    book = sys.argv[3] if len(sys.argv) > 3 and sys.argv[3] != "show" else None
+    show = "show" in sys.argv[1:]
     if arg2.startswith("d"):
-        play_match(games=n, depth=int(arg2[1:]))
+        play_match(games=n, depth=int(arg2[1:]), book_path=book, show=show)
     else:
-        play_match(games=n, time_limit=float(arg2))
+        play_match(games=n, time_limit=float(arg2), book_path=book, show=show)
 
