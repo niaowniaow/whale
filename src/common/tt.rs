@@ -1,65 +1,97 @@
 use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::moves::Move;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(u8)]
 pub enum TranspositionEntryType {
-    Exact,
-    Alpha,
-    Beta,
+    #[default]
+    None = 0,
+    Exact = 1,
+    Alpha = 2,
+    Beta = 3,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TranspositionTableEntry {
-    pub score: i16,
     pub hash: u64,
-    pub depth: u8,
+    pub score: i16,
     pub best_move: Move,
+    pub depth: u8,
     pub entry_type: TranspositionEntryType,
     pub generation: u8,
 }
 
+impl Default for TranspositionTableEntry {
+    fn default() -> Self {
+        Self {
+            hash: 0,
+            score: 0,
+            best_move: Move::NO_MOVE,
+            depth: 0,
+            entry_type: TranspositionEntryType::None,
+            generation: 0,
+        }
+    }
+}
+
+pub const CLUSTER_SIZE: usize = 4;
+
+#[repr(C, align(64))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cluster {
+    pub entries: [TranspositionTableEntry; CLUSTER_SIZE],
+}
+
+impl Default for Cluster {
+    fn default() -> Self {
+        Self {
+            entries: [TranspositionTableEntry::default(); CLUSTER_SIZE],
+        }
+    }
+}
+
 pub struct TranspositionTable {
-    depth_replaced_entries: Vec<Option<TranspositionTableEntry>>,
-    always_replaced_entries: Vec<Option<TranspositionTableEntry>>,
-    capacity: usize,
+    clusters: Vec<Cluster>,
+    cluster_count: usize,
+    pub capacity: usize,
     pub generation: u8,
 }
 
 impl TranspositionTable {
-    // 65536 * 32 * 16 bytes = 32 MB
     pub const DEFAULT_CAPACITY: usize = 65536 * 32;
 
     pub fn new(capacity: usize) -> Self {
-        assert!(
-            capacity.is_power_of_two(),
-            "Capacity must be a power of two"
-        );
+        let mut cluster_count = (capacity / 2).max(256);
+        if !cluster_count.is_power_of_two() {
+            cluster_count = 1 << cluster_count.ilog2();
+        }
         Self {
-            depth_replaced_entries: vec![None; capacity],
-            always_replaced_entries: vec![None; capacity],
+            clusters: vec![Cluster::default(); cluster_count],
+            cluster_count,
             capacity,
             generation: 0,
         }
     }
 
     pub fn new_search(&mut self) {
-        self.generation = self.generation.wrapping_add(8);
+        self.generation = self.generation.wrapping_add(1);
     }
 
     pub fn resize(&mut self, mb_size: usize) {
         let max_bytes = mb_size * 1024 * 1024;
-        let entry_size = size_of::<Option<TranspositionTableEntry>>();
-        let max_capacity = max_bytes / (2 * entry_size);
+        let cluster_size = size_of::<Cluster>();
+        let max_clusters = max_bytes / cluster_size;
 
-        let capacity = if max_capacity < 1024 {
-            1024
+        let cluster_count = if max_clusters < 256 {
+            256
         } else {
-            1 << max_capacity.ilog2()
+            1 << max_clusters.ilog2()
         };
 
-        self.capacity = capacity;
-        self.depth_replaced_entries = vec![None; capacity];
-        self.always_replaced_entries = vec![None; capacity];
+        self.cluster_count = cluster_count;
+        self.capacity = cluster_count * 2;
+        self.clusters = vec![Cluster::default(); cluster_count];
     }
 
     pub fn capacity(&self) -> usize {
@@ -67,28 +99,23 @@ impl TranspositionTable {
     }
 
     pub fn clear(&mut self) {
-        for entry in self.depth_replaced_entries.iter_mut() {
-            *entry = None;
-        }
-        for entry in self.always_replaced_entries.iter_mut() {
-            *entry = None;
+        for cluster in self.clusters.iter_mut() {
+            *cluster = Cluster::default();
         }
     }
 
+    #[inline(always)]
     pub fn probe(&self, hash: u64) -> Option<TranspositionTableEntry> {
-        let index = (hash as usize) & (self.capacity - 1);
-        if let Some(e) = self.depth_replaced_entries[index]
-            && e.hash == hash
-        {
-            return Some(e);
-        }
-        if let Some(e) = self.always_replaced_entries[index]
-            && e.hash == hash
-        {
-            return Some(e);
+        let index = (hash as usize) & (self.cluster_count - 1);
+        let cluster = &self.clusters[index];
+        for entry in &cluster.entries {
+            if entry.hash == hash && entry.entry_type != TranspositionEntryType::None {
+                return Some(*entry);
+            }
         }
         None
     }
+
     pub fn get_entry(
         &self,
         hash: u64,
@@ -97,22 +124,7 @@ impl TranspositionTable {
         depth: u8,
         ply: u8,
     ) -> (bool, i16, Option<Move>) {
-        let index = (hash as usize) & (self.capacity - 1);
-
-        let mut found_entry = None;
-        if let Some(e) = self.depth_replaced_entries[index]
-            && e.hash == hash
-        {
-            found_entry = Some(e);
-        }
-        if found_entry.is_none()
-            && let Some(e) = self.always_replaced_entries[index]
-            && e.hash == hash
-        {
-            found_entry = Some(e);
-        }
-
-        let entry = match found_entry {
+        let entry = match self.probe(hash) {
             Some(e) => e,
             None => return (false, 0, None),
         };
@@ -139,6 +151,7 @@ impl TranspositionTable {
                     (false, 0, Some(entry.best_move))
                 }
             }
+            TranspositionEntryType::None => (false, 0, None),
         }
     }
 
@@ -147,42 +160,61 @@ impl TranspositionTable {
         hash: u64,
         score: i16,
         depth: u8,
-        best_move: Move,
+        mut best_move: Move,
         entry_type: TranspositionEntryType,
     ) {
-        let index = (hash as usize) & (self.capacity - 1);
-        let best_move = if best_move == Move::NO_MOVE {
-            self.depth_replaced_entries[index]
-                .filter(|e| e.hash == hash && e.best_move != Move::NO_MOVE)
-                .map(|e| e.best_move)
-                .or_else(|| {
-                    self.always_replaced_entries[index]
-                        .filter(|e| e.hash == hash && e.best_move != Move::NO_MOVE)
-                        .map(|e| e.best_move)
-                })
-                .unwrap_or(Move::NO_MOVE)
-        } else {
-            best_move
-        };
-        let new_entry = Some(TranspositionTableEntry {
+        let index = (hash as usize) & (self.cluster_count - 1);
+        let cluster = &mut self.clusters[index];
+
+        for entry in cluster.entries.iter_mut() {
+            if entry.hash == hash && entry.entry_type != TranspositionEntryType::None {
+                if best_move == Move::NO_MOVE {
+                    best_move = entry.best_move;
+                }
+                let is_old = entry.generation != self.generation;
+                let should_replace = is_old
+                    || depth >= entry.depth
+                    || (entry_type == TranspositionEntryType::Exact
+                        && entry.entry_type != TranspositionEntryType::Exact);
+
+                if should_replace {
+                    entry.hash = hash;
+                    entry.score = score;
+                    entry.depth = depth;
+                    entry.best_move = best_move;
+                    entry.entry_type = entry_type;
+                    entry.generation = self.generation;
+                } else if entry.best_move == Move::NO_MOVE && best_move != Move::NO_MOVE {
+                    entry.best_move = best_move;
+                }
+                return;
+            }
+        }
+
+        let mut replace_idx = 0;
+        let mut lowest_priority = i32::MAX;
+
+        for (i, entry) in cluster.entries.iter().enumerate() {
+            if entry.entry_type == TranspositionEntryType::None {
+                replace_idx = i;
+                break;
+            }
+            let age = self.generation.wrapping_sub(entry.generation) as i32;
+            let priority = entry.depth as i32 - 8 * age;
+            if priority < lowest_priority {
+                lowest_priority = priority;
+                replace_idx = i;
+            }
+        }
+
+        cluster.entries[replace_idx] = TranspositionTableEntry {
             hash,
             score,
-            depth,
             best_move,
+            depth,
             entry_type,
             generation: self.generation,
-        });
-
-        if let Some(existing) = self.depth_replaced_entries[index] {
-            if existing.generation == self.generation && existing.depth >= depth {
-                self.always_replaced_entries[index] = new_entry;
-            } else {
-                self.always_replaced_entries[index] = self.depth_replaced_entries[index];
-                self.depth_replaced_entries[index] = new_entry;
-            }
-        } else {
-            self.depth_replaced_entries[index] = new_entry;
-        }
+        };
     }
 
     pub fn adjust_score(score: i16, ply: i32) -> i16 {
@@ -206,10 +238,16 @@ impl TranspositionTable {
 
 #[cfg(test)]
 mod tests {
-    // TODO: revisit, improve tests for more accurate scenarios
     use super::*;
     use crate::common::move_type::MoveType;
     use crate::common::square::Square;
+
+    #[test]
+    fn test_cluster_size_and_alignment() {
+        assert_eq!(size_of::<TranspositionTableEntry>(), 16);
+        assert_eq!(size_of::<Cluster>(), 64);
+        assert_eq!(align_of::<Cluster>(), 64);
+    }
 
     #[test]
     fn test_tt_store_retrieve() {
@@ -233,13 +271,13 @@ mod tests {
         let m2 = Move::new(Square::D2, Square::D4, MoveType::Quiet);
 
         tt.submit_entry(hash, 100, 5, m1, TranspositionEntryType::Exact);
-        tt.submit_entry(hash, 200, 3, m2, TranspositionEntryType::Exact); // Should NOT overwrite
+        tt.submit_entry(hash, 200, 3, m2, TranspositionEntryType::Exact);
 
         let (_, score, m) = tt.get_entry(hash, -1000, 1000, 1, 0);
         assert_eq!(score, 100);
         assert_eq!(m, Some(m1));
 
-        tt.submit_entry(hash, 300, 10, m2, TranspositionEntryType::Exact); // Should overwrite
+        tt.submit_entry(hash, 300, 10, m2, TranspositionEntryType::Exact);
         let (_, score, m) = tt.get_entry(hash, -1000, 1000, 1, 0);
         assert_eq!(score, 300);
         assert_eq!(m, Some(m2));

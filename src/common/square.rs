@@ -25,6 +25,21 @@ impl Square {
         }
         Square::from((self as usize) ^ 0b111000)
     }
+
+    #[inline(always)]
+    pub fn rank(self) -> u8 {
+        (self as u8) / 8
+    }
+
+    #[inline(always)]
+    pub fn file(self) -> u8 {
+        (self as u8) % 8
+    }
+
+    #[inline(always)]
+    pub fn from_rank_file(rank: u8, file: u8) -> Self {
+        Square::from(((rank as usize) * 8) + (file as usize))
+    }
 }
 
 impl From<usize> for Square {

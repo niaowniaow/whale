@@ -27,20 +27,36 @@ impl Default for BoardHistory {
     }
 }
 
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct DirtyUpdate {
+    pub adds_w: [usize; 2],
+    pub dels_w: [usize; 2],
+    pub adds_b: [usize; 2],
+    pub dels_b: [usize; 2],
+    pub n_adds: u8,
+    pub n_dels: u8,
+}
+
 #[derive(Debug, Clone)]
 pub struct History {
     pub entries: Box<[BoardHistory]>,
     pub accumulators: Box<[Accumulators]>,
     pub sfnn16: Box<[Sfnn16Accs]>,
+    pub dirty_updates: Box<[DirtyUpdate]>,
+    pub computed: Box<[bool]>,
     pub index: usize,
 }
 
 impl History {
     pub fn new() -> Self {
+        let mut computed = vec![false; HISTORY_SIZE].into_boxed_slice();
+        computed[0] = true;
         Self {
             entries: vec![BoardHistory::default(); HISTORY_SIZE].into_boxed_slice(),
             accumulators: vec![Accumulators::default(); HISTORY_SIZE].into_boxed_slice(),
             sfnn16: vec![Sfnn16Accs::empty(); HISTORY_SIZE].into_boxed_slice(),
+            dirty_updates: vec![DirtyUpdate::default(); HISTORY_SIZE].into_boxed_slice(),
+            computed,
             index: 0,
         }
     }
@@ -81,6 +97,8 @@ impl History {
         for i in 0..self.index {
             self.entries[i] = BoardHistory::default();
         }
+        self.computed.fill(false);
+        self.computed[0] = true;
         self.index = 0;
     }
 

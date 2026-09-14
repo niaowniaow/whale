@@ -93,6 +93,7 @@ impl BoardState {
                 );
             }
         }
+        self.history.computed[target_idx] = true;
         self.pending_adds = 0;
         self.pending_removes = 0;
 
@@ -100,6 +101,89 @@ impl BoardState {
             let pos = SfnnPosition::from_board(self);
             let accs = &mut self.history.sfnn16[target_idx];
             sfnn16::flush_pending(&pos, accs, &mut self.sfnn16_pending);
+        }
+    }
+
+    pub fn record_pending_updates(&mut self, target_idx: usize) {
+        self.history.dirty_updates[target_idx] = crate::board::history::DirtyUpdate {
+            adds_w: self.pending_adds_w,
+            dels_w: self.pending_dels_w,
+            adds_b: self.pending_adds_b,
+            dels_b: self.pending_dels_b,
+            n_adds: self.pending_adds,
+            n_dels: self.pending_removes,
+        };
+        self.history.computed[target_idx] = false;
+        self.pending_adds = 0;
+        self.pending_removes = 0;
+
+        if sfnn16::maintenance_active() {
+            let pos = SfnnPosition::from_board(self);
+            let accs = &mut self.history.sfnn16[target_idx];
+            sfnn16::flush_pending(&pos, accs, &mut self.sfnn16_pending);
+        }
+    }
+
+    pub fn ensure_accumulators_fresh(&mut self) {
+        let target_idx = self.history.index;
+        if self.history.computed[target_idx] {
+            return;
+        }
+
+        let mut ancestor = target_idx;
+        while ancestor > 0 && !self.history.computed[ancestor] {
+            ancestor -= 1;
+        }
+
+        let network = Network::get_embedded();
+        for idx in (ancestor + 1)..=target_idx {
+            self.history.accumulators[idx] = self.history.accumulators[idx - 1];
+            let dirty = self.history.dirty_updates[idx];
+            Self::apply_dirty(&mut self.history.accumulators[idx], &dirty, network);
+            self.history.computed[idx] = true;
+        }
+    }
+
+    fn apply_dirty(
+        acc: &mut crate::eval::nnue::accumulator::Accumulators,
+        dirty: &crate::board::history::DirtyUpdate,
+        network: &Network,
+    ) {
+        match (dirty.n_adds, dirty.n_dels) {
+            (0, 0) => {}
+            (1, 0) => {
+                acc.white.add_feature(dirty.adds_w[0], network);
+                acc.black.add_feature(dirty.adds_b[0], network);
+            }
+            (1, 1) => {
+                acc.white
+                    .add_1_sub_1(dirty.adds_w[0], dirty.dels_w[0], network);
+                acc.black
+                    .add_1_sub_1(dirty.adds_b[0], dirty.dels_b[0], network);
+            }
+            (1, 2) => {
+                acc.white
+                    .add_1_sub_2(dirty.adds_w[0], dirty.dels_w[0], dirty.dels_w[1], network);
+                acc.black
+                    .add_1_sub_2(dirty.adds_b[0], dirty.dels_b[0], dirty.dels_b[1], network);
+            }
+            (2, 2) => {
+                acc.white.add_2_sub_2(
+                    dirty.adds_w[0],
+                    dirty.adds_w[1],
+                    dirty.dels_w[0],
+                    dirty.dels_w[1],
+                    network,
+                );
+                acc.black.add_2_sub_2(
+                    dirty.adds_b[0],
+                    dirty.adds_b[1],
+                    dirty.dels_b[0],
+                    dirty.dels_b[1],
+                    network,
+                );
+            }
+            _ => {}
         }
     }
 
@@ -142,5 +226,6 @@ impl BoardState {
         } else {
             self.history.accumulators[self.history.index].black = acc;
         }
+        self.history.computed[self.history.index] = true;
     }
 }

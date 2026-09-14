@@ -13,10 +13,7 @@ pub struct MoveOrdering {
     pub quiet_history: [[[i16; SQUARES]; SQUARES]; SIDES],
     pub continuation_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
     pub counter_moves: [[[Move; SQUARES]; PIECES]; SIDES],
-    pub capture_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
-    pub low_ply_history: Box<[[i32; 4096]; 5]>,
-    pub pawn_history: Box<[[i32; 64]; 12]>,
-    pub tt_move_history: Box<[i32; 8192]>,
+    pub capture_history: [[[i16; PIECES]; SQUARES]; PIECES * 2],
 }
 
 #[rustfmt::skip]
@@ -39,10 +36,7 @@ impl MoveOrdering {
             quiet_history: [[[0; SQUARES]; SQUARES]; SIDES],
             continuation_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
             counter_moves: [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES],
-            capture_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
-            low_ply_history: Box::new([[0; 4096]; 5]),
-            pawn_history: Box::new([[0; 64]; 12]),
-            tt_move_history: Box::new([0; 8192]),
+            capture_history: [[[0; PIECES]; SQUARES]; PIECES * 2],
         }
     }
 
@@ -67,10 +61,7 @@ impl MoveOrdering {
         self.quiet_history = [[[0; SQUARES]; SQUARES]; SIDES];
         self.continuation_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
         self.counter_moves = [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES];
-        self.capture_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
-        *self.low_ply_history = [[0; 4096]; 5];
-        *self.pawn_history = [[0; 64]; 12];
-        *self.tt_move_history = [0; 8192];
+        self.capture_history = [[[0; PIECES]; SQUARES]; PIECES * 2];
     }
 
     pub fn decay_history(&mut self) {
@@ -100,19 +91,6 @@ impl MoveOrdering {
                 }
             }
         }
-        for ply in self.low_ply_history.iter_mut() {
-            for score in ply.iter_mut() {
-                *score /= 2;
-            }
-        }
-        for row in self.pawn_history.iter_mut() {
-            for score in row.iter_mut() {
-                *score /= 2;
-            }
-        }
-        for score in self.tt_move_history.iter_mut() {
-            *score /= 2;
-        }
     }
 
     pub fn is_move_heuristic_empty(&self) -> bool {
@@ -137,14 +115,9 @@ impl MoveOrdering {
                     .all(|piece_row| piece_row.iter().all(|&m| m == Move::NO_MOVE))
             })
             && self
-                .low_ply_history
+                .capture_history
                 .iter()
-                .all(|ply| ply.iter().all(|&s| s == 0))
-            && self
-                .pawn_history
-                .iter()
-                .all(|row| row.iter().all(|&s| s == 0))
-            && self.tt_move_history.iter().all(|&s| s == 0)
+                .all(|piece| piece.iter().all(|row| row.iter().all(|&s| s == 0)))
     }
 
     #[inline(always)]
@@ -251,15 +224,22 @@ impl MoveOrdering {
     }
 
     #[inline(always)]
-    pub fn update_capture_history(&mut self, piece: usize, move_obj: Move, bonus: i32) {
-        let source = move_obj.source as usize;
-        let target = move_obj.target as usize;
-        if piece < PIECES * 2 {
-            Self::update_gravity_i16(
-                &mut self.capture_history[piece][source][target],
-                bonus,
-                i16::MAX as i32,
-            );
+    pub fn update_capture_history(
+        &mut self,
+        moved_piece: usize,
+        target_square: Square,
+        captured_piece: Piece,
+        bonus: i32,
+    ) {
+        if moved_piece < PIECES * 2 && captured_piece != Piece::None {
+            let cap_idx = captured_piece as usize;
+            if cap_idx < PIECES {
+                Self::update_gravity_i16(
+                    &mut self.capture_history[moved_piece][target_square as usize][cap_idx],
+                    bonus,
+                    16384,
+                );
+            }
         }
     }
 
@@ -320,23 +300,28 @@ pub fn populate_capture_scores(
     for move_obj in moves.iter_mut() {
         let source_piece =
             board_state.get_piece_on_side(move_obj.mv.source, board_state.side_to_move);
-        let target_piece: usize = if move_obj.mv.move_type == MoveType::EnPassant {
-            Piece::Pawn as usize
+        let target_piece = if move_obj.mv.move_type == MoveType::EnPassant {
+            Piece::Pawn
         } else {
-            board_state.get_piece_on_side(move_obj.mv.target, board_state.side_to_move.other())
+            board_state.piece_mapping[move_obj.mv.target as usize]
         };
 
-        let mut score = MVV_LVA[target_piece][source_piece];
+        let mut score = if target_piece != Piece::None {
+            MVV_LVA[target_piece as usize][source_piece]
+        } else {
+            0
+        };
         let prom_piece = move_obj.mv.move_type.promotion_piece();
         if prom_piece == Piece::Queen {
             score += 50000;
         } else if prom_piece != Piece::None {
             score -= 20000;
         }
-        if source_piece < PIECES * 2 {
-            let hist = move_ordering.capture_history[source_piece][move_obj.mv.source as usize]
-                [move_obj.mv.target as usize];
-            score += hist as i32 / 16;
+        let moved_piece = board_state.get_piece_on(move_obj.mv.source);
+        if moved_piece >= 0 && target_piece != Piece::None && (target_piece as usize) < PIECES {
+            let hist = move_ordering.capture_history[moved_piece as usize]
+                [move_obj.mv.target as usize][target_piece as usize];
+            score += hist as i32;
         }
         move_obj.score = score;
     }
@@ -539,6 +524,26 @@ mod tests {
         assert_eq!(
             ordering.continuation_history[Piece::Bishop as usize][Square::F3 as usize]
                 [Square::E4 as usize],
+            0
+        );
+    }
+
+    #[test]
+    fn capture_history_distinguishes_captured_piece_type() {
+        let mut ordering = MoveOrdering::new();
+        let knight_idx = Piece::Knight as usize;
+
+        ordering.update_capture_history(knight_idx, Square::D5, Piece::Queen, 1000);
+
+        assert!(
+            ordering.capture_history[knight_idx][Square::D5 as usize][Piece::Queen as usize] > 0
+        );
+        assert_eq!(
+            ordering.capture_history[knight_idx][Square::D5 as usize][Piece::Pawn as usize],
+            0
+        );
+        assert_eq!(
+            ordering.capture_history[knight_idx][Square::E5 as usize][Piece::Queen as usize],
             0
         );
     }

@@ -43,37 +43,43 @@ impl Default for SearchParameters {
 pub struct SearchState {
     pub params: SearchParameters,
     pub opt_time: i32,
+    pub max_time: i32,
     pub best_move: Move,
     pub score: i16,
     pub nodes: i32,
+    pub root_best_move_nodes: i64,
+    pub best_previous_score: Option<i16>,
     pub move_ordering: MoveOrdering,
     pub tt: TranspositionTable,
 
     pub captures_stack: Box<[MoveList; MAX_PLY]>,
     pub quiets_stack: Box<[MoveList; MAX_PLY]>,
+    pub eval_stack: Box<[i16; MAX_PLY]>,
 
-    pub pawn_correction_history: Box<[[i32; 16384]; 2]>,
-    pub minor_correction_history: Box<[[i32; 16384]; 2]>,
-    pub non_pawn_correction_history: Box<[[i32; 16384]; 2]>,
-    pub continuation_correction_history: Box<[[i32; 64]; 12]>,
+    pub lmr_table: crate::search::lmr::LmrTable,
+    pub correction_history: crate::search::correction_history::CorrectionHistory,
 }
 
 impl SearchState {
     pub fn new() -> Self {
+        let params = SearchParameters::default();
+        let lmr_table = crate::search::lmr::LmrTable::new(params.lmr_base, params.lmr_div);
         Self {
-            params: SearchParameters::default(),
+            params,
             opt_time: -1,
+            max_time: -1,
             best_move: Move::NO_MOVE,
             score: 0,
             nodes: 0,
+            root_best_move_nodes: 0,
+            best_previous_score: None,
             move_ordering: MoveOrdering::new(),
             tt: TranspositionTable::new(TranspositionTable::DEFAULT_CAPACITY),
             captures_stack: Box::new([MoveList::new(); MAX_PLY]),
             quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
-            pawn_correction_history: Box::new([[0; 16384]; 2]),
-            minor_correction_history: Box::new([[0; 16384]; 2]),
-            non_pawn_correction_history: Box::new([[0; 16384]; 2]),
-            continuation_correction_history: Box::new([[0; 64]; 12]),
+            eval_stack: Box::new([i16::MIN; MAX_PLY]),
+            lmr_table,
+            correction_history: crate::search::correction_history::CorrectionHistory::new(),
         }
     }
 
@@ -81,14 +87,13 @@ impl SearchState {
         self.best_move = Move::NO_MOVE;
         self.score = 0;
         self.nodes = 0;
+        self.root_best_move_nodes = 0;
+        *self.eval_stack = [i16::MIN; MAX_PLY];
     }
 
     pub fn reset_heuristics(&mut self) {
         self.move_ordering.reset();
-        *self.pawn_correction_history = [[0; 16384]; 2];
-        *self.minor_correction_history = [[0; 16384]; 2];
-        *self.non_pawn_correction_history = [[0; 16384]; 2];
-        *self.continuation_correction_history = [[0; 64]; 12];
+        self.correction_history.clear();
     }
 }
 

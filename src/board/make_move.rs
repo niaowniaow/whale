@@ -11,7 +11,6 @@ impl BoardState {
     pub fn make_move(&mut self, m: Move) {
         let current_idx = self.history.index;
         let next_idx = current_idx + 1;
-        self.history.accumulators[next_idx] = self.history.accumulators[current_idx];
         if crate::eval::nnue::v16::maintenance_active() {
             self.history.sfnn16[next_idx] = self.history.sfnn16[current_idx].clone();
         }
@@ -50,7 +49,7 @@ impl BoardState {
         self.board_hash ^=
             zobrist::zobrist_table()[self.get_piece_on(m.target) as usize][m.target as usize];
 
-        self.flush_pending_updates(next_idx);
+        self.record_pending_updates(next_idx);
         self.update_castling_rights(m);
         self.update_en_passant(m);
         self.flip_side_to_move();
@@ -296,7 +295,8 @@ impl BoardState {
     pub fn make_null_move(&mut self) {
         let current_idx = self.history.index;
         let next_idx = current_idx + 1;
-        self.history.accumulators[next_idx] = self.history.accumulators[current_idx];
+        self.history.dirty_updates[next_idx] = crate::board::history::DirtyUpdate::default();
+        self.history.computed[next_idx] = false;
         if crate::eval::nnue::v16::maintenance_active() {
             self.history.sfnn16[next_idx] = self.history.sfnn16[current_idx].clone();
         }

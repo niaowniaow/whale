@@ -1,3 +1,4 @@
+pub mod correction_history;
 pub mod iterative_deepening;
 pub mod lmr;
 pub mod move_picker;

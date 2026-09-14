@@ -15,6 +15,7 @@
 // - the engine only uses a v16 net after an explicit `setoption EvalFile`;
 //   there is no implicit auto-load during evaluation.
 
+use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
 
@@ -660,11 +661,11 @@ pub fn collect_threats(
     let ksq = pos.king_square(perspective);
     let mut len = 0;
     for_each_threat(pos, |attacker, from, to, attacked| {
-        if let Some(idx) = threat_make_index(perspective, attacker, from, to, attacked, ksq) {
-            if len < MAX_THREAT_ACTIVE {
-                out[len] = PSQ_DIMS + idx;
-                len += 1;
-            }
+        if let Some(idx) = threat_make_index(perspective, attacker, from, to, attacked, ksq)
+            && len < MAX_THREAT_ACTIVE
+        {
+            out[len] = PSQ_DIMS + idx;
+            len += 1;
         }
     });
     len
@@ -772,7 +773,7 @@ fn relu_hash(prev: u32) -> u32 {
 }
 
 fn rotl1(x: u32) -> u32 {
-    (x << 1) | (x >> 31)
+    x.rotate_left(1)
 }
 
 fn combine_hash(hashes: &[u32]) -> u32 {
@@ -1235,6 +1236,7 @@ fn read_rudi_i8(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i8>
     Ok(out)
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn read_rudi_i16(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i16>, &'static str> {
     let bytes = count.checked_mul(2).ok_or("bad rudim length")?;
     if *offset + bytes > data.len() {
@@ -1248,6 +1250,7 @@ fn read_rudi_i16(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i1
     Ok(out)
 }
 
+#[allow(clippy::chunks_exact_to_as_chunks)]
 fn read_rudi_i32(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i32>, &'static str> {
     let bytes = count.checked_mul(4).ok_or("bad rudim length")?;
     if *offset + bytes > data.len() {
@@ -1701,6 +1704,140 @@ pub fn refresh_perspective(
     accs.psqt[p] = ps;
 }
 
+#[derive(Clone)]
+pub struct FinnyEntry {
+    pub halfka: [i16; L1],
+    pub psqt: [i32; N_BUCKETS],
+    pub occupied: u64,
+    pub white: u64,
+    pub mapping: [u8; 64],
+    pub generation: u64,
+    pub valid: bool,
+}
+
+impl Default for FinnyEntry {
+    fn default() -> Self {
+        Self {
+            halfka: [0; L1],
+            psqt: [0; N_BUCKETS],
+            occupied: 0,
+            white: 0,
+            mapping: [6; 64],
+            generation: 0,
+            valid: false,
+        }
+    }
+}
+
+std::thread_local! {
+    static FINNY_CACHE: RefCell<Option<Box<[[FinnyEntry; 2]; 64]>>> = const { RefCell::new(None) };
+}
+
+pub fn update_perspective_finny_or_refresh(
+    pos: &SfnnPosition,
+    nets: &LoadedNets,
+    perspective: Side,
+    accs: &mut Sfnn16Accs,
+) {
+    let pi = perspective as usize;
+    let ksq = pos.king_square(perspective);
+    let current_generation = current_gen();
+
+    FINNY_CACHE.with(|cache| {
+        let mut cache_borrow = cache.borrow_mut();
+        let cache_box = cache_borrow.get_or_insert_with(|| {
+            let mut v = Vec::with_capacity(64);
+            for _ in 0..64 {
+                v.push([FinnyEntry::default(), FinnyEntry::default()]);
+            }
+            v.into_boxed_slice()
+                .try_into()
+                .unwrap_or_else(|_| unreachable!())
+        });
+        let entry = &mut cache_box[ksq][pi];
+
+        if entry.valid && entry.generation == current_generation {
+            let cur_occ = pos.occupied();
+            let entry_occ = entry.occupied;
+            let removed_bb = entry_occ & !cur_occ;
+            let added_bb = cur_occ & !entry_occ;
+            let common_bb = cur_occ & entry_occ;
+
+            let mut diff_count = (removed_bb | added_bb).count_ones() as usize;
+            if diff_count <= 8 {
+                let mut changed_common = 0u64;
+                let mut temp = common_bb;
+                while temp != 0 {
+                    let s = temp.trailing_zeros() as usize;
+                    temp &= temp - 1;
+                    let cur_w = (pos.white >> s) & 1;
+                    let entry_w = (entry.white >> s) & 1;
+                    if cur_w != entry_w || pos.mapping[s] != entry.mapping[s] {
+                        changed_common |= 1u64 << s;
+                        diff_count += 1;
+                        if diff_count > 8 {
+                            break;
+                        }
+                    }
+                }
+
+                if diff_count <= 8 {
+                    accs.halfka[pi] = entry.halfka;
+                    accs.psqt[pi] = entry.psqt;
+                    let slot = &mut accs.halfka[pi];
+                    let psqt = &mut accs.psqt[pi];
+
+                    let mut del_bb = removed_bb | changed_common;
+                    while del_bb != 0 {
+                        let s = del_bb.trailing_zeros() as usize;
+                        del_bb &= del_bb - 1;
+                        let is_w = (entry.white >> s) & 1 == 1;
+                        let side = if is_w { Side::White } else { Side::Black };
+                        let pt = entry.mapping[s] as usize;
+                        if pt <= 5 {
+                            let piece = Piece::ALL[pt];
+                            if let Some(f) = halfka_index(perspective, side, piece, s, ksq) {
+                                scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, -1);
+                            }
+                        }
+                    }
+
+                    let mut add_bb = added_bb | changed_common;
+                    while add_bb != 0 {
+                        let s = add_bb.trailing_zeros() as usize;
+                        add_bb &= add_bb - 1;
+                        let is_w = (pos.white >> s) & 1 == 1;
+                        let side = if is_w { Side::White } else { Side::Black };
+                        let pt = pos.mapping[s] as usize;
+                        if pt <= 5 {
+                            let piece = Piece::ALL[pt];
+                            if let Some(f) = halfka_index(perspective, side, piece, s, ksq) {
+                                scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, 1);
+                            }
+                        }
+                    }
+
+                    entry.halfka = accs.halfka[pi];
+                    entry.psqt = accs.psqt[pi];
+                    entry.occupied = cur_occ;
+                    entry.white = pos.white;
+                    entry.mapping = pos.mapping;
+                    return;
+                }
+            }
+        }
+
+        refresh_perspective(pos, nets, perspective, accs);
+        entry.halfka = accs.halfka[pi];
+        entry.psqt = accs.psqt[pi];
+        entry.occupied = pos.occupied();
+        entry.white = pos.white;
+        entry.mapping = pos.mapping;
+        entry.generation = current_generation;
+        entry.valid = true;
+    });
+}
+
 fn kings_present(pos: &SfnnPosition) -> bool {
     (pos.pieces[Piece::King as usize] & pos.white) != 0
         && (pos.pieces[Piece::King as usize] & pos.black) != 0
@@ -1742,24 +1879,24 @@ pub fn apply_queued(
     if let Some(nets) = nets.as_ref() {
         for (pi, perspective) in [Side::White, Side::Black].iter().enumerate() {
             if king_moved[pi] {
-                refresh_perspective(pos, nets, *perspective, accs);
+                update_perspective_finny_or_refresh(pos, nets, *perspective, accs);
                 continue;
             }
             let ksq = pos.king_square(*perspective);
             let slot = &mut accs.halfka[pi];
             let psqt = &mut accs.psqt[pi];
             for opt in dels {
-                if let Some((sq_sf, side, piece)) = *opt {
-                    if let Some(f) = halfka_index(*perspective, side, piece, sq_sf, ksq) {
-                        scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, -1);
-                    }
+                if let Some((sq_sf, side, piece)) = *opt
+                    && let Some(f) = halfka_index(*perspective, side, piece, sq_sf, ksq)
+                {
+                    scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, -1);
                 }
             }
             for opt in adds {
-                if let Some((sq_sf, side, piece)) = *opt {
-                    if let Some(f) = halfka_index(*perspective, side, piece, sq_sf, ksq) {
-                        scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, 1);
-                    }
+                if let Some((sq_sf, side, piece)) = *opt
+                    && let Some(f) = halfka_index(*perspective, side, piece, sq_sf, ksq)
+                {
+                    scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, 1);
                 }
             }
         }
@@ -2331,5 +2468,54 @@ mod tests {
         let sum_w31_them: i64 = w31[512..].iter().map(|&x| x as i64).sum();
         println!("w30 us sum = {}, them sum = {}", sum_w30_us, sum_w30_them);
         println!("w31 us sum = {}, them sum = {}", sum_w31_us, sum_w31_them);
+    }
+
+    #[test]
+    fn test_finny_cache_consistency() {
+        if !try_load_default() {
+            return;
+        }
+        let nets = loaded_nets().unwrap();
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1",
+            "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 6 5",
+            "8/8/8/4k3/8/8/4K3/8 w - - 0 1",
+        ];
+        for fen in fens {
+            let board = BoardState::parse_fen(fen);
+            let pos = SfnnPosition::from_board(&board);
+            for perspective in [Side::White, Side::Black] {
+                let mut acc_direct = Sfnn16Accs::empty();
+                refresh_perspective(&pos, &nets, perspective, &mut acc_direct);
+
+                let mut acc_finny = Sfnn16Accs::empty();
+                update_perspective_finny_or_refresh(&pos, &nets, perspective, &mut acc_finny);
+                assert_eq!(
+                    acc_finny.halfka[perspective as usize],
+                    acc_direct.halfka[perspective as usize]
+                );
+                assert_eq!(
+                    acc_finny.psqt[perspective as usize],
+                    acc_direct.psqt[perspective as usize]
+                );
+
+                let mut acc_finny_cached = Sfnn16Accs::empty();
+                update_perspective_finny_or_refresh(
+                    &pos,
+                    &nets,
+                    perspective,
+                    &mut acc_finny_cached,
+                );
+                assert_eq!(
+                    acc_finny_cached.halfka[perspective as usize],
+                    acc_direct.halfka[perspective as usize]
+                );
+                assert_eq!(
+                    acc_finny_cached.psqt[perspective as usize],
+                    acc_direct.psqt[perspective as usize]
+                );
+            }
+        }
     }
 }

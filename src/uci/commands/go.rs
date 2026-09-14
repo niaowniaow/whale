@@ -42,7 +42,7 @@ impl UciClient {
 
         let ply = {
             let board = self.board.lock().unwrap();
-            board.move_count as i32
+            board.move_count
         };
         let allotted_time = if movetime == -1 {
             if clock == -1 {
@@ -101,6 +101,7 @@ impl UciClient {
             let mut debug_mode = debug.load(Ordering::Relaxed);
             let mut search_state_guard = search_state.lock().unwrap();
             search_state_guard.opt_time = opt_time;
+            search_state_guard.max_time = max_time.min(i32::MAX as u64) as i32;
             let best_move = board.find_best_move(
                 search_depth,
                 &cancel_for_search,

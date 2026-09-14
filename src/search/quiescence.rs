@@ -64,11 +64,11 @@ pub fn search(
             break;
         }
 
-        board_state.make_move(move_obj);
-        if board_state.is_in_check(board_state.side_to_move.other()) {
-            board_state.unmake_move(move_obj);
+        if !board_state.is_legal(move_obj) {
             continue;
         }
+
+        board_state.make_move(move_obj);
 
         has_legal_moves = true;
 
@@ -109,11 +109,10 @@ pub fn search(
             }
         }
         for &move_obj in promos.iter().take(promo_count) {
-            board_state.make_move(move_obj);
-            if board_state.is_in_check(board_state.side_to_move.other()) {
-                board_state.unmake_move(move_obj);
+            if !board_state.is_legal(move_obj) {
                 continue;
             }
+            board_state.make_move(move_obj);
             let score = -search(
                 board_state,
                 -beta,

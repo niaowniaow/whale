@@ -7,6 +7,7 @@ use crate::board::history::History;
 use crate::common::castle::Castle;
 use crate::common::constants::{PIECES, SIDES, SQUARES};
 use crate::common::game_phase::{add_phase, get_clipped_phase, remove_phase};
+use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::piece::{Piece, PieceMap};
 use crate::common::side::{Side, SideMap};
@@ -442,6 +443,144 @@ impl BoardState {
         false
     }
 
+    #[inline(always)]
+    pub fn is_square_attacked_with_occ(
+        &self,
+        square: Square,
+        attacking_side: Side,
+        occupancy: Bitboard,
+    ) -> bool {
+        let sq = square as usize;
+        let defending_side = attacking_side.other();
+
+        if (self.get_pieces(attacking_side, Piece::Pawn)
+            & pawn_attacks()[defending_side as usize][sq])
+            .is_not_empty()
+        {
+            return true;
+        }
+        if (self.get_pieces(attacking_side, Piece::Knight) & knight_attacks()[sq]).is_not_empty() {
+            return true;
+        }
+        if (self.get_pieces(attacking_side, Piece::King) & king_attacks()[sq]).is_not_empty() {
+            return true;
+        }
+
+        if (get_bishop_attacks_from_table(square, occupancy)
+            & (self.get_pieces(attacking_side, Piece::Bishop)
+                | self.get_pieces(attacking_side, Piece::Queen)))
+        .is_not_empty()
+        {
+            return true;
+        }
+        if (get_rook_attacks_from_table(square, occupancy)
+            & (self.get_pieces(attacking_side, Piece::Rook)
+                | self.get_pieces(attacking_side, Piece::Queen)))
+        .is_not_empty()
+        {
+            return true;
+        }
+
+        false
+    }
+
+    #[inline(always)]
+    pub fn is_aligned(sq1: Square, sq2: Square) -> bool {
+        let r1 = sq1.rank() as i32;
+        let f1 = sq1.file() as i32;
+        let r2 = sq2.rank() as i32;
+        let f2 = sq2.file() as i32;
+        r1 == r2 || f1 == f2 || (r1 - r2).abs() == (f1 - f2).abs()
+    }
+
+    pub fn is_legal(&self, m: Move) -> bool {
+        let us = self.side_to_move;
+        let them = us.other();
+        let king_bb = self.get_pieces(us, Piece::King);
+        if king_bb.is_empty() {
+            return false;
+        }
+        let ksq = Square::from(king_bb.get_lsb() as usize);
+        let from = m.source;
+        let to = m.target;
+        let from_piece = self.piece_mapping[from as usize];
+
+        if from_piece == Piece::King {
+            if m.move_type == MoveType::Castle {
+                if self.is_square_attacked(ksq, them) {
+                    return false;
+                }
+                let transit = if to > from {
+                    Square::from(from as usize + 1)
+                } else {
+                    Square::from(from as usize - 1)
+                };
+                if self.is_square_attacked(transit, them) {
+                    return false;
+                }
+                return !self.is_square_attacked(to, them);
+            }
+            let occ = Bitboard(self.occupancy().0 ^ (1u64 << (from as usize)));
+            return !self.is_square_attacked_with_occ(to, them, occ);
+        }
+
+        if m.move_type == MoveType::EnPassant {
+            let cap_sq = Square::from_rank_file(from.rank(), to.file());
+            let occ = Bitboard(
+                self.occupancy().0 ^ (1u64 << (from as usize)) ^ (1u64 << (cap_sq as usize))
+                    | (1u64 << (to as usize)),
+            );
+            let enemy_pawns = self.get_pieces(them, Piece::Pawn).0 & !(1u64 << (cap_sq as usize));
+            if (enemy_pawns & pawn_attacks()[us as usize][ksq as usize]) != 0 {
+                return false;
+            }
+            if (self.get_pieces(them, Piece::Knight).0 & knight_attacks()[ksq as usize]) != 0 {
+                return false;
+            }
+            let enemy_bq =
+                self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
+            if (get_bishop_attacks_from_table(ksq, occ).0 & enemy_bq) != 0 {
+                return false;
+            }
+            let enemy_rq =
+                self.get_pieces(them, Piece::Rook).0 | self.get_pieces(them, Piece::Queen).0;
+            if (get_rook_attacks_from_table(ksq, occ).0 & enemy_rq) != 0 {
+                return false;
+            }
+            return true;
+        }
+
+        if !m.is_capture() && !self.is_in_check(us) && !Self::is_aligned(from, ksq) {
+            return true;
+        }
+
+        let occ =
+            Bitboard((self.occupancy().0 ^ (1u64 << (from as usize))) | (1u64 << (to as usize)));
+        let to_mask = !(1u64 << (to as usize));
+
+        let enemy_knights = self.get_pieces(them, Piece::Knight).0 & to_mask;
+        if (enemy_knights & knight_attacks()[ksq as usize]) != 0 {
+            return false;
+        }
+
+        let enemy_pawns = self.get_pieces(them, Piece::Pawn).0 & to_mask;
+        if (enemy_pawns & pawn_attacks()[us as usize][ksq as usize]) != 0 {
+            return false;
+        }
+
+        let enemy_bq = (self.get_pieces(them, Piece::Bishop).0
+            | self.get_pieces(them, Piece::Queen).0)
+            & to_mask;
+        if (get_bishop_attacks_from_table(ksq, occ).0 & enemy_bq) != 0 {
+            return false;
+        }
+
+        let enemy_rq = (self.get_pieces(them, Piece::Rook).0
+            | self.get_pieces(them, Piece::Queen).0)
+            & to_mask;
+        (get_rook_attacks_from_table(ksq, occ).0 & enemy_rq) == 0
+    }
+
     pub fn clipped_phase(&self) -> i32 {
         get_clipped_phase(self.phase)
     }
@@ -658,6 +797,7 @@ mod tests {
             board.make_move(m);
             move_history.push(m);
 
+            board.ensure_accumulators_fresh();
             let current_white = board.history.accumulators[board.history.index].white;
             let current_black = board.history.accumulators[board.history.index].black;
 
@@ -679,6 +819,7 @@ mod tests {
         while let Some(m) = move_history.pop() {
             board.unmake_move(m);
 
+            board.ensure_accumulators_fresh();
             let current_white = board.history.accumulators[board.history.index].white;
             let current_black = board.history.accumulators[board.history.index].black;
 
@@ -705,5 +846,39 @@ mod tests {
             board.history.accumulators[board.history.index].black,
             expected_black
         );
+    }
+
+    #[test]
+    fn test_is_legal_matches_make_unmake() {
+        use crate::common::move_list::MoveList;
+
+        let fens = [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1",
+            "8/8/8/8/k2Pp2R/8/8/3K4 b - d3 0 1",
+        ];
+
+        for fen in fens {
+            let mut board = BoardState::parse_fen(fen);
+            let mut moves = MoveList::new();
+            board.generate_moves(&mut moves);
+
+            for m_entry in moves.iter() {
+                let m = m_entry.mv;
+                let fast_legal = board.is_legal(m);
+
+                board.make_move(m);
+                let slow_legal = !board.is_in_check(board.side_to_move.other());
+                board.unmake_move(m);
+
+                assert_eq!(
+                    fast_legal, slow_legal,
+                    "Legality mismatch for move {:?} in FEN: {}",
+                    m, fen
+                );
+            }
+        }
     }
 }

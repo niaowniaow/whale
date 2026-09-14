@@ -82,6 +82,25 @@ pub fn hash_en_passant(board_state: &BoardState, current_hash: u64) -> u64 {
     }
 }
 
+pub fn get_pawn_hash(board_state: &BoardState) -> u64 {
+    let mut current_hash = 0;
+    let mut white_pawns =
+        (board_state.pieces[Piece::Pawn] & board_state.occupancies[Side::White]).0;
+    while white_pawns != 0 {
+        let sq = white_pawns.trailing_zeros() as usize;
+        current_hash ^= zobrist_table()[0][sq];
+        white_pawns &= white_pawns - 1;
+    }
+    let mut black_pawns =
+        (board_state.pieces[Piece::Pawn] & board_state.occupancies[Side::Black]).0;
+    while black_pawns != 0 {
+        let sq = black_pawns.trailing_zeros() as usize;
+        current_hash ^= zobrist_table()[6][sq];
+        black_pawns &= black_pawns - 1;
+    }
+    current_hash
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -106,23 +125,4 @@ mod tests {
         }
         assert_eq!(get_pawn_hash(&board), expected);
     }
-}
-
-pub fn get_pawn_hash(board_state: &BoardState) -> u64 {
-    let mut current_hash = 0;
-    let mut white_pawns =
-        (board_state.pieces[Piece::Pawn] & board_state.occupancies[Side::White]).0;
-    while white_pawns != 0 {
-        let sq = white_pawns.trailing_zeros() as usize;
-        current_hash ^= zobrist_table()[0][sq];
-        white_pawns &= white_pawns - 1;
-    }
-    let mut black_pawns =
-        (board_state.pieces[Piece::Pawn] & board_state.occupancies[Side::Black]).0;
-    while black_pawns != 0 {
-        let sq = black_pawns.trailing_zeros() as usize;
-        current_hash ^= zobrist_table()[6][sq];
-        black_pawns &= black_pawns - 1;
-    }
-    current_hash
 }

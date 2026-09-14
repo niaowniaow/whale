@@ -16,7 +16,7 @@ pub enum SearchPhase {
 }
 
 pub struct MovePicker {
-    phase: SearchPhase,
+    pub phase: SearchPhase,
     pv_move: Option<Move>,
     tt_best: Option<Move>,
     previous_move: Option<Move>,
@@ -113,7 +113,6 @@ impl MovePicker {
                     board_state.generate_captures(captures);
                     move_ordering::populate_capture_scores(captures, board_state, move_ordering);
 
-                    // Partition in-place: good captures (SEE >= 0) to the left, bad captures (SEE < 0) to the right
                     let mut left = 0;
                     let mut right = captures.len() as i32 - 1;
                     while left <= right {

@@ -71,6 +71,7 @@ pub fn evaluate(board: &mut BoardState) -> i16 {
     let score = if let Some(hit) = probe_eval_cache(board.board_hash) {
         hit
     } else {
+        board.ensure_accumulators_fresh();
         let raw = if v16::maintenance_active() {
             if let Some(ev) = v16::evaluate_board_detailed(board) {
                 // Stockfish outer blend: optimism + complexity + material
@@ -178,12 +179,8 @@ mod tests {
     fn test_nnue_forward_pass_mathematical_correctness() {
         let mut network = Network::new_boxed();
         network.output_bias = 10;
-        for i in 0..ACC_SIZE {
-            network.output_weights[i] = 2;
-        }
-        for i in ACC_SIZE..2 * ACC_SIZE {
-            network.output_weights[i] = 3;
-        }
+        network.output_weights[..ACC_SIZE].fill(2);
+        network.output_weights[ACC_SIZE..2 * ACC_SIZE].fill(3);
 
         let mut board = BoardState::new();
 

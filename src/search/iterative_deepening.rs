@@ -25,6 +25,9 @@ pub fn search(
     let mut best_move_so_far = Move::NO_MOVE;
     let mut bm_changes = 0;
     let mut stable_count = 0;
+    let mut last_best_move_depth = 1u8;
+    let mut iter_scores = [0i16; 4];
+    let mut iter_idx = 0usize;
 
     // Time management is only active in clock-based searches; fixed-depth
     // searches always run to full depth for predictable testing.
@@ -38,10 +41,7 @@ pub fn search(
         board_state.generate_moves(&mut root_moves);
         for i in 0..root_moves.len() {
             let m = root_moves[i].mv;
-            board_state.make_move(m);
-            let legal = !board_state.is_in_check(board_state.side_to_move.other());
-            board_state.unmake_move(m);
-            if legal {
+            if board_state.is_legal(m) {
                 legal_root_moves += 1;
                 if legal_root_moves > 1 {
                     break;
@@ -58,6 +58,7 @@ pub fn search(
     let timer = Instant::now();
 
     for current_depth in 1..=max_depth {
+        let iter_start_nodes = search_state.nodes;
         // Aspiration Windows
         let mut alpha = i16::MIN + 1;
         let mut beta = i16::MAX - 1;
@@ -130,15 +131,14 @@ pub fn search(
                 && best_move_so_far != Move::NO_MOVE
                 && new_best_move != Move::NO_MOVE
                 && new_best_move != best_move_so_far;
-            // TM 3 — Instability: a changing best move or a swinging score
-            // means trouble; earn extra time for the next iteration.
             let score_swing =
                 current_depth > 1 && (current_score as i32 - last_score as i32).abs() > 80;
             if move_changed || score_swing {
                 bm_changes += 1;
             }
-            // TM 2 — Stability: same best move and nearly the same score over
-            // consecutive depths means the position is solved; stop early.
+            if move_changed {
+                last_best_move_depth = current_depth;
+            }
             let stable = use_tm
                 && !move_changed
                 && new_best_move != Move::NO_MOVE
@@ -149,7 +149,6 @@ pub fn search(
             } else {
                 stable_count = 0;
             }
-            // Never throw away a known best move for an empty PV.
             if new_best_move != Move::NO_MOVE {
                 best_move_so_far = new_best_move;
             }
@@ -161,18 +160,58 @@ pub fn search(
             }
             search_state.best_move = best_move_so_far;
 
+            iter_scores[iter_idx] = current_score;
+            iter_idx = (iter_idx + 1) & 3;
+
             if use_tm && stable_count >= 2 && current_depth >= 6 {
                 break;
             }
         }
 
-        // TM: Soft limit with BM instability
-        if search_state.opt_time > 0 {
+        if use_tm {
             let elapsed = timer.elapsed().as_millis() as i32;
-            // Add up to 50% extra time if best move is unstable
-            let dynamic_opt =
-                search_state.opt_time + (search_state.opt_time / 4) * bm_changes.min(2);
-            if elapsed >= dynamic_opt {
+            let iter_nodes = (search_state.nodes - iter_start_nodes).max(1);
+            let effort =
+                (search_state.root_best_move_nodes as f64 / iter_nodes as f64).clamp(0.0, 1.0);
+            let high_effort_discount = if effort >= 0.70 {
+                (1.0 - 0.30 * ((effort - 0.70) / 0.30)).clamp(0.70, 1.0)
+            } else {
+                1.0
+            };
+
+            let prev_diff = search_state
+                .best_previous_score
+                .map(|p| p as f64 - current_score as f64)
+                .unwrap_or(0.0);
+            let iter_diff = iter_scores[iter_idx] as f64 - current_score as f64;
+            let falling_eval = if current_depth > 2 {
+                (1.0 + 0.015 * prev_diff + 0.010 * iter_diff).clamp(0.60, 1.75)
+            } else {
+                1.0
+            };
+
+            let best_move_instability = (1.0 + 0.35 * bm_changes as f64).clamp(1.0, 2.0);
+
+            let stability_depth = current_depth.saturating_sub(last_best_move_depth) as f64;
+            let stability_discount = if stability_depth >= 3.0 {
+                (1.0 - 0.05 * (stability_depth - 3.0)).clamp(0.65, 1.0)
+            } else {
+                1.0
+            };
+
+            let total_scale =
+                falling_eval * best_move_instability * stability_discount * high_effort_discount;
+            let dynamic_opt = ((search_state.opt_time as f64) * total_scale) as i32;
+            let max_limit = if search_state.max_time > 0 {
+                search_state.max_time
+            } else {
+                search_state.opt_time.saturating_mul(5)
+            };
+            let capped_opt = dynamic_opt.clamp(10, max_limit);
+
+            if elapsed >= capped_opt
+                || (elapsed as f64 >= capped_opt as f64 * 0.55 && current_depth >= 6)
+            {
                 cancellation_token.store(true, Ordering::Relaxed);
                 break;
             }
@@ -200,6 +239,7 @@ pub fn search(
             );
         }
     }
+    search_state.best_previous_score = Some(search_state.score);
 }
 
 pub fn format_score(score: i16) -> String {

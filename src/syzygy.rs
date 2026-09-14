@@ -11,8 +11,8 @@
 //!   DTZ-optimal table move directly;
 //! - search: unconditional WDL Win/Loss results become hard TB bounds so the
 //!   search never walks out of a won ending (or into a lost one).
-//! Ambiguous results (cursed wins, blessed losses) are left to normal search
-//! so the 50-move rule stays correct.
+//!   Ambiguous results (cursed wins, blessed losses) are left to normal search
+//!   so the 50-move rule stays correct.
 
 use std::sync::{Arc, RwLock};
 
