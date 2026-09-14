@@ -69,6 +69,75 @@ const fn generate_passed_pawn_masks() -> [[u64; SQUARES]; SIDES] {
 
 pub const PASSED_PAWN_MASKS: [[u64; SQUARES]; SIDES] = generate_passed_pawn_masks();
 
+const fn generate_ray_tables() -> ([[u64; SQUARES]; SQUARES], [[u64; SQUARES]; SQUARES]) {
+    let mut between = [[0u64; SQUARES]; SQUARES];
+    let mut line = [[0u64; SQUARES]; SQUARES];
+    let mut sq1 = 0;
+    while sq1 < 64 {
+        let r1 = sq1 as i32 / 8;
+        let f1 = sq1 as i32 % 8;
+        let mut sq2 = 0;
+        while sq2 < 64 {
+            if sq1 != sq2 {
+                let r2 = sq2 as i32 / 8;
+                let f2 = sq2 as i32 % 8;
+                let dr = if r2 > r1 {
+                    1
+                } else if r2 < r1 {
+                    -1
+                } else {
+                    0
+                };
+                let df = if f2 > f1 {
+                    1
+                } else if f2 < f1 {
+                    -1
+                } else {
+                    0
+                };
+                let dy = if r2 >= r1 { r2 - r1 } else { r1 - r2 };
+                let dx = if f2 >= f1 { f2 - f1 } else { f1 - f2 };
+                if dr == 0 || df == 0 || dy == dx {
+                    let mut curr_r = r1 + dr;
+                    let mut curr_f = f1 + df;
+                    let mut b_mask = 0u64;
+                    while curr_r != r2 || curr_f != f2 {
+                        b_mask |= 1u64 << (curr_r * 8 + curr_f);
+                        curr_r += dr;
+                        curr_f += df;
+                    }
+                    between[sq1][sq2] = b_mask;
+
+                    let mut l_mask = 0u64;
+                    let mut r = r1;
+                    let mut f = f1;
+                    while r >= 0 && r < 8 && f >= 0 && f < 8 {
+                        l_mask |= 1u64 << (r * 8 + f);
+                        r += dr;
+                        f += df;
+                    }
+                    r = r1 - dr;
+                    f = f1 - df;
+                    while r >= 0 && r < 8 && f >= 0 && f < 8 {
+                        l_mask |= 1u64 << (r * 8 + f);
+                        r -= dr;
+                        f -= df;
+                    }
+                    line[sq1][sq2] = l_mask;
+                }
+            }
+            sq2 += 1;
+        }
+        sq1 += 1;
+    }
+    (between, line)
+}
+
+pub static RAY_TABLES: ([[u64; SQUARES]; SQUARES], [[u64; SQUARES]; SQUARES]) =
+    generate_ray_tables();
+pub static BETWEEN_BB: &[[u64; SQUARES]; SQUARES] = &RAY_TABLES.0;
+pub static LINE_BB: &[[u64; SQUARES]; SQUARES] = &RAY_TABLES.1;
+
 #[derive(Debug, Clone)]
 pub struct BoardState {
     pub pieces: PieceMap<Bitboard>,
@@ -493,6 +562,58 @@ impl BoardState {
         r1 == r2 || f1 == f2 || (r1 - r2).abs() == (f1 - f2).abs()
     }
 
+    pub fn pinned_pieces(&self, side: Side) -> Bitboard {
+        let king_bb = self.get_pieces(side, Piece::King);
+        if king_bb.is_empty() {
+            return Bitboard(0);
+        }
+        let ksq = Square::from(king_bb.get_lsb() as usize);
+        let them = side.other();
+        let occ = self.occupancy();
+        let our_occ = self.occupancies[side].0;
+
+        let enemy_bq =
+            self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
+        let enemy_rq = self.get_pieces(them, Piece::Rook).0 | self.get_pieces(them, Piece::Queen).0;
+
+        let diag_pinners = get_bishop_attacks_from_table(ksq, Bitboard(0)).0 & enemy_bq;
+        let orth_pinners = get_rook_attacks_from_table(ksq, Bitboard(0)).0 & enemy_rq;
+
+        let mut pinned = 0u64;
+        let mut pinners = diag_pinners | orth_pinners;
+        while pinners != 0 {
+            let psq = pinners.trailing_zeros() as usize;
+            pinners &= pinners - 1;
+            let ray = BETWEEN_BB[ksq as usize][psq] & occ.0;
+            if ray != 0 && (ray & (ray - 1)) == 0 && (ray & our_occ) != 0 {
+                pinned |= ray;
+            }
+        }
+        Bitboard(pinned)
+    }
+
+    pub fn checkers(&self, side: Side) -> Bitboard {
+        let king_bb = self.get_pieces(side, Piece::King);
+        if king_bb.is_empty() {
+            return Bitboard(0);
+        }
+        let ksq = Square::from(king_bb.get_lsb() as usize);
+        let them = side.other();
+        let occ = self.occupancy();
+
+        let mut checkers = 0u64;
+        checkers |=
+            self.get_pieces(them, Piece::Pawn).0 & pawn_attacks()[side as usize][ksq as usize];
+        checkers |= self.get_pieces(them, Piece::Knight).0 & knight_attacks()[ksq as usize];
+        let enemy_bq =
+            self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
+        checkers |= get_bishop_attacks_from_table(ksq, occ).0 & enemy_bq;
+        let enemy_rq = self.get_pieces(them, Piece::Rook).0 | self.get_pieces(them, Piece::Queen).0;
+        checkers |= get_rook_attacks_from_table(ksq, occ).0 & enemy_rq;
+
+        Bitboard(checkers)
+    }
+
     pub fn is_legal(&self, m: Move) -> bool {
         let us = self.side_to_move;
         let them = us.other();
@@ -550,35 +671,31 @@ impl BoardState {
             return true;
         }
 
-        if !m.is_capture() && !self.is_in_check(us) && !Self::is_aligned(from, ksq) {
+        let checkers = self.checkers(us).0;
+        let pinned = self.pinned_pieces(us).0;
+
+        if checkers == 0 {
+            if (pinned & (1u64 << from as usize)) == 0 {
+                return true;
+            }
+            return (LINE_BB[ksq as usize][from as usize] & (1u64 << to as usize)) != 0;
+        }
+
+        let num_checkers = checkers.count_ones();
+        if num_checkers > 1 {
+            return false;
+        }
+
+        if (pinned & (1u64 << from as usize)) != 0 {
+            return false;
+        }
+
+        let checker_sq = checkers.trailing_zeros() as usize;
+        if to as usize == checker_sq {
             return true;
         }
 
-        let occ =
-            Bitboard((self.occupancy().0 ^ (1u64 << (from as usize))) | (1u64 << (to as usize)));
-        let to_mask = !(1u64 << (to as usize));
-
-        let enemy_knights = self.get_pieces(them, Piece::Knight).0 & to_mask;
-        if (enemy_knights & knight_attacks()[ksq as usize]) != 0 {
-            return false;
-        }
-
-        let enemy_pawns = self.get_pieces(them, Piece::Pawn).0 & to_mask;
-        if (enemy_pawns & pawn_attacks()[us as usize][ksq as usize]) != 0 {
-            return false;
-        }
-
-        let enemy_bq = (self.get_pieces(them, Piece::Bishop).0
-            | self.get_pieces(them, Piece::Queen).0)
-            & to_mask;
-        if (get_bishop_attacks_from_table(ksq, occ).0 & enemy_bq) != 0 {
-            return false;
-        }
-
-        let enemy_rq = (self.get_pieces(them, Piece::Rook).0
-            | self.get_pieces(them, Piece::Queen).0)
-            & to_mask;
-        (get_rook_attacks_from_table(ksq, occ).0 & enemy_rq) == 0
+        (BETWEEN_BB[ksq as usize][checker_sq] & (1u64 << to as usize)) != 0
     }
 
     pub fn clipped_phase(&self) -> i32 {

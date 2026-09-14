@@ -405,6 +405,8 @@ fn search_internal(
     let mut has_legal_moves = false;
     let mut tried_quiets = [Move::NO_MOVE; 64];
     let mut tried_quiets_count = 0;
+    let mut tried_captures = [Move::NO_MOVE; 32];
+    let mut tried_captures_count = 0;
     let has_non_pawn_material = board_state.has_non_pawn_material(board_state.side_to_move);
 
     while let Some(move_obj) = move_picker.next(
@@ -425,6 +427,18 @@ fn search_internal(
                 move_obj,
                 previous_move,
             );
+        } else if move_obj.is_capture() {
+            let moved_piece = board_state.get_piece_on(move_obj.source);
+            let captured_piece = if move_obj.move_type == MoveType::EnPassant {
+                Piece::Pawn
+            } else {
+                board_state.piece_mapping[move_obj.target as usize]
+            };
+            if moved_piece >= 0 && captured_piece != Piece::None {
+                history_score = ctx.search_state.move_ordering.capture_history[moved_piece as usize]
+                    [move_obj.target as usize][captured_piece as usize]
+                    as i32;
+            }
         }
 
         // PRUNE: SEE Pruning
@@ -532,7 +546,14 @@ fn search_internal(
             false
         };
 
-        let needs_lmr = lmr::needs_reduction(depth, number_of_legal_moves, is_tactical, in_check);
+        let needs_lmr = lmr::needs_reduction(depth, number_of_legal_moves, is_tactical, in_check)
+            || (is_tactical
+                && lmr::needs_tactical_reduction(
+                    depth,
+                    number_of_legal_moves,
+                    in_check,
+                    history_score,
+                ));
 
         // PRUNE: History-based Pruning (Late Move Pruning)
         if depth <= 3
@@ -663,6 +684,7 @@ fn search_internal(
                 previous_move,
                 ctx.search_state,
                 &tried_quiets[..tried_quiets_count],
+                &tried_captures[..tried_captures_count],
                 ctx.excluded_move,
             );
         }
@@ -670,6 +692,9 @@ fn search_internal(
         if !move_obj.is_capture() && tried_quiets_count < tried_quiets.len() {
             tried_quiets[tried_quiets_count] = move_obj;
             tried_quiets_count += 1;
+        } else if move_obj.is_capture() && tried_captures_count < tried_captures.len() {
+            tried_captures[tried_captures_count] = move_obj;
+            tried_captures_count += 1;
         }
     }
 
@@ -883,6 +908,7 @@ fn beta_cutoff(
     previous_move: Option<Move>,
     search_state: &mut SearchState,
     tried_quiets: &[Move],
+    tried_captures: &[Move],
     excluded_move: Option<Move>,
 ) -> i16 {
     if excluded_move.is_none() {
@@ -936,6 +962,22 @@ fn beta_cutoff(
                     captured_piece,
                     bonus,
                 );
+                for &prev_cap in tried_captures {
+                    let prev_moved = board_state.get_piece_on(prev_cap.source);
+                    let prev_captured = if prev_cap.move_type == MoveType::EnPassant {
+                        Piece::Pawn
+                    } else {
+                        board_state.piece_mapping[prev_cap.target as usize]
+                    };
+                    if prev_moved >= 0 && prev_captured != Piece::None {
+                        search_state.move_ordering.update_capture_history(
+                            prev_moved as usize,
+                            prev_cap.target,
+                            prev_captured,
+                            -bonus,
+                        );
+                    }
+                }
             }
         }
     }

@@ -185,7 +185,7 @@ pub fn search(
                 .unwrap_or(0.0);
             let iter_diff = iter_scores[iter_idx] as f64 - current_score as f64;
             let falling_eval = if current_depth > 2 {
-                (1.0 + 0.015 * prev_diff + 0.010 * iter_diff).clamp(0.60, 1.75)
+                (1.0 + 0.015 * prev_diff + 0.010 * iter_diff).clamp(0.60, 2.20)
             } else {
                 1.0
             };
@@ -199,8 +199,19 @@ pub fn search(
                 1.0
             };
 
-            let total_scale =
-                falling_eval * best_move_instability * stability_discount * high_effort_discount;
+            let easy_win_discount = if current_score > 600 {
+                0.75
+            } else if current_score > 300 {
+                0.88
+            } else {
+                1.0
+            };
+
+            let total_scale = falling_eval
+                * best_move_instability
+                * stability_discount
+                * high_effort_discount
+                * easy_win_discount;
             let dynamic_opt = ((search_state.opt_time as f64) * total_scale) as i32;
             let max_limit = if search_state.max_time > 0 {
                 search_state.max_time
@@ -209,7 +220,13 @@ pub fn search(
             };
             let capped_opt = dynamic_opt.clamp(10, max_limit);
 
-            if elapsed >= capped_opt
+            let early_stop = current_depth >= 8
+                && effort >= 0.85
+                && stability_depth >= 3.0
+                && elapsed >= (capped_opt / 2).max(10);
+
+            if early_stop
+                || elapsed >= capped_opt
                 || (elapsed as f64 >= capped_opt as f64 * 0.55 && current_depth >= 6)
             {
                 cancellation_token.store(true, Ordering::Relaxed);

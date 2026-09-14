@@ -64,6 +64,16 @@ pub fn needs_reduction(depth: u8, move_count: usize, is_tactical: bool, in_check
 }
 
 #[inline(always)]
+pub fn needs_tactical_reduction(
+    depth: u8,
+    move_count: usize,
+    in_check: bool,
+    history_score: i32,
+) -> bool {
+    depth >= 4 && move_count >= 4 && !in_check && history_score < -200
+}
+
+#[inline(always)]
 pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &[i32; 16]) -> u8 {
     let base = table.base_reduction(query.depth, query.move_count);
     let mut reduction = i32::from(base);
@@ -78,7 +88,9 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
         reduction = reduction.saturating_sub(1);
     }
 
-    if !query.is_tactical {
+    if query.is_tactical {
+        reduction = 1;
+    } else {
         let d_idx = (query.depth as usize).min(16).saturating_sub(1);
         let divisor = history_divisors[d_idx].max(1);
         let history_bonus = query.history_score / divisor;

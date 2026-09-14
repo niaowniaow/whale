@@ -29,6 +29,15 @@ impl Accumulator {
     pub fn add_feature(&mut self, feature_idx: usize, network: &Network) {
         let start = feature_idx * ACC_SIZE;
         let weights = &network.transformer_weights[start..start + ACC_SIZE];
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    Self::add_feature_avx2(&mut self.state, weights);
+                }
+                return;
+            }
+        }
         for (state, weight) in self.state.iter_mut().zip(weights) {
             *state += *weight;
         }
@@ -38,6 +47,15 @@ impl Accumulator {
     pub fn remove_feature(&mut self, feature_idx: usize, network: &Network) {
         let start = feature_idx * ACC_SIZE;
         let weights = &network.transformer_weights[start..start + ACC_SIZE];
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    Self::remove_feature_avx2(&mut self.state, weights);
+                }
+                return;
+            }
+        }
         for (state, weight) in self.state.iter_mut().zip(weights) {
             *state -= *weight;
         }
@@ -49,6 +67,15 @@ impl Accumulator {
         let remove_start = remove_idx * ACC_SIZE;
         let add_weights = &network.transformer_weights[add_start..add_start + ACC_SIZE];
         let remove_weights = &network.transformer_weights[remove_start..remove_start + ACC_SIZE];
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
+                }
+                return;
+            }
+        }
         for i in 0..ACC_SIZE {
             self.state[i] += add_weights[i] - remove_weights[i];
         }
@@ -68,6 +95,20 @@ impl Accumulator {
         let add_weights = &network.transformer_weights[add_start..add_start + ACC_SIZE];
         let remove1_weights = &network.transformer_weights[remove1_start..remove1_start + ACC_SIZE];
         let remove2_weights = &network.transformer_weights[remove2_start..remove2_start + ACC_SIZE];
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    Self::add_1_sub_2_avx2(
+                        &mut self.state,
+                        add_weights,
+                        remove1_weights,
+                        remove2_weights,
+                    );
+                }
+                return;
+            }
+        }
         for i in 0..ACC_SIZE {
             self.state[i] += add_weights[i] - remove1_weights[i] - remove2_weights[i];
         }
@@ -90,8 +131,125 @@ impl Accumulator {
         let a2 = &network.transformer_weights[add2_start..add2_start + ACC_SIZE];
         let r1 = &network.transformer_weights[remove1_start..remove1_start + ACC_SIZE];
         let r2 = &network.transformer_weights[remove2_start..remove2_start + ACC_SIZE];
+        #[cfg(target_arch = "x86_64")]
+        {
+            if is_x86_feature_detected!("avx2") {
+                unsafe {
+                    Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
+                }
+                return;
+            }
+        }
         for i in 0..ACC_SIZE {
             self.state[i] += a1[i] + a2[i] - r1[i] - r2[i];
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn add_feature_avx2(state: &mut [i16; ACC_SIZE], weights: &[i16]) {
+        unsafe {
+            use std::arch::x86_64::*;
+            let s_ptr = state.as_mut_ptr() as *mut __m256i;
+            let w_ptr = weights.as_ptr() as *const __m256i;
+            for i in 0..16 {
+                let s = _mm256_load_si256(s_ptr.add(i));
+                let w = _mm256_loadu_si256(w_ptr.add(i));
+                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s, w));
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn remove_feature_avx2(state: &mut [i16; ACC_SIZE], weights: &[i16]) {
+        unsafe {
+            use std::arch::x86_64::*;
+            let s_ptr = state.as_mut_ptr() as *mut __m256i;
+            let w_ptr = weights.as_ptr() as *const __m256i;
+            for i in 0..16 {
+                let s = _mm256_load_si256(s_ptr.add(i));
+                let w = _mm256_loadu_si256(w_ptr.add(i));
+                _mm256_store_si256(s_ptr.add(i), _mm256_sub_epi16(s, w));
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn add_1_sub_1_avx2(
+        state: &mut [i16; ACC_SIZE],
+        add_weights: &[i16],
+        remove_weights: &[i16],
+    ) {
+        unsafe {
+            use std::arch::x86_64::*;
+            let s_ptr = state.as_mut_ptr() as *mut __m256i;
+            let a_ptr = add_weights.as_ptr() as *const __m256i;
+            let r_ptr = remove_weights.as_ptr() as *const __m256i;
+            for i in 0..16 {
+                let s = _mm256_load_si256(s_ptr.add(i));
+                let a = _mm256_loadu_si256(a_ptr.add(i));
+                let r = _mm256_loadu_si256(r_ptr.add(i));
+                let diff = _mm256_sub_epi16(a, r);
+                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s, diff));
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn add_1_sub_2_avx2(
+        state: &mut [i16; ACC_SIZE],
+        add_weights: &[i16],
+        rem1_weights: &[i16],
+        rem2_weights: &[i16],
+    ) {
+        unsafe {
+            use std::arch::x86_64::*;
+            let s_ptr = state.as_mut_ptr() as *mut __m256i;
+            let a_ptr = add_weights.as_ptr() as *const __m256i;
+            let r1_ptr = rem1_weights.as_ptr() as *const __m256i;
+            let r2_ptr = rem2_weights.as_ptr() as *const __m256i;
+            for i in 0..16 {
+                let s = _mm256_load_si256(s_ptr.add(i));
+                let a = _mm256_loadu_si256(a_ptr.add(i));
+                let r1 = _mm256_loadu_si256(r1_ptr.add(i));
+                let r2 = _mm256_loadu_si256(r2_ptr.add(i));
+                let rem = _mm256_add_epi16(r1, r2);
+                let diff = _mm256_sub_epi16(a, rem);
+                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s, diff));
+            }
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[target_feature(enable = "avx2")]
+    unsafe fn add_2_sub_2_avx2(
+        state: &mut [i16; ACC_SIZE],
+        a1_weights: &[i16],
+        a2_weights: &[i16],
+        r1_weights: &[i16],
+        r2_weights: &[i16],
+    ) {
+        unsafe {
+            use std::arch::x86_64::*;
+            let s_ptr = state.as_mut_ptr() as *mut __m256i;
+            let a1_ptr = a1_weights.as_ptr() as *const __m256i;
+            let a2_ptr = a2_weights.as_ptr() as *const __m256i;
+            let r1_ptr = r1_weights.as_ptr() as *const __m256i;
+            let r2_ptr = r2_weights.as_ptr() as *const __m256i;
+            for i in 0..16 {
+                let s = _mm256_load_si256(s_ptr.add(i));
+                let a1 = _mm256_loadu_si256(a1_ptr.add(i));
+                let a2 = _mm256_loadu_si256(a2_ptr.add(i));
+                let r1 = _mm256_loadu_si256(r1_ptr.add(i));
+                let r2 = _mm256_loadu_si256(r2_ptr.add(i));
+                let adds = _mm256_add_epi16(a1, a2);
+                let rems = _mm256_add_epi16(r1, r2);
+                let diff = _mm256_sub_epi16(adds, rems);
+                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s, diff));
+            }
         }
     }
 }

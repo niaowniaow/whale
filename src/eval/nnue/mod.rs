@@ -142,24 +142,61 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
 
     let mut output: i64 = 0;
 
-    for (&input, &weight) in acc_active
-        .state
-        .iter()
-        .zip(&network.output_weights[0..ACC_SIZE])
+    #[cfg(target_arch = "x86_64")]
     {
-        let val = i64::from(input).clamp(0, 255);
-        let screlu = val * val;
-        output += screlu * i64::from(weight);
+        if is_x86_feature_detected!("avx2") {
+            unsafe {
+                output +=
+                    evaluate_side_avx2(&acc_active.state, &network.output_weights[0..ACC_SIZE]);
+                output += evaluate_side_avx2(
+                    &acc_passive.state,
+                    &network.output_weights[ACC_SIZE..2 * ACC_SIZE],
+                );
+            }
+        } else {
+            for (&input, &weight) in acc_active
+                .state
+                .iter()
+                .zip(&network.output_weights[0..ACC_SIZE])
+            {
+                let val = i64::from(input).clamp(0, 255);
+                let screlu = val * val;
+                output += screlu * i64::from(weight);
+            }
+
+            for (&input, &weight) in acc_passive
+                .state
+                .iter()
+                .zip(&network.output_weights[ACC_SIZE..2 * ACC_SIZE])
+            {
+                let val = i64::from(input).clamp(0, 255);
+                let screlu = val * val;
+                output += screlu * i64::from(weight);
+            }
+        }
     }
 
-    for (&input, &weight) in acc_passive
-        .state
-        .iter()
-        .zip(&network.output_weights[ACC_SIZE..2 * ACC_SIZE])
+    #[cfg(not(target_arch = "x86_64"))]
     {
-        let val = i64::from(input).clamp(0, 255);
-        let screlu = val * val;
-        output += screlu * i64::from(weight);
+        for (&input, &weight) in acc_active
+            .state
+            .iter()
+            .zip(&network.output_weights[0..ACC_SIZE])
+        {
+            let val = i64::from(input).clamp(0, 255);
+            let screlu = val * val;
+            output += screlu * i64::from(weight);
+        }
+
+        for (&input, &weight) in acc_passive
+            .state
+            .iter()
+            .zip(&network.output_weights[ACC_SIZE..2 * ACC_SIZE])
+        {
+            let val = i64::from(input).clamp(0, 255);
+            let screlu = val * val;
+            output += screlu * i64::from(weight);
+        }
     }
 
     output /= 255;
@@ -168,6 +205,45 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
     output /= 255 * 64;
 
     output.clamp(-29000, 29000) as i16
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn evaluate_side_avx2(state: &[i16; ACC_SIZE], weights: &[i16]) -> i64 {
+    unsafe {
+        use std::arch::x86_64::*;
+        let zero = _mm256_setzero_si256();
+        let max_val = _mm256_set1_epi16(255);
+        let mut total: i64 = 0;
+
+        let s_ptr = state.as_ptr() as *const __m256i;
+        let w_ptr = weights.as_ptr() as *const __m256i;
+
+        let mut sum_lo = _mm256_setzero_si256();
+        let mut sum_hi = _mm256_setzero_si256();
+
+        for i in 0..16 {
+            let s = _mm256_load_si256(s_ptr.add(i));
+            let w = _mm256_loadu_si256(w_ptr.add(i));
+            let clamped = _mm256_min_epi16(_mm256_max_epi16(s, zero), max_val);
+            let screlu = _mm256_mullo_epi16(clamped, clamped);
+
+            let w_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w));
+            let w_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w, 1));
+            let sc_lo = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(screlu));
+            let sc_hi = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(screlu, 1));
+
+            sum_lo = _mm256_add_epi32(sum_lo, _mm256_mullo_epi32(w_lo, sc_lo));
+            sum_hi = _mm256_add_epi32(sum_hi, _mm256_mullo_epi32(w_hi, sc_hi));
+        }
+        let sum = _mm256_add_epi32(sum_lo, sum_hi);
+        let mut tmp = [0i32; 8];
+        _mm256_storeu_si256(tmp.as_mut_ptr() as *mut __m256i, sum);
+        for v in tmp {
+            total += v as i64;
+        }
+        total
+    }
 }
 
 #[cfg(test)]
@@ -200,5 +276,51 @@ mod tests {
         // output *= 400 (SCALE) = 566000
         // output /= 16320 (QA * QB) = 34
         assert_eq!(score, 34);
+    }
+
+    #[test]
+    fn test_avx2_matches_scalar_evaluation() {
+        let mut network = Network::new_boxed();
+        network.output_bias = 42;
+        for i in 0..ACC_SIZE {
+            network.output_weights[i] = (i as i16 % 29) - 14;
+            network.output_weights[ACC_SIZE + i] = (i as i16 % 31) - 15;
+        }
+
+        let mut board = BoardState::new();
+        let idx = board.history.index;
+        for i in 0..ACC_SIZE {
+            board.history.accumulators[idx].white.state[i] = ((i as i16 * 17) % 350) - 50;
+            board.history.accumulators[idx].black.state[i] = ((i as i16 * 23) % 400) - 70;
+        }
+
+        let score = evaluate_internal(&board, &network);
+
+        let mut scalar_output: i64 = 0;
+        for (&input, &weight) in board.history.accumulators[idx]
+            .white
+            .state
+            .iter()
+            .zip(&network.output_weights[0..ACC_SIZE])
+        {
+            let val = i64::from(input).clamp(0, 255);
+            scalar_output += val * val * i64::from(weight);
+        }
+        for (&input, &weight) in board.history.accumulators[idx]
+            .black
+            .state
+            .iter()
+            .zip(&network.output_weights[ACC_SIZE..2 * ACC_SIZE])
+        {
+            let val = i64::from(input).clamp(0, 255);
+            scalar_output += val * val * i64::from(weight);
+        }
+        scalar_output /= 255;
+        scalar_output += i64::from(network.output_bias);
+        scalar_output *= i64::from(SCALE);
+        scalar_output /= 255 * 64;
+        let scalar_score = scalar_output.clamp(-29000, 29000) as i16;
+
+        assert_eq!(score, scalar_score);
     }
 }
