@@ -1,11 +1,9 @@
-use crate::common::constants;
-
 pub fn calculate_move_time(clock: i32, increment: i32) -> i32 {
     calculate_move_time_with_moves(clock, increment, -1)
 }
 
 pub fn calculate_move_time_with_moves(clock: i32, increment: i32, movestogo: i32) -> i32 {
-    calculate_optimum_with_ply(clock, increment, movestogo, 0).0
+    calculate_optimum_with_ply(clock, increment, movestogo, 0, -1, 50).0
 }
 
 pub fn calculate_optimum_with_ply(
@@ -13,11 +11,20 @@ pub fn calculate_optimum_with_ply(
     increment: i32,
     movestogo: i32,
     ply: i32,
+    opp_clock: i32,
+    move_overhead: i32,
 ) -> (i32, i32) {
-    if clock <= 0 {
+    if clock <= move_overhead {
         return (10, 10);
     }
-    let move_overhead = constants::BUFFER_TIME as i32;
+
+    if clock < 5000 && movestogo <= 0 {
+        let usable = (clock - move_overhead).max(20);
+        let emergency_max = (usable / 12 + increment / 2).max(15);
+        let optimum = (emergency_max * 2 / 3).max(10);
+        return (optimum, emergency_max);
+    }
+
     let scaled_time = clock.max(1);
     let mut mtg = if movestogo > 0 { movestogo.min(50) } else { 50 };
     if scaled_time < 1000 && movestogo <= 0 {
@@ -27,20 +34,14 @@ pub fn calculate_optimum_with_ply(
         }
     }
     let time_left = (clock + increment * (mtg - 1) - move_overhead * (2 + mtg)).max(1);
-    let (opt_scale, max_scale) = if movestogo <= 0 {
+    let (mut opt_scale, max_scale) = if movestogo <= 0 {
         let log_time = (scaled_time as f64 / 1000.0).log10();
         let opt_constant = (0.0029869 + 0.00033554 * log_time).min(0.004905);
         let max_constant = (3.3744 + 3.0608 * log_time).max(3.1441);
         let mut opt = (0.012112 + (ply as f64 + 3.22713).powf(0.46866) * opt_constant)
             .min(0.19404 * clock as f64 / time_left as f64);
-        // originalTimeAdjust
-        let mut original_adjust = 0.3272 * (time_left as f64).log10() - 0.4141;
-        if original_adjust < 0.0 {
-            original_adjust = 0.0;
-        }
-        if original_adjust != 0.0 {
-            opt *= original_adjust;
-        }
+        let original_adjust = (0.3272 * (time_left as f64).log10() - 0.4141).max(0.1);
+        opt *= original_adjust;
         let max = (6.873_f64).min(max_constant + ply as f64 / 12.352);
         (opt, max)
     } else {
@@ -49,10 +50,19 @@ pub fn calculate_optimum_with_ply(
         let max = 1.3 + 0.11 * mtg as f64;
         (opt, max)
     };
-    let mut optimum = (opt_scale * time_left as f64).max(1.0) as i32;
-    let mut maximum = (max_scale * optimum as f64)
-        .min(0.8097 * clock as f64 - move_overhead as f64)
-        .max(optimum as f64) as i32;
+
+    if movestogo != 1 && opp_clock > 0 {
+        let time_advantage =
+            (clock as f64 - opp_clock as f64) / (1.0 + clock as f64 + opp_clock as f64);
+        opt_scale *= 1.0 + 0.9 * time_advantage.min(0.0);
+    }
+
+    let hard_max = (clock as f64 * 0.08 + increment as f64 * 0.8).min(45_000.0).max(10.0);
+    let hard_opt = (clock as f64 * 0.04 + increment as f64 * 0.6).min(30_000.0).max(10.0);
+    let mut optimum = ((opt_scale * time_left as f64).max(1.0) as i32).min(hard_opt as i32);
+    let mut maximum = ((max_scale * optimum as f64).min(hard_max) as i32)
+        .min((0.8097 * clock as f64 - move_overhead as f64) as i32)
+        .max(optimum);
     optimum = optimum.max(10).min(clock - move_overhead);
     maximum = maximum.max(optimum).min(clock - move_overhead).max(10);
     (optimum, maximum)

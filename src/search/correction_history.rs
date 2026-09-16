@@ -37,32 +37,31 @@ impl CorrectionHistory {
         let non_pawn_hash = board_state.board_hash ^ pawn_hash;
         let non_pawn_idx = (non_pawn_hash & (CORRECTION_HISTORY_SIZE as u64 - 1)) as usize;
 
-        let pawn_corr = self.pawn_table[stm][pawn_idx];
-        let minor_corr = self.minor_table[stm][minor_idx];
-        let non_pawn_corr = self.non_pawn_table[stm][non_pawn_idx];
+        let pcv = self.pawn_table[stm][pawn_idx];
+        let micv = self.minor_table[stm][minor_idx];
+        let non_pawn = self.non_pawn_table[stm][non_pawn_idx];
 
-        let mut cont_corr = 0;
+        let mut cntcv = 0;
         if let Some(prev) = previous_move {
             let pc = board_state.piece_mapping[prev.target as usize];
             if pc != Piece::None {
                 let prev_side = board_state.side_to_move.other();
                 let idx = prev_side as usize * 6 + pc as usize;
                 if idx < 12 {
-                    cont_corr = self.continuation_table[idx][prev.target as usize];
+                    cntcv = self.continuation_table[idx][prev.target as usize];
                 }
             }
         }
 
-        ((pawn_corr + minor_corr + non_pawn_corr + cont_corr) / 256)
-            .clamp(-CORRECTION_LIMIT as i32, CORRECTION_LIMIT as i32) as i16
+        let cv = 15341 * pcv + 10569 * micv + 12906 * non_pawn + 8761 * cntcv;
+        (cv / 131072).clamp(-CORRECTION_LIMIT as i32, CORRECTION_LIMIT as i32) as i16
     }
 
     pub fn update(
         &mut self,
         board_state: &BoardState,
         previous_move: Option<Move>,
-        diff: i32,
-        weight: i32,
+        bonus: i32,
     ) {
         let stm = board_state.side_to_move as usize;
         let pawn_hash = crate::common::zobrist::get_pawn_hash(board_state);
@@ -71,17 +70,9 @@ impl CorrectionHistory {
         let non_pawn_hash = board_state.board_hash ^ pawn_hash;
         let non_pawn_idx = (non_pawn_hash & (CORRECTION_HISTORY_SIZE as u64 - 1)) as usize;
 
-        Self::apply_ema(&mut self.pawn_table[stm][pawn_idx], diff, weight);
-
-        let minor_weight = weight * 150 / 128;
-        Self::apply_ema(&mut self.minor_table[stm][minor_idx], diff, minor_weight);
-
-        let non_pawn_weight = weight * 100 / 128;
-        Self::apply_ema(
-            &mut self.non_pawn_table[stm][non_pawn_idx],
-            diff,
-            non_pawn_weight,
-        );
+        Self::apply_bonus(&mut self.pawn_table[stm][pawn_idx], bonus);
+        Self::apply_bonus(&mut self.minor_table[stm][minor_idx], bonus * 150 / 128);
+        Self::apply_bonus(&mut self.non_pawn_table[stm][non_pawn_idx], bonus * 186 / 128);
 
         if let Some(prev) = previous_move {
             let pc = board_state.piece_mapping[prev.target as usize];
@@ -89,11 +80,9 @@ impl CorrectionHistory {
                 let prev_side = board_state.side_to_move.other();
                 let idx = prev_side as usize * 6 + pc as usize;
                 if idx < 12 {
-                    let cont_weight = weight * 130 / 128;
-                    Self::apply_ema(
+                    Self::apply_bonus(
                         &mut self.continuation_table[idx][prev.target as usize],
-                        diff,
-                        cont_weight,
+                        bonus * 130 / 128,
                     );
                 }
             }
@@ -101,8 +90,9 @@ impl CorrectionHistory {
     }
 
     #[inline(always)]
-    fn apply_ema(entry: &mut i32, diff: i32, weight: i32) {
-        *entry = (*entry * (256 - weight) + (diff / 2) * weight * 256) / 256;
+    fn apply_bonus(entry: &mut i32, bonus: i32) {
+        let clamped = bonus.clamp(-1024, 1024);
+        *entry += clamped - (*entry * clamped.abs()) / 1024;
     }
 }
 
@@ -127,7 +117,7 @@ mod tests {
     fn update_and_clear() {
         let board = BoardState::default();
         let mut corr = CorrectionHistory::new();
-        corr.update(&board, None, 100, 16);
+        corr.update(&board, None, 100);
         let val = corr.get_correction(&board, None);
         assert_ne!(val, 0);
         corr.clear();

@@ -1295,12 +1295,14 @@ unsafe fn fc0_avx2(arch: &SfnnArch, in_row: &[u8], fc0: &mut [i32; FC0_OUT]) {
         use std::arch::x86_64::*;
         let ones = _mm256_set1_epi16(1);
         let in_ptr = in_row.as_ptr() as *const __m256i;
+        let chunks = in_row.len() / 32;
+        let l1 = in_row.len();
 
         for o in 0..FC0_OUT {
             let mut sum = _mm256_setzero_si256();
-            let w_ptr = arch.fc0_w.as_ptr().add(o * 1024) as *const __m256i;
+            let w_ptr = arch.fc0_w.as_ptr().add(o * l1) as *const __m256i;
 
-            for j in 0..32 {
+            for j in 0..chunks {
                 let in_vec = _mm256_loadu_si256(in_ptr.add(j));
                 let w_vec = _mm256_loadu_si256(w_ptr.add(j));
                 let prod16 = _mm256_maddubs_epi16(in_vec, w_vec);
@@ -1368,14 +1370,30 @@ unsafe fn fc2_avx2(arch: &SfnnArch, concat: &[u8]) -> i32 {
 
 fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
     if arch.is_rudi {
+        #[cfg(target_arch = "x86_64")]
+        let use_avx2 = is_x86_feature_detected!("avx2") && (l1 % 32 == 0);
+        #[cfg(not(target_arch = "x86_64"))]
+        let use_avx2 = false;
+
         let mut fc0 = [0.0f32; FC0_OUT];
-        for o in 0..FC0_OUT {
-            let mut sum = arch.fc0_bias[o];
-            let row = o * l1;
-            for j in 0..l1 {
-                sum += (input[j] as i32) * (arch.fc0_w[row + j] as i32);
+        if use_avx2 {
+            let mut fc0_i32 = [0i32; FC0_OUT];
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                fc0_avx2(arch, &input[..l1], &mut fc0_i32);
             }
-            fc0[o] = (sum as f32 / 16320.0).clamp(0.0, 1.0);
+            for o in 0..FC0_OUT {
+                fc0[o] = (fc0_i32[o] as f32 / 16320.0).clamp(0.0, 1.0);
+            }
+        } else {
+            for o in 0..FC0_OUT {
+                let mut sum = arch.fc0_bias[o];
+                let row = o * l1;
+                for j in 0..l1 {
+                    sum += (input[j] as i32) * (arch.fc0_w[row + j] as i32);
+                }
+                fc0[o] = (sum as f32 / 16320.0).clamp(0.0, 1.0);
+            }
         }
 
         let mut pair = [0.0f32; FC1_IN];
@@ -1525,11 +1543,16 @@ fn loaded_nets() -> Option<Arc<LoadedNets>> {
     NETS.read().ok().and_then(|guard| guard.clone())
 }
 
-pub fn try_load_default() -> bool {
+pub fn try_load_default_path() -> Option<&'static str> {
     if maintenance_active() {
-        return true;
+        return Some("active");
     }
     let candidates = [
+        "rudim_farseer_final.nnue",
+        "v16/rudim_farseer_final.nnue",
+        "rudim_farseerT76.nnue",
+        "v16/rudim_farseerT76.nnue",
+        "v16/nn-1a298aa575a0.nnue",
         "v16/rudim.nnue",
         "v16/quantised.bin",
         "rudim.nnue",
@@ -1538,10 +1561,14 @@ pub fn try_load_default() -> bool {
     ];
     for path in candidates {
         if std::path::Path::new(path).exists() && load_net(path).is_ok() {
-            return true;
+            return Some(path);
         }
     }
-    false
+    None
+}
+
+pub fn try_load_default() -> bool {
+    try_load_default_path().is_some()
 }
 
 pub fn maintenance_active() -> bool {
@@ -1613,7 +1640,8 @@ unsafe fn scatter_halfka_add_avx2(acc: &mut [i16], w: &[i16]) {
         use std::arch::x86_64::*;
         let a_ptr = acc.as_mut_ptr() as *mut __m256i;
         let w_ptr = w.as_ptr() as *const __m256i;
-        for i in 0..64 {
+        let n = acc.len() / 16;
+        for i in 0..n {
             let va = _mm256_loadu_si256(a_ptr.add(i));
             let vw = _mm256_loadu_si256(w_ptr.add(i));
             _mm256_storeu_si256(a_ptr.add(i), _mm256_add_epi16(va, vw));
@@ -1628,7 +1656,8 @@ unsafe fn scatter_halfka_sub_avx2(acc: &mut [i16], w: &[i16]) {
         use std::arch::x86_64::*;
         let a_ptr = acc.as_mut_ptr() as *mut __m256i;
         let w_ptr = w.as_ptr() as *const __m256i;
-        for i in 0..64 {
+        let n = acc.len() / 16;
+        for i in 0..n {
             let va = _mm256_loadu_si256(a_ptr.add(i));
             let vw = _mm256_loadu_si256(w_ptr.add(i));
             _mm256_storeu_si256(a_ptr.add(i), _mm256_sub_epi16(va, vw));
@@ -1645,7 +1674,7 @@ fn scatter_halfka(
     sign: i16,
 ) {
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2") && l1 == 1024;
+    let use_avx2 = is_x86_feature_detected!("avx2") && (l1 % 16 == 0);
     #[cfg(not(target_arch = "x86_64"))]
     let use_avx2 = false;
 
@@ -1910,6 +1939,88 @@ pub fn apply_queued(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+unsafe fn add_threat_w_i16_avx2(buf: &mut [i32; L1], w: &[i16]) {
+    unsafe {
+        use std::arch::x86_64::*;
+        let b_ptr = buf.as_mut_ptr() as *mut __m256i;
+        let w_ptr = w.as_ptr() as *const __m128i;
+        let chunks = buf.len() / 8;
+        for i in 0..chunks {
+            let w_128 = _mm_loadu_si128(w_ptr.add(i));
+            let w_256 = _mm256_cvtepi16_epi32(w_128);
+            let b = _mm256_loadu_si256(b_ptr.add(i));
+            _mm256_storeu_si256(b_ptr.add(i), _mm256_add_epi32(b, w_256));
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
+unsafe fn pairwise_transform_rudi_avx2(
+    base_acc: &[i16],
+    threat_buf: &[i32; L1],
+    dst: &mut [u8],
+    half: usize,
+    use_threats: bool,
+) {
+    unsafe {
+        use std::arch::x86_64::*;
+        let zero = _mm256_setzero_si256();
+        let max_val = _mm256_set1_epi32(255);
+        let mult257 = _mm256_set1_epi32(257);
+        let base_ptr = base_acc.as_ptr();
+        let threat_ptr = threat_buf.as_ptr() as *const __m256i;
+
+        let n_chunks = half / 16;
+        for chunk in 0..n_chunks {
+            let j = chunk * 16;
+            let b0_16 = _mm256_loadu_si256(base_ptr.add(j) as *const __m256i);
+            let mut s0_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(b0_16));
+            let mut s0_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(b0_16, 1));
+
+            let b1_16 = _mm256_loadu_si256(base_ptr.add(j + half) as *const __m256i);
+            let mut s1_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(b1_16));
+            let mut s1_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(b1_16, 1));
+
+            if use_threats {
+                let t0_lo = _mm256_loadu_si256(threat_ptr.add(chunk * 2));
+                let t0_hi = _mm256_loadu_si256(threat_ptr.add(chunk * 2 + 1));
+                let t1_lo = _mm256_loadu_si256(threat_ptr.add((half / 8) + chunk * 2));
+                let t1_hi = _mm256_loadu_si256(threat_ptr.add((half / 8) + chunk * 2 + 1));
+
+                s0_lo = _mm256_add_epi32(s0_lo, t0_lo);
+                s0_hi = _mm256_add_epi32(s0_hi, t0_hi);
+                s1_lo = _mm256_add_epi32(s1_lo, t1_lo);
+                s1_hi = _mm256_add_epi32(s1_hi, t1_hi);
+            }
+
+            let c0_lo = _mm256_min_epi32(_mm256_max_epi32(s0_lo, zero), max_val);
+            let c0_hi = _mm256_min_epi32(_mm256_max_epi32(s0_hi, zero), max_val);
+            let c1_lo = _mm256_min_epi32(_mm256_max_epi32(s1_lo, zero), max_val);
+            let c1_hi = _mm256_min_epi32(_mm256_max_epi32(s1_hi, zero), max_val);
+
+            let prod_lo = _mm256_mullo_epi32(c0_lo, c1_lo);
+            let prod_hi = _mm256_mullo_epi32(c0_hi, c1_hi);
+
+            let div_lo = _mm256_srli_epi32(_mm256_add_epi32(_mm256_mullo_epi32(prod_lo, mult257), mult257), 16);
+            let div_hi = _mm256_srli_epi32(_mm256_add_epi32(_mm256_mullo_epi32(prod_hi, mult257), mult257), 16);
+
+            let d_lo_0 = _mm256_castsi256_si128(div_lo);
+            let d_lo_1 = _mm256_extracti128_si256(div_lo, 1);
+            let d_hi_0 = _mm256_castsi256_si128(div_hi);
+            let d_hi_1 = _mm256_extracti128_si256(div_hi, 1);
+
+            let p0 = _mm_packs_epi32(d_lo_0, d_lo_1);
+            let p1 = _mm_packs_epi32(d_hi_0, d_hi_1);
+
+            let bytes = _mm_packus_epi16(p0, p1);
+            _mm_storeu_si128(dst.as_mut_ptr().add(j) as *mut __m128i, bytes);
+        }
+    }
+}
+
+#[cfg(target_arch = "x86_64")]
+#[target_feature(enable = "avx2")]
 unsafe fn add_threat_w_avx2(buf: &mut [i32; L1], w: &[i8]) {
     unsafe {
         use std::arch::x86_64::*;
@@ -2091,12 +2202,24 @@ fn eval_with_net(
         let mut threat_buf = [0i32; L1];
         if net.use_threats {
             if net.is_rudi {
+                #[cfg(target_arch = "x86_64")]
+                let use_rudi_avx2 = is_x86_feature_detected!("avx2") && (l1 % 8 == 0);
+                #[cfg(not(target_arch = "x86_64"))]
+                let use_rudi_avx2 = false;
+
                 for &f in &threat_lists[slot][..threat_lens[slot]] {
                     let t = f - PSQ_DIMS;
                     let base = t * l1;
                     let w_slice = &net.transformer.threat_w_i16[base..base + l1];
-                    for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
-                        *acc += i32::from(w);
+                    if use_rudi_avx2 {
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            add_threat_w_i16_avx2(&mut threat_buf, w_slice);
+                        }
+                    } else {
+                        for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
+                            *acc += i32::from(w);
+                        }
                     }
                 }
             } else {
@@ -2165,7 +2288,31 @@ fn eval_with_net(
             }
         }
         let dst = &mut feats[slot * half..(slot + 1) * half];
-        if use_avx2 && half == 512 {
+        if net.is_rudi {
+            #[cfg(target_arch = "x86_64")]
+            let use_rudi_avx2 = is_x86_feature_detected!("avx2") && (half % 16 == 0);
+            #[cfg(not(target_arch = "x86_64"))]
+            let use_rudi_avx2 = false;
+
+            if use_rudi_avx2 {
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    pairwise_transform_rudi_avx2(base_acc, &threat_buf, dst, half, net.use_threats);
+                }
+            } else {
+                for j in 0..half {
+                    let mut s0 = i32::from(base_acc[j]);
+                    let mut s1 = i32::from(base_acc[j + half]);
+                    if net.use_threats {
+                        s0 += threat_buf[j];
+                        s1 += threat_buf[j + half];
+                    }
+                    let c0 = s0.clamp(0, clip_max);
+                    let c1 = s1.clamp(0, clip_max);
+                    dst[j] = ((c0 * c1) / 255) as u8;
+                }
+            }
+        } else if use_avx2 && half == 512 {
             #[cfg(target_arch = "x86_64")]
             unsafe {
                 if net.use_threats {

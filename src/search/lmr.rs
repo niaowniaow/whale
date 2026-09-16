@@ -56,6 +56,8 @@ pub struct LmrQuery {
     pub is_tactical: bool,
     pub has_non_pawn_material: bool,
     pub history_score: i32,
+    pub alpha: i16,
+    pub static_eval: i16,
 }
 
 #[inline(always)]
@@ -95,6 +97,15 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
         let divisor = history_divisors[d_idx].max(1);
         let history_bonus = query.history_score / divisor;
         reduction -= history_bonus;
+
+        if query.alpha.abs() < 25_000 {
+            let diff = (query.alpha as i32 - query.static_eval as i32).clamp(-64, 96);
+            if diff > 48 {
+                reduction += 1;
+            } else if diff < -48 {
+                reduction = reduction.saturating_sub(1);
+            }
+        }
     }
 
     reduction.clamp(0, query.depth as i32 - 1) as u8
@@ -148,6 +159,8 @@ mod tests {
                     is_tactical: false,
                     has_non_pawn_material: true,
                     history_score: -50000,
+                    alpha: 0,
+                    static_eval: 0,
                 };
                 let r = compute_reduction(&query, &table, &divisors);
                 assert!(r < d);
@@ -168,6 +181,8 @@ mod tests {
             is_tactical: false,
             has_non_pawn_material: true,
             history_score: 0,
+            alpha: 0,
+            static_eval: 0,
         };
         let pv_query = LmrQuery {
             is_pv_node: true,
@@ -197,6 +212,8 @@ mod tests {
             is_tactical: false,
             has_non_pawn_material: true,
             history_score: 0,
+            alpha: 0,
+            static_eval: 0,
         };
         let improving_query = LmrQuery {
             is_improving: true,

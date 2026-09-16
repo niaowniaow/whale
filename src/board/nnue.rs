@@ -119,6 +119,9 @@ impl BoardState {
 
         if sfnn16::maintenance_active() {
             let pos = SfnnPosition::from_board(self);
+            if target_idx > 0 {
+                self.history.sfnn16[target_idx] = self.history.sfnn16[target_idx - 1].clone();
+            }
             let accs = &mut self.history.sfnn16[target_idx];
             sfnn16::flush_pending(&pos, accs, &mut self.sfnn16_pending);
         }

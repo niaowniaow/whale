@@ -1,6 +1,9 @@
 use crate::common::constants::MAX_PLY;
+use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
-use crate::eval::evaluate;
+use crate::common::piece::Piece;
+use crate::common::tt::{self, TranspositionEntryType};
+use crate::eval::{evaluate_fast, evaluate_with_optimism};
 use crate::search::move_picker::MovePicker;
 use crate::search::search_state::SearchState;
 use crate::{board::state::BoardState, common::constants::MAX_CENTIPAWN_EVAL};
@@ -22,28 +25,66 @@ pub fn search(
         return 0;
     }
 
+    let optimism = search_state.optimism[board_state.side_to_move as usize];
+
     if ply as usize >= MAX_PLY {
-        return evaluate(&mut *board_state);
+        return evaluate_with_optimism(&mut *board_state, optimism);
     }
 
     search_state.nodes += 1;
 
+    let original_alpha = alpha;
+    let tt_entry = search_state.tt.probe(board_state.board_hash);
+    if let Some(entry) = tt_entry {
+        let tt_score = tt::TranspositionTable::retrieve_score(entry.score, ply as i32);
+        let cutoff = match entry.entry_type {
+            TranspositionEntryType::Exact => true,
+            TranspositionEntryType::Alpha => tt_score <= alpha,
+            TranspositionEntryType::Beta => tt_score >= beta,
+            TranspositionEntryType::None => false,
+        };
+        if cutoff {
+            search_state.nodes += 1;
+            return tt_score;
+        }
+    }
+
     let in_check = board_state.is_in_check(board_state.side_to_move);
+    let mut futility_base = -MAX_CENTIPAWN_EVAL;
 
     if !in_check {
-        let eval = evaluate(&mut *board_state);
+        let fast_eval = evaluate_fast(&mut *board_state, optimism);
+        if fast_eval >= beta + 200 {
+            return beta;
+        }
+        if fast_eval + 1200 < alpha {
+            return alpha;
+        }
+
+        let eval = if let Some(entry) = tt_entry {
+            let s = tt::TranspositionTable::retrieve_score(entry.score, ply as i32);
+            match entry.entry_type {
+                TranspositionEntryType::Exact => s,
+                TranspositionEntryType::Beta if s >= beta => s,
+                _ => evaluate_with_optimism(&mut *board_state, optimism),
+            }
+        } else {
+            evaluate_with_optimism(&mut *board_state, optimism)
+        };
         if eval >= beta {
+            if eval.abs() < MAX_CENTIPAWN_EVAL - 200 {
+                return ((441 * eval as i32 + 583 * beta as i32) / 1024) as i16;
+            }
             return beta;
         }
         if eval > alpha {
             alpha = eval;
         }
-        // DELTA PRUNING:
-        // If standing pat + Queen value cannot exceed alpha, normal captures cannot raise alpha.
         const QUEEN_DELTA: i16 = 1000;
         if eval + QUEEN_DELTA < alpha {
             return alpha;
         }
+        futility_base = eval + 306;
     }
 
     let mut move_picker = if !in_check {
@@ -62,6 +103,24 @@ pub fn search(
     ) {
         if cancellation_token.load(Ordering::Relaxed) {
             break;
+        }
+
+        if !in_check {
+            if board_state.see(move_obj) < -74 {
+                continue;
+            }
+
+            if !move_obj.is_promotion() {
+                let captured_piece = if move_obj.move_type == MoveType::EnPassant {
+                    Piece::Pawn
+                } else {
+                    board_state.piece_mapping[move_obj.target as usize]
+                };
+                let futility_val = futility_base + captured_piece.see_value();
+                if futility_val <= alpha {
+                    continue;
+                }
+            }
         }
 
         if !board_state.is_legal(move_obj) {
@@ -87,6 +146,9 @@ pub fn search(
         }
 
         if score >= beta {
+            if score.abs() < MAX_CENTIPAWN_EVAL - 200 && score > beta {
+                return ((462 * score as i32 + 562 * beta as i32) / 1024) as i16;
+            }
             return beta;
         }
         if score > alpha {
@@ -128,6 +190,9 @@ pub fn search(
             }
 
             if score >= beta {
+                if score.abs() < MAX_CENTIPAWN_EVAL - 200 && score > beta {
+                    return ((462 * score as i32 + 562 * beta as i32) / 1024) as i16;
+                }
                 return beta;
             }
             if score > alpha {
@@ -139,6 +204,21 @@ pub fn search(
     if in_check && !has_legal_moves {
         return -MAX_CENTIPAWN_EVAL + ply as i16;
     }
+
+    let entry_type = if alpha >= beta {
+        TranspositionEntryType::Beta
+    } else if alpha > original_alpha {
+        TranspositionEntryType::Exact
+    } else {
+        TranspositionEntryType::Alpha
+    };
+    search_state.tt.submit_entry(
+        board_state.board_hash,
+        tt::TranspositionTable::adjust_score(alpha, ply as i32),
+        0,
+        Move::NO_MOVE,
+        entry_type,
+    );
 
     alpha
 }

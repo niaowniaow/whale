@@ -22,35 +22,41 @@ pub struct SearchParameters {
 impl Default for SearchParameters {
     fn default() -> Self {
         Self {
-            rfp_margin_mult: 150,
-            futility_margin_mult: 150,
-            singular_margin_mult: 1,
-            probcut_margin: 200,
+            rfp_margin_mult: 110,
+            futility_margin_mult: 120,
+            singular_margin_mult: 2,
+            probcut_margin: 170,
             nmp_base: 3,
-            nmp_depth_div: 4,
-            lmr_base: 0.5,
-            lmr_div: 1.95,
+            nmp_depth_div: 3,
+            lmr_base: 0.65,
+            lmr_div: 2.15,
             lmr_divisor: [
                 3637, 2787, 2761, 2939, 3171, 3347, 3147, 2762, 2772, 3106, 3107, 3060, 3112, 2991,
                 3090, 3542,
             ],
-            history_weight_mult: 1,
+            history_weight_mult: 2,
             history_weight_max: 16,
         }
     }
 }
+
+use std::sync::Arc;
 
 pub struct SearchState {
     pub params: SearchParameters,
     pub opt_time: i32,
     pub max_time: i32,
     pub best_move: Move,
+    pub ponder_move: Move,
     pub score: i16,
     pub nodes: i32,
     pub root_best_move_nodes: i64,
     pub best_previous_score: Option<i16>,
+    pub previous_time_reduction: f64,
+    pub best_move_changes: i32,
+    pub optimism: [i32; 2],
     pub move_ordering: MoveOrdering,
-    pub tt: TranspositionTable,
+    pub tt: Arc<TranspositionTable>,
 
     pub captures_stack: Box<[MoveList; MAX_PLY]>,
     pub quiets_stack: Box<[MoveList; MAX_PLY]>,
@@ -69,12 +75,16 @@ impl SearchState {
             opt_time: -1,
             max_time: -1,
             best_move: Move::NO_MOVE,
+            ponder_move: Move::NO_MOVE,
             score: 0,
             nodes: 0,
             root_best_move_nodes: 0,
             best_previous_score: None,
+            previous_time_reduction: 0.85,
+            best_move_changes: 0,
+            optimism: [0; 2],
             move_ordering: MoveOrdering::new(),
-            tt: TranspositionTable::new(TranspositionTable::DEFAULT_CAPACITY),
+            tt: Arc::new(TranspositionTable::new(TranspositionTable::DEFAULT_CAPACITY)),
             captures_stack: Box::new([MoveList::new(); MAX_PLY]),
             quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
             eval_stack: Box::new([i16::MIN; MAX_PLY]),
@@ -83,15 +93,44 @@ impl SearchState {
         }
     }
 
+    pub fn clone_for_worker(&self) -> Self {
+        Self {
+            params: self.params.clone(),
+            opt_time: self.opt_time,
+            max_time: self.max_time,
+            best_move: Move::NO_MOVE,
+            ponder_move: Move::NO_MOVE,
+            score: 0,
+            nodes: 0,
+            root_best_move_nodes: 0,
+            best_previous_score: None,
+            previous_time_reduction: self.previous_time_reduction,
+            best_move_changes: 0,
+            optimism: self.optimism,
+            move_ordering: MoveOrdering::new(),
+            tt: Arc::clone(&self.tt),
+            captures_stack: Box::new([MoveList::new(); MAX_PLY]),
+            quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
+            eval_stack: Box::new([i16::MIN; MAX_PLY]),
+            lmr_table: self.lmr_table.clone(),
+            correction_history: crate::search::correction_history::CorrectionHistory::new(),
+        }
+    }
+
     pub fn reset_search(&mut self) {
         self.best_move = Move::NO_MOVE;
+        self.ponder_move = Move::NO_MOVE;
         self.score = 0;
         self.nodes = 0;
         self.root_best_move_nodes = 0;
+        self.best_move_changes = 0;
+        self.optimism = [0; 2];
         *self.eval_stack = [i16::MIN; MAX_PLY];
     }
 
     pub fn reset_heuristics(&mut self) {
+        self.previous_time_reduction = 0.85;
+        self.best_previous_score = None;
         self.move_ordering.reset();
         self.correction_history.clear();
     }

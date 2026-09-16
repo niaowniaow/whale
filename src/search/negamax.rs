@@ -5,7 +5,7 @@ use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::common::side::Side;
 use crate::common::tt::{self, TranspositionEntryType};
-use crate::eval::evaluate;
+use crate::eval::evaluate_with_optimism;
 use crate::search::move_picker::MovePicker;
 use crate::search::pv_table::PvTable;
 use crate::search::search_state::SearchState;
@@ -123,6 +123,45 @@ fn search_internal(
         }
     }
 
+    if depth == 0 {
+        return quiescence::search(
+            board_state,
+            alpha,
+            beta,
+            ply,
+            ctx.cancellation_token,
+            ctx.search_state,
+        );
+    }
+
+    ctx.search_state.nodes += 1;
+
+    let mut static_eval = 0;
+    let has_static_eval = !in_check;
+
+    let mate_bound = constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16;
+    let beta_is_mate = beta.abs() >= mate_bound;
+
+    if in_check {
+        if (ply as usize) >= 2 {
+            ctx.search_state.eval_stack[ply as usize] =
+                ctx.search_state.eval_stack[ply as usize - 2];
+        } else {
+            ctx.search_state.eval_stack[ply as usize] = i16::MIN;
+        }
+    } else {
+        let optimism = ctx.search_state.optimism[board_state.side_to_move as usize];
+        let raw_static_eval = evaluate_with_optimism(&mut *board_state, optimism);
+        let correction = ctx
+            .search_state
+            .correction_history
+            .get_correction(board_state, previous_move);
+
+        static_eval = (raw_static_eval as i32 + correction as i32)
+            .clamp(-mate_bound as i32, mate_bound as i32) as i16;
+        ctx.search_state.eval_stack[ply as usize] = static_eval;
+    }
+
     let mut singular_extension: i8 = 0;
     if !in_check
         && ctx.excluded_move.is_none()
@@ -167,52 +206,16 @@ fn search_internal(
                     singular_extension = 1;
                 }
             } else if se_score >= beta {
+                if has_static_eval && !in_check && se_score > static_eval {
+                    let bonus = (((se_score as i32 - static_eval as i32) * ((depth as i32 - 1) / 2) * 177) / 1024)
+                        .clamp(-256, 256);
+                    ctx.search_state.correction_history.update(board_state, previous_move, bonus);
+                }
                 return se_score;
             } else if original_score >= beta {
                 singular_extension = -1;
             }
         }
-    }
-
-    if depth == 0 {
-        return quiescence::search(
-            board_state,
-            alpha,
-            beta,
-            ply,
-            ctx.cancellation_token,
-            ctx.search_state,
-        );
-    }
-
-    ctx.search_state.nodes += 1;
-
-    // PRUNE: Reverse Futility Pruning
-    // TODO: tune conditions
-    let mut static_eval = 0;
-    let mut raw_static_eval = 0;
-    let has_static_eval = !in_check;
-
-    let mate_bound = constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16;
-    let beta_is_mate = beta.abs() >= mate_bound;
-
-    if in_check {
-        if (ply as usize) >= 2 {
-            ctx.search_state.eval_stack[ply as usize] =
-                ctx.search_state.eval_stack[ply as usize - 2];
-        } else {
-            ctx.search_state.eval_stack[ply as usize] = i16::MIN;
-        }
-    } else {
-        raw_static_eval = evaluate(&mut *board_state);
-        let correction = ctx
-            .search_state
-            .correction_history
-            .get_correction(board_state, previous_move);
-
-        static_eval = (raw_static_eval as i32 + correction as i32)
-            .clamp(-mate_bound as i32, mate_bound as i32) as i16;
-        ctx.search_state.eval_stack[ply as usize] = static_eval;
     }
 
     let mut is_improving = !in_check
@@ -319,6 +322,11 @@ fn search_internal(
                         return 0;
                     }
                     if score >= prob_beta {
+                        let returned_score = if score.abs() < constants::MAX_CENTIPAWN_EVAL - 200 {
+                            score - (prob_beta - beta)
+                        } else {
+                            score
+                        };
                         if ctx.excluded_move.is_none() {
                             ctx.search_state.tt.submit_entry(
                                 board_state.board_hash,
@@ -328,7 +336,7 @@ fn search_internal(
                                 TranspositionEntryType::Beta,
                             );
                         }
-                        return score;
+                        return returned_score;
                     }
                 }
             }
@@ -460,6 +468,7 @@ fn search_internal(
         }
 
         board_state.make_move(move_obj);
+        ctx.search_state.tt.prefetch(board_state.board_hash);
 
         has_legal_moves = true;
 
@@ -583,6 +592,8 @@ fn search_internal(
                 is_tactical: cap_or_promo,
                 has_non_pawn_material,
                 history_score,
+                alpha,
+                static_eval,
             };
             let reduction = lmr::compute_reduction(
                 &lmr_query,
@@ -670,6 +681,9 @@ fn search_internal(
                 if ply == 0 {
                     ctx.search_state.root_best_move_nodes =
                         (ctx.search_state.nodes - move_nodes_start) as i64;
+                    if number_of_legal_moves > 1 {
+                        ctx.search_state.best_move_changes += 1;
+                    }
                 }
             }
         }
@@ -718,18 +732,17 @@ fn search_internal(
 
         if has_static_eval
             && !in_check
-            && entry_type == TranspositionEntryType::Exact
-            && best_score.abs() < (constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16)
+            && !best_move.is_capture()
+            && best_score.abs() < mate_bound
+            && (best_score > static_eval) == (best_move != Move::NO_MOVE)
         {
-            let diff = (best_score as i32 - raw_static_eval as i32).clamp(-512, 512);
-            let weight = std::cmp::min(
-                (1 + depth as i32) * ctx.search_state.params.history_weight_mult,
-                ctx.search_state.params.history_weight_max,
-            );
-
+            let move_factor = if best_move != Move::NO_MOVE { 12 } else { 18 };
+            let bonus = (((best_score as i32 - static_eval as i32) * depth as i32 * move_factor) / 128)
+                .clamp(-256, 256);
+            let final_bonus = bonus * 1061 / 1024;
             ctx.search_state
                 .correction_history
-                .update(board_state, previous_move, diff, weight);
+                .update(board_state, previous_move, final_bonus);
         }
 
         if entry_type == TranspositionEntryType::Exact
@@ -840,33 +853,43 @@ fn update_history_stats(
     previous_move: Option<Move>,
     tried_quiets: &[Move],
 ) {
-    let bonus = (300 * depth as i32) - 250;
+    let bonus = (133 * depth as i32 - 81).clamp(0, 1487);
+    let malus = (968 * depth as i32 - 235).clamp(0, 2244);
     let piece = board_state.get_piece_on(best_move.source) as usize;
     let side = board_state.side_to_move;
-    search_state
-        .move_ordering
-        .update_history(piece, best_move, bonus);
-    search_state
-        .move_ordering
-        .update_quiet_history(side, best_move, bonus);
-    update_continuation(search_state, board_state, previous_move, best_move, bonus);
 
+    let quiet_bonus = bonus * 899 / 1024;
+    search_state
+        .move_ordering
+        .update_history(piece, best_move, quiet_bonus);
+    search_state
+        .move_ordering
+        .update_quiet_history(side, best_move, quiet_bonus);
+    update_continuation(
+        search_state,
+        board_state,
+        previous_move,
+        best_move,
+        quiet_bonus,
+    );
+
+    let mut actual_malus = malus * 1159 / 1024;
     for &quiet_move in tried_quiets {
         if quiet_move != best_move {
+            actual_malus = actual_malus * 921 / 1024;
             let q_piece = board_state.get_piece_on(quiet_move.source) as usize;
-            let penalty = -bonus;
             search_state
                 .move_ordering
-                .update_history(q_piece, quiet_move, penalty);
+                .update_history(q_piece, quiet_move, -actual_malus);
             search_state
                 .move_ordering
-                .update_quiet_history(side, quiet_move, penalty);
+                .update_quiet_history(side, quiet_move, -actual_malus);
             update_continuation(
                 search_state,
                 board_state,
                 previous_move,
                 quiet_move,
-                penalty,
+                -actual_malus,
             );
         }
     }
@@ -955,12 +978,13 @@ fn beta_cutoff(
                 board_state.piece_mapping[move_obj.target as usize]
             };
             if moved_piece >= 0 && captured_piece != Piece::None {
-                let bonus = (300 * depth as i32) - 250;
+                let bonus = (133 * depth as i32 - 81).clamp(0, 1487);
+                let malus = (968 * depth as i32 - 235).clamp(0, 2244);
                 search_state.move_ordering.update_capture_history(
                     moved_piece as usize,
                     move_obj.target,
                     captured_piece,
-                    bonus,
+                    bonus * 1427 / 1024,
                 );
                 for &prev_cap in tried_captures {
                     let prev_moved = board_state.get_piece_on(prev_cap.source);
@@ -974,7 +998,7 @@ fn beta_cutoff(
                             prev_moved as usize,
                             prev_cap.target,
                             prev_captured,
-                            -bonus,
+                            -malus * 1489 / 1024,
                         );
                     }
                 }

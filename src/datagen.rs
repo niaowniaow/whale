@@ -323,6 +323,7 @@ pub fn run_with_teacher(
                         &cancellation_token,
                         &mut debug_mode,
                         &mut search_state,
+                        1,
                     );
                     let initial_eval = teacher
                         .as_mut()
@@ -350,6 +351,7 @@ pub fn run_with_teacher(
                             &cancellation_token,
                             &mut debug_mode,
                             &mut search_state,
+                            1,
                         );
 
                         if best_move == Move::NO_MOVE {

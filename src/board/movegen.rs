@@ -28,15 +28,21 @@ impl BoardState {
         cancellation_token: &AtomicBool,
         debug_mode: &mut bool,
         search_state: &mut SearchState,
+        num_threads: usize,
     ) -> Move {
-        // Syzygy tablebase: play a proven winning move immediately when the
-        // root position is a table win.
         if let Some(tb_move) = crate::syzygy::root_move(self) {
             search_state.best_move = tb_move;
             search_state.score = crate::syzygy::TB_WIN;
             return tb_move;
         }
-        iterative_deepening::search(self, depth, cancellation_token, debug_mode, search_state);
+        iterative_deepening::search(
+            self,
+            depth,
+            cancellation_token,
+            debug_mode,
+            search_state,
+            num_threads,
+        );
         search_state.best_move
     }
 

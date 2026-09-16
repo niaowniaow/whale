@@ -177,6 +177,10 @@ impl MoveOrdering {
             Move::NO_MOVE
         };
 
+        let them = board_state.side_to_move.other();
+        let check_squares = board_state.check_squares(them);
+        let threats = board_state.threat_by_lesser(board_state.side_to_move);
+
         for move_obj in moves.iter_mut() {
             let prom_piece = move_obj.mv.move_type.promotion_piece();
             if prom_piece == Piece::Queen {
@@ -206,7 +210,31 @@ impl MoveOrdering {
                             })
                         })
                         .unwrap_or(0) as i32;
-                    move_obj.score = history_score + i32::from(from_to_score) + continuation_score;
+                    let mut score =
+                        2 * history_score + i32::from(from_to_score) + continuation_score;
+
+                    let pt = (piece as usize) % PIECES;
+                    let to_mask = 1u64 << (move_obj.mv.target as usize);
+                    let from_mask = 1u64 << (move_obj.mv.source as usize);
+
+                    if (check_squares[pt] & to_mask) != 0 && board_state.see(move_obj.mv) >= -75 {
+                        score += 16384;
+                    }
+
+                    let was_threatened = (threats[pt] & from_mask) != 0;
+                    let is_threatened = (threats[pt] & to_mask) != 0;
+                    let v = 20 * (was_threatened as i32 - is_threatened as i32);
+                    let pt_val = match pt {
+                        0 => 100,
+                        1 => 300,
+                        2 => 300,
+                        3 => 500,
+                        4 => 900,
+                        _ => 0,
+                    };
+                    score += pt_val * v;
+
+                    move_obj.score = score;
                 }
             }
         }
@@ -427,7 +455,7 @@ mod tests {
             ScoredMove {
                 mv: Move {
                     source: Square::C7,
-                    target: Square::C8,
+                    target: Square::C6,
                     move_type: MoveType::Quiet,
                 },
                 score: 0,

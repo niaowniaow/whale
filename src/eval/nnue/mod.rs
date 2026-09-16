@@ -17,7 +17,7 @@ pub const SCALE: i32 = 400;
 // which is not part of the board hash). The score is a pure function of the
 // position, so caching it is exact. Thread-local: each search thread gets
 // its own table, no locking on the hot path.
-const EVAL_CACHE_BITS: u32 = 16;
+const EVAL_CACHE_BITS: u32 = 20;
 const EVAL_CACHE_SIZE: usize = 1 << EVAL_CACHE_BITS;
 const EVAL_CACHE_MASK: u64 = (EVAL_CACHE_SIZE as u64) - 1;
 
@@ -68,23 +68,24 @@ pub fn clear_eval_cache() {
 
 #[inline(always)]
 pub fn evaluate(board: &mut BoardState) -> i16 {
+    evaluate_with_optimism(board, 0)
+}
+
+#[inline(always)]
+pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
     let score = if let Some(hit) = probe_eval_cache(board.board_hash) {
         hit
     } else {
         board.ensure_accumulators_fresh();
         let raw = if v16::maintenance_active() {
             if let Some(ev) = v16::evaluate_board_detailed(board) {
-                // Stockfish outer blend: optimism + complexity + material
                 let psqt = ev.psqt as i64;
                 let positional = ev.positional as i64;
                 let mut nnue = psqt + positional;
                 let complexity = (psqt - positional).abs();
-                // optimism = 0 for now (no thread optimism tracking yet)
-                let optimism: i64 = 0;
-                let nnue_complexity = complexity;
-                let optimism = optimism + optimism * nnue_complexity / 476;
-                nnue -= nnue * nnue_complexity / 18236;
-                // material: 534*Pawns + non_pawn (Stockfish mg values)
+                let mut opt = optimism as i64;
+                opt += opt * complexity / 476;
+                nnue -= nnue * complexity / 18236;
                 let pawn_cnt = board.pieces[crate::common::piece::Piece::Pawn]
                     .0
                     .count_ones() as i64;
@@ -103,26 +104,51 @@ pub fn evaluate(board: &mut BoardState) -> i16 {
                 let non_pawn_mat =
                     knight_cnt * 300 + bishop_cnt * 300 + rook_cnt * 500 + queen_cnt * 900;
                 let material = 534 * pawn_cnt + non_pawn_mat;
-                let mut v = nnue + (nnue * material + optimism * 7675) / 91000;
+                let mut v = nnue + (nnue * material + opt * 7675) / 91000;
                 v -= v * board.half_move_clock as i64 / 199;
                 v.clamp(-29000, 29000) as i16
             } else {
                 v16::evaluate_board(board).unwrap_or(0)
             }
         } else {
-            let network = Network::get_embedded();
-            let mut s = evaluate_internal(board, network);
-            if board.half_move_clock > 0 {
-                s -= (s as i32 * board.half_move_clock as i32 / 199) as i16;
-            }
-            s
+            evaluate_fast(board, optimism)
         };
         store_eval_cache(board.board_hash, raw);
         raw
     };
 
-    // Clamp to TB range like Stockfish evaluate.cpp:66
     score.clamp(-29000, 29000)
+}
+
+#[inline(always)]
+pub fn evaluate_fast(board: &mut BoardState, optimism: i32) -> i16 {
+    board.ensure_accumulators_fresh();
+    let network = Network::get_embedded();
+    let s = evaluate_internal(board, network);
+    let pawn_cnt = board.pieces[crate::common::piece::Piece::Pawn]
+        .0
+        .count_ones() as i64;
+    let knight_cnt = board.pieces[crate::common::piece::Piece::Knight]
+        .0
+        .count_ones() as i64;
+    let bishop_cnt = board.pieces[crate::common::piece::Piece::Bishop]
+        .0
+        .count_ones() as i64;
+    let rook_cnt = board.pieces[crate::common::piece::Piece::Rook]
+        .0
+        .count_ones() as i64;
+    let queen_cnt = board.pieces[crate::common::piece::Piece::Queen]
+        .0
+        .count_ones() as i64;
+    let non_pawn_mat =
+        knight_cnt * 300 + bishop_cnt * 300 + rook_cnt * 500 + queen_cnt * 900;
+    let material = 534 * pawn_cnt + non_pawn_mat;
+    let opt = optimism as i64;
+    let mut v = s as i64 + (s as i64 * material + opt * 7675) / 91000;
+    if board.half_move_clock > 0 {
+        v -= v * board.half_move_clock as i64 / 199;
+    }
+    v.clamp(-29000, 29000) as i16
 }
 
 #[inline(always)]

@@ -614,6 +614,74 @@ impl BoardState {
         Bitboard(checkers)
     }
 
+    pub fn check_squares(&self, side: Side) -> [u64; 6] {
+        let king_bb = self.get_pieces(side, Piece::King);
+        if king_bb.is_empty() {
+            return [0; 6];
+        }
+        let ksq = Square::from(king_bb.get_lsb() as usize);
+        let occ = self.occupancy();
+        let bishop_attacks = get_bishop_attacks_from_table(ksq, occ).0;
+        let rook_attacks = get_rook_attacks_from_table(ksq, occ).0;
+
+        let mut squares = [0u64; 6];
+        squares[Piece::Pawn as usize] = pawn_attacks()[side as usize][ksq as usize];
+        squares[Piece::Knight as usize] = knight_attacks()[ksq as usize];
+        squares[Piece::Bishop as usize] = bishop_attacks;
+        squares[Piece::Rook as usize] = rook_attacks;
+        squares[Piece::Queen as usize] = bishop_attacks | rook_attacks;
+        squares[Piece::King as usize] = 0;
+        squares
+    }
+
+    pub fn threat_by_lesser(&self, side: Side) -> [u64; 6] {
+        let them = side.other();
+        let occ = self.occupancy();
+        let mut pawns = self.get_pieces(them, Piece::Pawn);
+        let mut pawn_threats = 0u64;
+        while !pawns.is_empty() {
+            let sq = pawns.get_lsb();
+            pawns.clear_lsb();
+            pawn_threats |= pawn_attacks()[them as usize][sq as usize];
+        }
+
+        let mut knights = self.get_pieces(them, Piece::Knight);
+        let mut knight_threats = 0u64;
+        while !knights.is_empty() {
+            let sq = knights.get_lsb();
+            knights.clear_lsb();
+            knight_threats |= knight_attacks()[sq as usize];
+        }
+
+        let enemy_bq =
+            self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
+        let mut bishops = Bitboard(enemy_bq);
+        let mut bishop_threats = 0u64;
+        while !bishops.is_empty() {
+            let sq = bishops.get_lsb();
+            bishops.clear_lsb();
+            bishop_threats |= get_bishop_attacks_from_table(Square::from(sq as usize), occ).0;
+        }
+
+        let enemy_rq = self.get_pieces(them, Piece::Rook).0 | self.get_pieces(them, Piece::Queen).0;
+        let mut rooks = Bitboard(enemy_rq);
+        let mut rook_threats = 0u64;
+        while !rooks.is_empty() {
+            let sq = rooks.get_lsb();
+            rooks.clear_lsb();
+            rook_threats |= get_rook_attacks_from_table(Square::from(sq as usize), occ).0;
+        }
+
+        let mut threats = [0u64; 6];
+        threats[Piece::Pawn as usize] = 0;
+        threats[Piece::Knight as usize] = pawn_threats;
+        threats[Piece::Bishop as usize] = pawn_threats;
+        threats[Piece::Rook as usize] = pawn_threats | knight_threats | bishop_threats;
+        threats[Piece::Queen as usize] = threats[Piece::Rook as usize] | rook_threats;
+        threats[Piece::King as usize] = 0;
+        threats
+    }
+
     pub fn is_legal(&self, m: Move) -> bool {
         let us = self.side_to_move;
         let them = us.other();
