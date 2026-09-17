@@ -116,10 +116,10 @@ impl SfnnPosition {
             pieces[p as usize] = board.pieces[p].0.swap_bytes();
         }
         let mut mapping = [6u8; 64];
-        for i in 0..64 {
+        for (i, mapped_piece) in mapping.iter_mut().enumerate() {
             let rp = board.piece_mapping[i ^ 56];
             if rp != Piece::None {
-                mapping[i] = rp as u8;
+                *mapped_piece = rp as u8;
             }
         }
         Self {
@@ -1293,7 +1293,7 @@ unsafe fn fc0_avx2(arch: &SfnnArch, in_row: &[u8], fc0: &mut [i32; FC0_OUT]) {
         let chunks = in_row.len() / 32;
         let l1 = in_row.len();
 
-        for o in 0..FC0_OUT {
+        for (o, output) in fc0.iter_mut().enumerate() {
             let mut sum = _mm256_setzero_si256();
             let w_ptr = arch.fc0_w.as_ptr().add(o * l1) as *const __m256i;
 
@@ -1308,7 +1308,7 @@ unsafe fn fc0_avx2(arch: &SfnnArch, in_row: &[u8], fc0: &mut [i32; FC0_OUT]) {
                 sum = _mm256_add_epi32(sum, _mm256_add_epi32(low32, high32));
             }
 
-            fc0[o] = arch.fc0_bias[o] + hsum256_ps_avx2(sum);
+            *output = arch.fc0_bias[o] + hsum256_ps_avx2(sum);
         }
     }
 }
@@ -1323,7 +1323,7 @@ unsafe fn fc1_avx2(arch: &SfnnArch, concat_fc0: &[u8], fc1: &mut [i32; FC1_OUT])
         let in0 = _mm256_loadu_si256(in_ptr);
         let in1 = _mm256_loadu_si256(in_ptr.add(1));
 
-        for o in 0..FC1_OUT {
+        for (o, output) in fc1.iter_mut().enumerate() {
             let w_ptr = arch.fc1_w.as_ptr().add(o * 64) as *const __m256i;
             let w0 = _mm256_loadu_si256(w_ptr);
             let w1 = _mm256_loadu_si256(w_ptr.add(1));
@@ -1332,7 +1332,7 @@ unsafe fn fc1_avx2(arch: &SfnnArch, concat_fc0: &[u8], fc1: &mut [i32; FC1_OUT])
             let p1 = _mm256_madd_epi16(_mm256_maddubs_epi16(in1, w1), ones);
             let sum = _mm256_add_epi32(p0, p1);
 
-            fc1[o] = arch.fc1_bias[o] + hsum256_ps_avx2(sum);
+            *output = arch.fc1_bias[o] + hsum256_ps_avx2(sum);
         }
     }
 }
@@ -1384,13 +1384,13 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
                 fc0[o] = (fc0_i32[o] as f32 / 16320.0).clamp(0.0, 1.0);
             }
         } else {
-            for o in 0..FC0_OUT {
+            for (o, output) in fc0.iter_mut().enumerate() {
                 let mut sum = arch.fc0_bias[o];
                 let row = o * l1;
-                for j in 0..l1 {
-                    sum += (input[j] as i32) * (arch.fc0_w[row + j] as i32);
+                for (j, &value) in input[..l1].iter().enumerate() {
+                    sum += (value as i32) * (arch.fc0_w[row + j] as i32);
                 }
-                fc0[o] = (sum as f32 / 16320.0).clamp(0.0, 1.0);
+                *output = (sum as f32 / 16320.0).clamp(0.0, 1.0);
             }
         }
 
@@ -1402,20 +1402,20 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
         }
 
         let mut fc1 = [0.0f32; FC1_OUT];
-        for o in 0..FC1_OUT {
+        for (o, output) in fc1.iter_mut().enumerate() {
             let mut sum = arch.fc1_bias[o] as f32 / 16320.0;
             let row = o * FC1_IN;
-            for j in 0..FC1_IN {
+            for (j, &value) in pair.iter().enumerate() {
                 let w = arch.fc1_w[row + j] as f32 / 64.0;
-                sum += pair[j] * w;
+                sum += value * w;
             }
-            fc1[o] = sum.clamp(0.0, 1.0);
+            *output = sum.clamp(0.0, 1.0);
         }
 
         let mut out = arch.fc2_bias as f32 / 16320.0;
-        for j in 0..FC1_OUT {
+        for (j, &value) in fc1.iter().enumerate() {
             let w = arch.fc2_w[j] as f32 / 64.0;
-            out += fc1[j] * w;
+            out += value * w;
         }
 
         let score_cp = ((out - 2.80) * 100.0).clamp(-29000.0, 29000.0) as i32;
@@ -1436,14 +1436,14 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
             fc0_avx2(arch, in_row, &mut fc0);
         }
     } else {
-        for o in 0..FC0_OUT {
+        for (o, output) in fc0.iter_mut().enumerate() {
             let mut v = arch.fc0_bias[o];
             let row = o * l1;
             let w_row = &arch.fc0_w[row..row + l1];
             for j in 0..l1 {
                 v += i32::from(in_row[j]) * i32::from(w_row[j]);
             }
-            fc0[o] = v;
+            *output = v;
         }
     }
 
@@ -1464,14 +1464,14 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
             fc1_avx2(arch, concat_fc0, &mut fc1);
         }
     } else {
-        for o in 0..FC1_OUT {
+        for (o, output) in fc1.iter_mut().enumerate() {
             let mut v = arch.fc1_bias[o];
             let row = o * (FC0_OUT * 2);
             let w_row = &arch.fc1_w[row..row + FC0_OUT * 2];
             for j in 0..FC0_OUT * 2 {
                 v += i32::from(concat_fc0[j]) * i32::from(w_row[j]);
             }
-            fc1[o] = v;
+            *output = v;
         }
     }
 
@@ -1492,8 +1492,8 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
         0
     } else {
         let mut d = 0i32;
-        for j in 0..arch.fc2_w.len() {
-            d += i32::from(concat[j]) * i32::from(arch.fc2_w[j]);
+        for (j, &value) in concat[..arch.fc2_w.len()].iter().enumerate() {
+            d += i32::from(value) * i32::from(arch.fc2_w[j]);
         }
         d
     };
