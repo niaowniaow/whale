@@ -1380,23 +1380,22 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
             unsafe {
                 fc0_avx2(arch, &input[..l1], &mut fc0_i32);
             }
-            for o in 0..FC0_OUT {
-                fc0[o] = (fc0_i32[o] as f32 / 16320.0).clamp(0.0, 1.0);
+            for (output, &v) in fc0.iter_mut().zip(fc0_i32.iter()) {
+                *output = (v as f32 / 16320.0).clamp(0.0, 1.0);
             }
         } else {
             for (o, output) in fc0.iter_mut().enumerate() {
                 let mut sum = arch.fc0_bias[o];
                 let row = o * l1;
-                for (j, &value) in input[..l1].iter().enumerate() {
-                    sum += (value as i32) * (arch.fc0_w[row + j] as i32);
+                for (&input_value, &weight) in input.iter().zip(&arch.fc0_w[row..row + l1]) {
+                    sum += i32::from(input_value) * i32::from(weight);
                 }
                 *output = (sum as f32 / 16320.0).clamp(0.0, 1.0);
             }
         }
 
         let mut pair = [0.0f32; FC1_IN];
-        for o in 0..FC0_OUT {
-            let c = fc0[o];
+        for (o, &c) in fc0.iter().enumerate() {
             pair[o] = c * c;
             pair[FC0_OUT + o] = c;
         }
@@ -1405,17 +1404,15 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
         for (o, output) in fc1.iter_mut().enumerate() {
             let mut sum = arch.fc1_bias[o] as f32 / 16320.0;
             let row = o * FC1_IN;
-            for (j, &value) in pair.iter().enumerate() {
-                let w = arch.fc1_w[row + j] as f32 / 64.0;
-                sum += value * w;
+            for (&pair_value, &weight) in pair.iter().zip(&arch.fc1_w[row..row + FC1_IN]) {
+                sum += pair_value * (weight as f32 / 64.0);
             }
             *output = sum.clamp(0.0, 1.0);
         }
 
         let mut out = arch.fc2_bias as f32 / 16320.0;
-        for (j, &value) in fc1.iter().enumerate() {
-            let w = arch.fc2_w[j] as f32 / 64.0;
-            out += value * w;
+        for (&fc1_value, &weight) in fc1.iter().zip(&arch.fc2_w[..FC1_OUT]) {
+            out += fc1_value * (weight as f32 / 64.0);
         }
 
         let score_cp = ((out - 2.80) * 100.0).clamp(-29000.0, 29000.0) as i32;
@@ -1437,20 +1434,19 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
         }
     } else {
         for (o, output) in fc0.iter_mut().enumerate() {
-            let mut v = arch.fc0_bias[o];
+            let mut value = arch.fc0_bias[o];
             let row = o * l1;
-            let w_row = &arch.fc0_w[row..row + l1];
-            for j in 0..l1 {
-                v += i32::from(in_row[j]) * i32::from(w_row[j]);
+            for (&input_value, &weight) in in_row.iter().zip(&arch.fc0_w[row..row + l1]) {
+                value += i32::from(input_value) * i32::from(weight);
             }
-            *output = v;
+            *output = value;
         }
     }
 
     let mut concat = [0u8; FC0_OUT * 2 + FC1_OUT * 2];
-    for i in 0..FC0_OUT {
-        let sqr = (((fc0[i] as i64 * fc0[i] as i64) >> 21).min(127)) as u8;
-        let clip = (fc0[i] >> 7).clamp(0, 127) as u8;
+    for (i, &v) in fc0.iter().enumerate() {
+        let sqr = (((v as i64 * v as i64) >> 21).min(127)) as u8;
+        let clip = (v >> 7).clamp(0, 127) as u8;
         concat[i] = sqr;
         concat[FC0_OUT + i] = clip;
     }
@@ -1465,19 +1461,20 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
         }
     } else {
         for (o, output) in fc1.iter_mut().enumerate() {
-            let mut v = arch.fc1_bias[o];
+            let mut value = arch.fc1_bias[o];
             let row = o * (FC0_OUT * 2);
-            let w_row = &arch.fc1_w[row..row + FC0_OUT * 2];
-            for j in 0..FC0_OUT * 2 {
-                v += i32::from(concat_fc0[j]) * i32::from(w_row[j]);
+            for (&input_value, &weight) in
+                concat_fc0.iter().zip(&arch.fc1_w[row..row + FC0_OUT * 2])
+            {
+                value += i32::from(input_value) * i32::from(weight);
             }
-            *output = v;
+            *output = value;
         }
     }
 
-    for i in 0..FC1_OUT {
-        let sqr = (((fc1[i] as i64 * fc1[i] as i64) >> 19).min(127)) as u8;
-        let clip = (fc1[i] >> 6).clamp(0, 127) as u8;
+    for (i, &v) in fc1.iter().enumerate() {
+        let sqr = (((v as i64 * v as i64) >> 19).min(127)) as u8;
+        let clip = (v >> 6).clamp(0, 127) as u8;
         concat[FC0_OUT * 2 + i] = sqr;
         concat[FC0_OUT * 2 + FC1_OUT + i] = clip;
     }
@@ -1491,11 +1488,11 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
         #[cfg(not(target_arch = "x86_64"))]
         0
     } else {
-        let mut d = 0i32;
-        for (j, &value) in concat[..arch.fc2_w.len()].iter().enumerate() {
-            d += i32::from(value) * i32::from(arch.fc2_w[j]);
-        }
-        d
+        concat
+            .iter()
+            .zip(arch.fc2_w.iter())
+            .map(|(&input_value, &weight)| i32::from(input_value) * i32::from(weight))
+            .sum()
     };
     out += dot;
     let skip = fc0[FC0_OUT - 2] - fc0[FC0_OUT - 1];
