@@ -3,13 +3,13 @@ use std::process::exit;
 use std::sync::atomic::AtomicBool;
 use std::time::Instant;
 
-use rudim::bitboard::magics::generate_all_magic_numbers;
-use rudim::board::state::BoardState;
-use rudim::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
-use rudim::init;
-use rudim::search::search_state::SearchState;
-use rudim::train::{run as train_run, run_smoke as train_smoke_run};
-use rudim::uci::cli::run as uci_run;
+use whale::bitboard::magics::generate_all_magic_numbers;
+use whale::board::state::BoardState;
+use whale::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
+use whale::init;
+use whale::search::search_state::SearchState;
+use whale::train::{run as train_run, run_smoke as train_smoke_run};
+use whale::uci::cli::run as uci_run;
 
 fn main() {
     let raw_args: Vec<String> = args().collect();
@@ -33,24 +33,68 @@ fn main() {
             run_searches();
         }
         Some("bench") | Some("--bench") => {
+            // bench [hashMB] [threads] [depth] over a fixed set of positions
+            // with stable output (Reckless tools/bench.rs, SF benchmark.cpp).
             init();
-            let mut search_state = SearchState::new();
-            search_state.reset_search();
-            let mut board = BoardState::parse_fen(STARTING_FEN);
+            let hash_mb: usize = raw_args
+                .get(2)
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(16)
+                .clamp(1, 2048);
+            let threads: usize = raw_args
+                .get(3)
+                .and_then(|v| v.parse::<usize>().ok())
+                .unwrap_or(1)
+                .clamp(1, 256);
+            let depth: u8 = raw_args
+                .get(4)
+                .and_then(|v| v.parse::<u8>().ok())
+                .unwrap_or(12)
+                .clamp(1, 64);
+            println!("Bench: hash={hash_mb}MB threads={threads} depth={depth}");
+            let positions = [STARTING_FEN, KIWI_PETE_FEN, ENDGAME_FEN, ADVANCED_MOVE_FEN];
             let cancellation_token = AtomicBool::new(false);
             let mut debug_mode = false;
-
-            let start_time = Instant::now();
-            board.find_best_move(15, &cancellation_token, &mut debug_mode, &mut search_state, 1);
-            let duration = start_time.elapsed();
-
-            let elapsed_secs = duration.as_secs_f64();
-            let nps = if elapsed_secs > 0.0 {
-                (search_state.nodes as f64 / elapsed_secs) as u64
+            let mut total_nodes: u64 = 0;
+            let total_start = Instant::now();
+            for (index, fen) in positions.iter().enumerate() {
+                let mut search_state = SearchState::new();
+                search_state.tt =
+                    std::sync::Arc::new(whale::common::tt::TranspositionTable::new_mb(hash_mb));
+                let mut board = BoardState::parse_fen(fen);
+                let start = Instant::now();
+                let best = board.find_best_move(
+                    depth,
+                    &cancellation_token,
+                    &mut debug_mode,
+                    &mut search_state,
+                    threads,
+                );
+                let elapsed_ms = start.elapsed().as_millis();
+                total_nodes += search_state.nodes;
+                let promo = best
+                    .promotion_char()
+                    .map(|c| c.to_string())
+                    .unwrap_or_default();
+                println!(
+                    "Position {}/{}: bestmove {}{}{} {} nodes {} ms",
+                    index + 1,
+                    positions.len(),
+                    best.source,
+                    best.target,
+                    promo,
+                    search_state.nodes,
+                    elapsed_ms
+                );
+            }
+            let total_ms = total_start.elapsed().as_millis();
+            let total_secs = total_start.elapsed().as_secs_f64();
+            let nps = if total_secs > 0.0 {
+                (total_nodes as f64 / total_secs) as u64
             } else {
                 0
             };
-            println!("{} nodes {} nps", search_state.nodes, nps);
+            println!("Total: {total_nodes} nodes {total_ms} ms {nps} nps");
             exit(0);
         }
         Some("datagen") | Some("--datagen") | Some("datagen-teacher") => {
@@ -112,7 +156,7 @@ fn main() {
             } else {
                 None
             };
-            rudim::datagen::run_with_teacher(
+            whale::datagen::run_with_teacher(
                 output_path,
                 num_games,
                 book_path,

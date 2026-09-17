@@ -1,11 +1,23 @@
+use crate::bitboard::Bitboard;
 use crate::bitboard::attacks::{FILE_A, FILE_H};
+use crate::bitboard::lookups::{
+    get_bishop_attacks_from_table, get_rook_attacks_from_table, knight_attacks, pawn_attacks,
+};
 use crate::board::state::{BoardState, CASTLING_CONSTANTS};
 use crate::common::castle::Castle;
+use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::common::side::Side;
 use crate::common::square::Square;
 use crate::common::zobrist;
+
+#[inline(always)]
+fn is_light_square(sq: usize) -> bool {
+    let file = sq % 8;
+    let rank_from_white = 7 - sq / 8;
+    (file + rank_from_white) % 2 == 1
+}
 
 impl BoardState {
     pub fn make_move(&mut self, m: Move) {
@@ -61,6 +73,7 @@ impl BoardState {
             original_board_hash,
             original_half_move_clock,
         );
+        self.history.plies_from_null = self.history.plies_from_null.saturating_add(1);
         self.move_count += 1;
     }
 
@@ -112,6 +125,63 @@ impl BoardState {
             Square::NoSquare
         };
         self.board_hash = zobrist::hash_en_passant(self, self.board_hash);
+
+        // Drop phantom EP squares: keep the square only if at least one
+        // enemy pawn can legally capture en passant (no horizontal pin),
+        // cf. Stockfish position.cpp do_move() and Reckless validate_en_passant().
+        if self.en_passant_square != Square::NoSquare && !self.has_legal_ep_capture(m) {
+            // The hash currently contains the tentative EP key: xor it back
+            // out first (hash_en_passant on NoSquare afterwards is a no-op).
+            self.board_hash = zobrist::hash_en_passant(self, self.board_hash);
+            self.en_passant_square = Square::NoSquare;
+        }
+    }
+
+    /// True if the opponent (to move after the pending side flip) has at
+    /// least one legal en passant capture following double push `m`.
+    /// Must be called before the side-to-move flip, i.e. `side_to_move`
+    /// is still the pushing side.
+    fn has_legal_ep_capture(&self, m: Move) -> bool {
+        let ep = self.en_passant_square as usize;
+        let mover = self.side_to_move;
+        let capturer = mover.other();
+        let mut takers =
+            self.get_pieces(capturer, Piece::Pawn).0 & pawn_attacks()[mover as usize][ep];
+        if takers == 0 {
+            return false;
+        }
+        let king_bb = self.get_pieces(capturer, Piece::King);
+        if king_bb.is_empty() {
+            return true;
+        }
+        let ksq = Square::from(king_bb.get_lsb() as usize);
+        let cap_sq = m.target as usize;
+        let enemy_pawns = self.get_pieces(mover, Piece::Pawn).0 & !(1u64 << cap_sq);
+        let enemy_knights = self.get_pieces(mover, Piece::Knight).0;
+        let enemy_bq =
+            self.get_pieces(mover, Piece::Bishop).0 | self.get_pieces(mover, Piece::Queen).0;
+        let enemy_rq =
+            self.get_pieces(mover, Piece::Rook).0 | self.get_pieces(mover, Piece::Queen).0;
+        while takers != 0 {
+            let from = takers.trailing_zeros() as usize;
+            takers &= takers - 1;
+            let occ =
+                Bitboard((self.occupancy().0 ^ (1u64 << from) ^ (1u64 << cap_sq)) | (1u64 << ep));
+            if (enemy_pawns & pawn_attacks()[capturer as usize][ksq as usize]) != 0 {
+                continue;
+            }
+            if (enemy_knights & knight_attacks()[ksq as usize]) != 0 {
+                continue;
+            }
+            if (get_bishop_attacks_from_table(ksq, occ).0 & enemy_bq) != 0 {
+                continue;
+            }
+            if (get_rook_attacks_from_table(ksq, occ).0 & enemy_rq) != 0 {
+                continue;
+            }
+            return true;
+        }
+        false
     }
 
     fn update_castling_rights(&mut self, m: Move) {
@@ -202,78 +272,112 @@ impl BoardState {
         Square::from((m.target as i32 + offset) as usize)
     }
 
-    pub fn is_draw(&self) -> bool {
-        let num_pieces = self.occupancy().count_ones();
-        if num_pieces == 2 {
-            // Assumes a legal board with 2 Kings only
+    /// Insufficient mating material, cf. Reckless board.rs draw_by_material():
+    /// KK, K+minor vs K, KNvKN, and KBvKB with same-colour bishops.
+    /// KNNvK is deliberately NOT an automatic draw, nor is KBvKN or
+    /// KBBvK (mate remains possible with help).
+    fn is_insufficient_material(&self) -> bool {
+        if (self.pieces[Piece::Pawn] | self.pieces[Piece::Rook] | self.pieces[Piece::Queen])
+            .is_not_empty()
+        {
+            return false;
+        }
+        let piece_count = self.occupancy().count_ones();
+        if piece_count == 2 {
+            // KK.
             return true;
-        } else if num_pieces == 3 {
-            let knights = self.pieces[Piece::Knight];
-            let bishops = self.pieces[Piece::Bishop];
-            if (knights | bishops).is_not_empty() {
+        }
+        if piece_count == 3 {
+            // K+minor vs K (no pawns/majors left, so the third piece is B/N).
+            return true;
+        }
+        if piece_count != 4 {
+            return false;
+        }
+        // Exactly two minor pieces besides the kings.
+        let w_minors = (self.get_pieces(Side::White, Piece::Bishop)
+            | self.get_pieces(Side::White, Piece::Knight))
+        .count_ones();
+        if w_minors != 1 {
+            // KNNvK / KBBvK: mate is still possible.
+            return false;
+        }
+        let w_bishop = self.get_pieces(Side::White, Piece::Bishop).is_not_empty();
+        let b_bishop = self.get_pieces(Side::Black, Piece::Bishop).is_not_empty();
+        if w_bishop != b_bishop {
+            // KBvKN: mate is still possible.
+            return false;
+        }
+        if !w_bishop {
+            // KNvKN.
+            return true;
+        }
+        // KBvKB: draw only when both bishops share the same square colour.
+        let bishops = self.pieces[Piece::Bishop].0;
+        let b1 = bishops.trailing_zeros() as usize;
+        let rest = bishops & bishops.wrapping_sub(1);
+        let b2 = rest.trailing_zeros() as usize;
+        is_light_square(b1) == is_light_square(b2)
+    }
+
+    /// True when the side to move is in check with no legal move.
+    /// Checkmate takes precedence over the fifty-move draw
+    /// (cf. Stockfish Position::is_draw).
+    fn is_checkmated(&self) -> bool {
+        if !self.is_in_check(self.side_to_move) {
+            return false;
+        }
+        !self.has_any_legal_move()
+    }
+
+    fn has_any_legal_move(&self) -> bool {
+        let mut moves = MoveList::new();
+        self.generate_moves(&mut moves);
+        for m in moves.iter() {
+            if self.is_legal(m.mv) {
                 return true;
             }
         }
+        false
+    }
+
+    /// Repetition lookback stops at the last reversible move AND at the
+    /// last null move (cf. Stockfish `min(rule50, pliesFromNull)`).
+    fn repetition_window(&self) -> usize {
+        (self.half_move_clock as usize).min(self.history.plies_from_null)
+    }
+
+    pub fn is_draw(&self) -> bool {
+        if self.is_insufficient_material() {
+            return true;
+        }
 
         if self.half_move_clock >= 100 {
-            return true;
+            return !self.is_checkmated();
         }
         if self.half_move_clock <= 7 {
             return false;
         }
         self.history.has_hash_appeared_twice(
             self.board_hash,
-            self.history
-                .index
-                .saturating_sub(self.half_move_clock as usize),
+            self.history.index.saturating_sub(self.repetition_window()),
         )
     }
 
     pub fn is_draw_in_search(&self, ply: u16) -> bool {
-        let num_pieces = self.occupancy().count_ones();
-        if num_pieces == 2 {
+        if self.is_insufficient_material() {
             return true;
-        } else if num_pieces == 3 {
-            let knights = self.pieces[Piece::Knight];
-            let bishops = self.pieces[Piece::Bishop];
-            if (knights | bishops).is_not_empty() {
-                return true;
-            }
-        } else if num_pieces == 4 {
-            let pawns = self.pieces[Piece::Pawn];
-            let rooks = self.pieces[Piece::Rook];
-            let queens = self.pieces[Piece::Queen];
-            if pawns.is_empty() && rooks.is_empty() && queens.is_empty() {
-                let w_minors = (self.get_pieces(Side::White, Piece::Bishop)
-                    | self.get_pieces(Side::White, Piece::Knight))
-                .count_ones();
-                let b_minors = (self.get_pieces(Side::Black, Piece::Bishop)
-                    | self.get_pieces(Side::Black, Piece::Knight))
-                .count_ones();
-                if w_minors == 1 && b_minors == 1 {
-                    return true;
-                }
-                if w_minors == 2 && self.get_pieces(Side::White, Piece::Knight).count_ones() == 2 {
-                    return true;
-                }
-                if b_minors == 2 && self.get_pieces(Side::Black, Piece::Knight).count_ones() == 2 {
-                    return true;
-                }
-            }
         }
 
         if self.half_move_clock >= 100 {
-            return true;
+            return !self.is_checkmated();
         }
 
         if self.half_move_clock <= 3 {
             return false;
         }
 
-        let start = self
-            .history
-            .index
-            .saturating_sub(self.half_move_clock as usize);
+        let start = self.history.index.saturating_sub(self.repetition_window());
         let mut matches = 0;
         for i in (start..self.history.index).rev() {
             if self.history.entries[i].board_hash == self.board_hash {
@@ -308,6 +412,7 @@ impl BoardState {
             self.board_hash,
             self.half_move_clock,
         );
+        self.history.plies_from_null = 0;
         self.update_en_passant(Move::NO_MOVE);
         self.flip_side_to_move();
     }

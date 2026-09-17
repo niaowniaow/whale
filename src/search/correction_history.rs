@@ -57,12 +57,7 @@ impl CorrectionHistory {
         (cv / 131072).clamp(-CORRECTION_LIMIT as i32, CORRECTION_LIMIT as i32) as i16
     }
 
-    pub fn update(
-        &mut self,
-        board_state: &BoardState,
-        previous_move: Option<Move>,
-        bonus: i32,
-    ) {
+    pub fn update(&mut self, board_state: &BoardState, previous_move: Option<Move>, bonus: i32) {
         let stm = board_state.side_to_move as usize;
         let pawn_hash = crate::common::zobrist::get_pawn_hash(board_state);
         let pawn_idx = (pawn_hash & (CORRECTION_HISTORY_SIZE as u64 - 1)) as usize;
@@ -72,7 +67,10 @@ impl CorrectionHistory {
 
         Self::apply_bonus(&mut self.pawn_table[stm][pawn_idx], bonus);
         Self::apply_bonus(&mut self.minor_table[stm][minor_idx], bonus * 150 / 128);
-        Self::apply_bonus(&mut self.non_pawn_table[stm][non_pawn_idx], bonus * 186 / 128);
+        Self::apply_bonus(
+            &mut self.non_pawn_table[stm][non_pawn_idx],
+            bonus * 186 / 128,
+        );
 
         if let Some(prev) = previous_move {
             let pc = board_state.piece_mapping[prev.target as usize];

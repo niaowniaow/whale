@@ -1,10 +1,10 @@
 ---
-description: Generate Release Notes for the next version of Rudim
+description: Generate Release Notes for the next version of Whale
 ---
 
 # Generate Release Notes
 
-This workflow guides the agent through generating release notes for the Rudim chess engine by comparing the current `main` branch with the latest released tag.
+This workflow guides the agent through generating release notes for the Whale chess engine by comparing the current `main` branch with the latest released tag.
 
 ## 1. Identify Latest Tag and Commits
 

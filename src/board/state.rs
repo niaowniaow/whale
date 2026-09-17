@@ -331,6 +331,9 @@ impl BoardState {
                         return false;
                     }
                 } else if diff == 2 * forward {
+                    if !m.move_type.is_double_push() {
+                        return false;
+                    }
                     if (start_rank_min..=start_rank_max).contains(&src) {
                         let intermediate = (src as isize + forward) as usize;
                         if is_target_occupied || occ.get_bit(intermediate) == 1 || m.is_capture() {
@@ -696,6 +699,54 @@ impl BoardState {
 
         if from_piece == Piece::King {
             if m.move_type == MoveType::Castle {
+                // Castling must originate from the king's home square with the
+                // right still available, an empty path and the rook on its
+                // home square (cf. Reckless board.rs is_legal castling branch).
+                let occ = self.occupancy();
+                let castle_ok = if us == Side::White {
+                    if from != Square::E1 {
+                        return false;
+                    }
+                    if to == Square::G1 {
+                        self.castle.contains(Castle::WHITE_SHORT)
+                            && occ.get_bit(Square::F1 as usize) == 0
+                            && occ.get_bit(Square::G1 as usize) == 0
+                            && self.piece_mapping[Square::H1 as usize] == Piece::Rook
+                            && self.occupancies[Side::White].get_bit(Square::H1 as usize) == 1
+                    } else if to == Square::C1 {
+                        self.castle.contains(Castle::WHITE_LONG)
+                            && occ.get_bit(Square::D1 as usize) == 0
+                            && occ.get_bit(Square::C1 as usize) == 0
+                            && occ.get_bit(Square::B1 as usize) == 0
+                            && self.piece_mapping[Square::A1 as usize] == Piece::Rook
+                            && self.occupancies[Side::White].get_bit(Square::A1 as usize) == 1
+                    } else {
+                        return false;
+                    }
+                } else {
+                    if from != Square::E8 {
+                        return false;
+                    }
+                    if to == Square::G8 {
+                        self.castle.contains(Castle::BLACK_SHORT)
+                            && occ.get_bit(Square::F8 as usize) == 0
+                            && occ.get_bit(Square::G8 as usize) == 0
+                            && self.piece_mapping[Square::H8 as usize] == Piece::Rook
+                            && self.occupancies[Side::Black].get_bit(Square::H8 as usize) == 1
+                    } else if to == Square::C8 {
+                        self.castle.contains(Castle::BLACK_LONG)
+                            && occ.get_bit(Square::D8 as usize) == 0
+                            && occ.get_bit(Square::C8 as usize) == 0
+                            && occ.get_bit(Square::B8 as usize) == 0
+                            && self.piece_mapping[Square::A8 as usize] == Piece::Rook
+                            && self.occupancies[Side::Black].get_bit(Square::A8 as usize) == 1
+                    } else {
+                        return false;
+                    }
+                };
+                if !castle_ok {
+                    return false;
+                }
                 if self.is_square_attacked(ksq, them) {
                     return false;
                 }
@@ -754,7 +805,12 @@ impl BoardState {
             return false;
         }
 
-        if (pinned & (1u64 << from as usize)) != 0 {
+        // A pinned piece may still resolve a single check by moving along the
+        // pin ray (to capture the checker or interpose), cf. Stockfish
+        // position.cpp legal() and Reckless board.rs is_legal().
+        if (pinned & (1u64 << from as usize)) != 0
+            && (LINE_BB[ksq as usize][from as usize] & (1u64 << to as usize)) == 0
+        {
             return false;
         }
 

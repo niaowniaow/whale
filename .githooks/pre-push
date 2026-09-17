@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Git pre-push hook for rudim
+# Git pre-push hook for whale
 # Runs quality checks before allowing git push
 
 set -e

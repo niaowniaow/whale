@@ -1,10 +1,12 @@
 use crate::common::move_list::MoveList;
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
-use crate::uci::{UciClient, cli};
+use crate::uci::UciClient;
 
 impl UciClient {
     pub(crate) fn run_position(&mut self, parameters: &[&str]) {
+        self.precompute_cancel
+            .store(true, std::sync::atomic::Ordering::Relaxed);
         if parameters.is_empty() {
             return;
         }
@@ -19,14 +21,20 @@ impl UciClient {
                 self.parse_startpos(moves);
             }
             "fen" => {
-                if parameters.len() < 7 {
+                // FEN runs until the `moves` token (if any), not a hardcoded
+                // 6 fields, so halfmove/fullmove-omitting GUIs keep working.
+                let moves_idx = parameters[1..]
+                    .iter()
+                    .position(|&t| t == "moves")
+                    .map(|i| i + 1);
+                let fen_end = moves_idx.unwrap_or(parameters.len());
+                if fen_end <= 1 {
                     return;
                 }
-                let fen = parameters[1..7].join(" ");
-                let moves = if parameters.len() > 8 && parameters[7] == "moves" {
-                    &parameters[8..]
-                } else {
-                    &[][..]
+                let fen = parameters[1..fen_end].join(" ");
+                let moves = match moves_idx {
+                    Some(i) if i + 1 < parameters.len() => &parameters[i + 1..],
+                    _ => &[][..],
                 };
                 self.parse_fen(&fen, moves);
             }
@@ -48,17 +56,15 @@ impl UciClient {
 
     fn parse_moves(&mut self, moves: &[&str]) {
         for &move_string in moves {
+            // Illegal/unparseable moves are skipped silently: stdout must stay
+            // valid UCI (Reckless uci.rs silently ignores them too).
             let move_obj = match Move::parse_long_algebraic(move_string) {
                 Some(m) => m,
-                None => {
-                    cli::write_line("Invalid Move");
-                    return;
-                }
+                None => return,
             };
 
             let found_move = self.find_move_from_move_list(move_obj);
             if found_move == Move::NO_MOVE {
-                cli::write_line("Invalid Move");
                 return;
             }
 

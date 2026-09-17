@@ -11,7 +11,7 @@ struct InfoCommand;
 
 impl CliCommand for InfoCommand {
     fn run(&self, _parameters: &[&str]) {
-        write_line(&format!("Rudim v{} by znxftw", env!("CARGO_PKG_VERSION")));
+        write_line(&format!("Whale v{} by Vishnu B", env!("CARGO_PKG_VERSION")));
     }
 }
 
@@ -104,7 +104,7 @@ pub fn run() {
         if let Some(cli_command) = commands.get(command) {
             cli_command.run(parameters);
         } else {
-            write_line(&format!("Unknown command {command}"));
+            eprintln!("Unknown command {command}");
         }
 
         let _ = io::stdout().flush();

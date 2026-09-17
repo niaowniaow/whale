@@ -25,11 +25,16 @@ impl UciClient {
         }
 
         if let Ok(mut state) = self.search_state.try_lock() {
+            if name.eq_ignore_ascii_case("Clear Hash") {
+                state.tt.clear();
+                crate::uci::cli::write_line("info string Hash cleared");
+            }
             if name.eq_ignore_ascii_case("Hash")
                 && let Ok(mb_size) = value.parse::<usize>()
             {
                 let mb_size = mb_size.clamp(1, 2048);
-                state.tt = std::sync::Arc::new(crate::common::tt::TranspositionTable::new_mb(mb_size));
+                state.tt =
+                    std::sync::Arc::new(crate::common::tt::TranspositionTable::new_mb(mb_size));
             }
             if name.eq_ignore_ascii_case("Threads")
                 && let Ok(v) = value.parse::<usize>()
@@ -42,6 +47,24 @@ impl UciClient {
                 && let Ok(v) = value.parse::<i32>()
             {
                 self.move_overhead = v.clamp(0, 5000);
+            }
+            if name.eq_ignore_ascii_case("Ponder") {
+                self.ponder_enabled = value.eq_ignore_ascii_case("true") || value == "1";
+            }
+            if name.eq_ignore_ascii_case("SyzygyProbeLimit")
+                && let Ok(v) = value.parse::<u8>()
+            {
+                crate::syzygy::set_probe_limit(v.min(7));
+            }
+            if name.eq_ignore_ascii_case("SyzygyProbeDepth")
+                && let Ok(v) = value.parse::<u8>()
+            {
+                crate::syzygy::set_probe_depth(v.max(1));
+            }
+            if name.eq_ignore_ascii_case("Syzygy50MoveRule") {
+                crate::syzygy::set_50mr_rule(
+                    !(value.eq_ignore_ascii_case("false") || value == "0"),
+                );
             }
             if name.eq_ignore_ascii_case("RFP_Margin")
                 && let Ok(v) = value.parse::<i16>()
@@ -92,6 +115,39 @@ impl UciClient {
             {
                 state.params.history_weight_mult = v.clamp(1, 4);
             }
+            if name.eq_ignore_ascii_case("ALP_Enabled") {
+                state.params.alp_enabled = value.eq_ignore_ascii_case("true");
+            }
+            if name.eq_ignore_ascii_case("ALP_Threshold")
+                && let Ok(v) = value.parse::<u8>()
+            {
+                state.params.alp_threshold = v.clamp(50, 95);
+            }
+            if name.eq_ignore_ascii_case("PSM_Enabled") {
+                state.params.psm_enabled = value.eq_ignore_ascii_case("true");
+            }
+            if name.eq_ignore_ascii_case("GTP_Enabled") {
+                state.params.gtp_enabled = value.eq_ignore_ascii_case("true");
+            }
+            if name.eq_ignore_ascii_case("GTP_Threshold")
+                && let Ok(v) = value.parse::<u8>()
+            {
+                state.params.gtp_threshold = v.clamp(5, 50);
+            }
+        } else {
+            // The search thread holds the search_state lock for its whole run,
+            // so a failed try_lock means a search is in flight. Stop it and
+            // say so instead of silently dropping the option (Stockfish
+            // uci.cpp:483-486 stops the search before applying options); the
+            // GUI can resend the option once the search ends.
+            crate::uci::cli::write_line(
+                "info string setoption ignored while searching (stop the search and resend)",
+            );
+            if let Some(cancel) = &self.current_search {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+            self.precompute_cancel
+                .store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
         if name.eq_ignore_ascii_case("EvalFile") || name.eq_ignore_ascii_case("EvalFileSmall") {
@@ -122,7 +178,7 @@ mod tests {
 
         {
             let state = uci_client.search_state.lock().unwrap();
-            assert_eq!(state.tt.capacity(), 2097152); // 64MB
+            assert_eq!(state.tt.capacity(), 524288);
         }
 
         uci_client.run_setoption(&["name", "Hash", "value", "128"]);
@@ -136,7 +192,7 @@ mod tests {
 
         {
             let state = uci_client.search_state.lock().unwrap();
-            assert_eq!(state.tt.capacity(), 32768); // 1MB
+            assert_eq!(state.tt.capacity(), 32768);
         }
     }
 

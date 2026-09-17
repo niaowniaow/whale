@@ -1,16 +1,28 @@
 use crate::common::constants;
 use crate::common::moves::Move;
 use crate::common::side::Side;
-use crate::uci::{SEARCH_STATE, UciClient, get_parameter, output_best_move, time_management};
+use crate::uci::{SEARCH_STATE, UciClient, cli, get_parameter, get_u64, output_best_move};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
+use std::time::Instant;
 
 impl UciClient {
     pub(crate) fn run_go(&mut self, parameters: &[&str]) {
+        // A new `go` while a search is running would spawn a second parallel
+        // search on the same state; ignore it loudly instead (Reckless
+        // uci.rs:137-143: unexpected commands are dropped while running).
+        // The search thread holds the search_state lock for its whole run, so
+        // try_lock failure is a reliable busy signal.
+        if self.search_state.try_lock().is_err() {
+            cli::write_line("info string busy");
+            return;
+        }
         if let Some(cancel) = &self.current_search {
             cancel.store(true, Ordering::Relaxed);
         }
+        self.precompute_cancel.store(true, Ordering::Relaxed);
+        self.precompute_cancel = Arc::new(AtomicBool::new(false));
 
         let cancel_token = Arc::new(AtomicBool::new(false));
         self.current_search = Some(Arc::clone(&cancel_token));
@@ -21,21 +33,43 @@ impl UciClient {
             state.ponder_move = Move::NO_MOVE;
         }
 
+        // Search start time: the outer timer measures its deadline from here
+        // so ponder thinking time is not double-counted (Stockfish
+        // search.cpp:2129 startTime).
+        let start_time = Instant::now();
+
         let is_ponder = parameters.contains(&"ponder");
         self.is_pondering.store(is_ponder, Ordering::Relaxed);
 
         let has_depth = parameters.contains(&"depth");
         let depth = get_parameter("depth", parameters, 8)
             .clamp(1, constants::MAX_SEARCH_DEPTH as i32) as u8;
-        let winc = get_parameter("winc", parameters, 0);
-        let binc = get_parameter("binc", parameters, 0);
-        let wtime = get_parameter("wtime", parameters, -1);
-        let btime = get_parameter("btime", parameters, -1);
-        let movetime = get_parameter("movetime", parameters, -1);
+        // Unsigned per UCI spec; unparseable tokens are ignored (keep default).
+        let wtime = get_u64("wtime", parameters);
+        let btime = get_u64("btime", parameters);
+        let winc = get_u64("winc", parameters).unwrap_or(0);
+        let binc = get_u64("binc", parameters).unwrap_or(0);
+        let movetime = get_u64("movetime", parameters);
+        let nodes = get_u64("nodes", parameters).unwrap_or(0);
+        let mate = get_u64("mate", parameters).unwrap_or(0);
         let movestogo = get_parameter("movestogo", parameters, -1);
         let infinite = parameters.contains(&"infinite");
+        let ponder_option = self.ponder_enabled;
 
-        let (clock, increment, opp_clock) = {
+        // `searchmoves` must be the last token group on the line (SF uci.cpp);
+        // unparseable entries are skipped, an empty/wholly-invalid list means all.
+        let searchmoves: Vec<Move> = parameters
+            .iter()
+            .position(|&t| t == "searchmoves")
+            .map(|idx| {
+                parameters[idx + 1..]
+                    .iter()
+                    .filter_map(|s| Move::parse_long_algebraic(s))
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        let (clock_opt, increment, opp_clock_opt) = {
             let board = self.board.lock().unwrap();
             if board.side_to_move == Side::White {
                 (wtime, winc, btime)
@@ -48,27 +82,76 @@ impl UciClient {
             let board = self.board.lock().unwrap();
             board.move_count
         };
-        let allotted_time = if movetime == -1 {
-            if clock == -1 {
-                -1
-            } else {
-                time_management::calculate_move_time_with_moves(clock, increment, movestogo)
+
+        // Wire go limits into the shared SearchState fields (0/empty = off).
+        {
+            let mut guard = self.search_state.lock().unwrap();
+            guard.max_nodes = nodes;
+            guard.mate_in = mate.min(u8::MAX as u64) as u8;
+            guard.searchmoves = searchmoves;
+        }
+
+        // SINGLE time calculation with the real overhead/ply/opponent clock
+        // (previously computed twice with dummy values, then recomputed).
+        // movetime: opt = max = movetime - overhead, floored at 1ms.
+        let (opt_ms, max_ms): (i64, u64) = match (movetime, clock_opt) {
+            (Some(mt), _) => {
+                let t = (mt as i64 - self.move_overhead as i64).max(1);
+                (t, t.max(1) as u64)
             }
-        } else {
-            movetime
+            (None, Some(clock)) => {
+                let clock_i = clock.min(i32::MAX as u64) as i32;
+                let inc_i = increment.min(i32::MAX as u64) as i32;
+                let opp_i = opp_clock_opt
+                    .map(|o| o.min(i32::MAX as u64) as i32)
+                    .unwrap_or(-1);
+                let (opt, max) = crate::uci::time_management::calculate_optimum_with_ply(
+                    clock_i,
+                    inc_i,
+                    movestogo,
+                    ply,
+                    opp_i,
+                    self.move_overhead,
+                    ponder_option,
+                );
+                (opt as i64, max.max(1) as u64)
+            }
+            (None, None) => (-1, u64::MAX),
         };
-        let (opt_time_tmp, max_time_tmp) = if movetime == -1 && clock != -1 {
-            time_management::calculate_optimum_with_ply(
-                clock,
-                increment,
-                movestogo,
-                ply,
-                opp_clock,
-                self.move_overhead,
+
+        // While pondering, the inner search runs unbounded (opt/max = -1, like
+        // Stockfish search.cpp:2137-2139 which never stops a ponder search);
+        // the outer timer below enforces the real deadline from start_time
+        // once `ponderhit` arrives.
+        let (inner_opt, inner_max): (i32, i32) = if is_ponder || max_ms == u64::MAX {
+            (-1, -1)
+        } else {
+            (
+                opt_ms.clamp(1, i32::MAX as i64) as i32,
+                max_ms.min(i32::MAX as u64) as i32,
             )
-        } else {
-            (allotted_time, allotted_time)
         };
+
+        if max_ms != u64::MAX {
+            let cancel_for_timer = Arc::clone(&cancel_token);
+            let is_pondering_timer = Arc::clone(&self.is_pondering);
+            thread::spawn(move || {
+                // Wait out the ponder phase without consuming the budget...
+                while is_pondering_timer.load(Ordering::Relaxed) {
+                    if cancel_for_timer.load(Ordering::Relaxed) {
+                        return;
+                    }
+                    thread::sleep(std::time::Duration::from_millis(5));
+                }
+                // ...then stop at start_time + max (ponder time already spent
+                // is subtracted instead of sleeping a full max afterwards).
+                let elapsed_ms = start_time.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                if max_ms > elapsed_ms {
+                    thread::sleep(std::time::Duration::from_millis(max_ms - elapsed_ms));
+                }
+                cancel_for_timer.store(true, Ordering::Relaxed);
+            });
+        }
 
         let board_snapshot = self.board.lock().unwrap().clone();
         let debug = Arc::clone(&self.debug_mode);
@@ -76,53 +159,24 @@ impl UciClient {
         let search_state = Arc::clone(&self.search_state);
         let is_pondering_search = Arc::clone(&self.is_pondering);
 
-        let is_movetime = movetime != -1;
-        let opt_time = if is_movetime {
-            (allotted_time * 9) / 10
-        } else if allotted_time == -1 {
-            -1
-        } else {
-            opt_time_tmp
-        };
-        let max_time = if is_movetime {
-            (allotted_time as u64).saturating_sub(10)
-        } else if allotted_time == -1 {
-            u64::MAX
-        } else {
-            max_time_tmp as u64
-        };
-
-        if allotted_time != -1 {
-            let cancel_for_timer = std::sync::Arc::clone(&cancel_token);
-            let is_pondering_timer = Arc::clone(&self.is_pondering);
-            std::thread::spawn(move || {
-                while is_pondering_timer.load(Ordering::Relaxed) {
-                    if cancel_for_timer.load(Ordering::Relaxed) {
-                        return;
-                    }
-                    std::thread::sleep(std::time::Duration::from_millis(5));
-                }
-                std::thread::sleep(std::time::Duration::from_millis(max_time));
-                cancel_for_timer.store(true, std::sync::atomic::Ordering::Relaxed);
-            });
-        }
-
         let search_depth = if infinite {
             constants::MAX_SEARCH_DEPTH
-        } else if has_depth || allotted_time == -1 {
+        } else if has_depth || max_ms == u64::MAX {
             depth
         } else {
             constants::MAX_SEARCH_DEPTH
         };
 
         let num_threads = self.num_threads;
+        let precompute_cancel = Arc::clone(&self.precompute_cancel);
+        let search_state_for_precompute = Arc::clone(&search_state);
 
         thread::spawn(move || {
             let mut board = board_snapshot;
             let mut debug_mode = debug.load(Ordering::Relaxed);
             let mut search_state_guard = search_state.lock().unwrap();
-            search_state_guard.opt_time = opt_time;
-            search_state_guard.max_time = max_time.min(i32::MAX as u64) as i32;
+            search_state_guard.opt_time = inner_opt;
+            search_state_guard.max_time = inner_max;
             let best_move = board.find_best_move(
                 search_depth,
                 &cancel_for_search,
@@ -148,6 +202,17 @@ impl UciClient {
             }
 
             output_best_move(best_move, ponder_move);
+            drop(search_state_guard);
+
+            if best_move != Move::NO_MOVE && !is_pondering_search.load(Ordering::Relaxed) {
+                crate::search::smp_precompute::run_precomputation(
+                    board,
+                    best_move,
+                    search_state_for_precompute,
+                    precompute_cancel,
+                    6,
+                );
+            }
         });
     }
 }

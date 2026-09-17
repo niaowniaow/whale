@@ -87,10 +87,11 @@ impl BoardState {
                 );
             }
             _ => {
-                unreachable!(
-                    "Unexpected pending updates state: ({}, {})",
-                    self.pending_adds, self.pending_removes
-                );
+                // Unusual shapes (promotion captures, null moves, ...): full
+                // refresh of both accumulators instead of panicking (or
+                // silently replaying nothing, as the lazy apply_dirty path does).
+                self.refresh_accumulator(Side::White, network);
+                self.refresh_accumulator(Side::Black, network);
             }
         }
         self.history.computed[target_idx] = true;

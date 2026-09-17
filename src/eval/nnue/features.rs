@@ -11,7 +11,7 @@ pub fn get_feature_index(piece: Piece, relative_side: Side, square: Square) -> O
     // Chess768 from bullet
     let side_offset = (relative_side as usize) * 384;
     let piece_offset = (piece as usize) * 64;
-    // Rudim's square index is vertically inverted (A8=0) compared to bullet's format (A1=0).
+    // Whale's square index is vertically inverted (A8=0) compared to bullet's format (A1=0).
     let sq = (square as usize) ^ 56;
 
     Some(side_offset + piece_offset + sq)

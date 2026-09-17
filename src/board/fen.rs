@@ -187,6 +187,23 @@ fn parse_en_passant(board: &mut BoardState, fen: &str) {
     if own_pawns & (left | right) == 0 {
         return;
     }
+    // The enemy pawn that just double-pushed must still stand immediately
+    // in front of the EP square (Stockfish position.cpp: target bitboard).
+    let enemy = board.side_to_move.other();
+    if board.piece_mapping[pushed] != Piece::Pawn || board.occupancies[enemy].get_bit(pushed) == 0 {
+        return;
+    }
+    // Both the EP square and the square behind it must be empty
+    // (Stockfish: nothing on epSquare or epSquare + pawn_push(side)).
+    let behind = if board.side_to_move == Side::White {
+        sq_index.saturating_sub(8)
+    } else {
+        sq_index.saturating_add(8).min(63)
+    };
+    let occ = board.occupancy();
+    if occ.get_bit(sq_index) == 1 || occ.get_bit(behind) == 1 {
+        return;
+    }
     board.en_passant_square = Square::from(sq_index);
 }
 

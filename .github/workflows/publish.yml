@@ -37,7 +37,7 @@ jobs:
 
           metadata_json=$(cargo metadata --no-deps --format-version 1)
           cargo_version=$(printf '%s' "${metadata_json}" | jq -r '
-            [.packages[] | select(.name == "rudim") | .version][0] // empty
+            [.packages[] | select(.name == "whale") | .version][0] // empty
           ')
 
           latest_tag=$(curl -fsSL \
@@ -101,39 +101,39 @@ jobs:
         include:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
-            binary_path: target/x86_64-unknown-linux-gnu/release/rudim
+            binary_path: target/x86_64-unknown-linux-gnu/release/whale
             asset_name: linux-x64-avx2
-            output_name: Rudim
+            output_name: Whale
             rustflags: "-C target-feature=+avx2"
           - os: windows-latest
             target: x86_64-pc-windows-msvc
-            binary_path: target/x86_64-pc-windows-msvc/release/rudim.exe
+            binary_path: target/x86_64-pc-windows-msvc/release/whale.exe
             asset_name: windows-x64-avx2
-            output_name: Rudim.exe
+            output_name: Whale.exe
             rustflags: "-C target-feature=+avx2"
           - os: windows-11-arm
             target: aarch64-pc-windows-msvc
-            binary_path: target/aarch64-pc-windows-msvc/release/rudim.exe
+            binary_path: target/aarch64-pc-windows-msvc/release/whale.exe
             asset_name: windows-arm64
-            output_name: Rudim.exe
+            output_name: Whale.exe
             rustflags: ""
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
-            binary_path: target/aarch64-unknown-linux-gnu/release/rudim
+            binary_path: target/aarch64-unknown-linux-gnu/release/whale
             asset_name: linux-arm64
-            output_name: Rudim
+            output_name: Whale
             rustflags: ""
           - os: macos-26-intel
             target: x86_64-apple-darwin
-            binary_path: target/x86_64-apple-darwin/release/rudim
+            binary_path: target/x86_64-apple-darwin/release/whale
             asset_name: osx-x64-avx2
-            output_name: Rudim
+            output_name: Whale
             rustflags: "-C target-feature=+avx2"
           - os: macos-latest
             target: aarch64-apple-darwin
-            binary_path: target/aarch64-apple-darwin/release/rudim
+            binary_path: target/aarch64-apple-darwin/release/whale
             asset_name: osx-arm64
-            output_name: Rudim
+            output_name: Whale
             rustflags: ""
 
     steps:

@@ -6,9 +6,9 @@
 // paired Sqr/Clip activations on fc_0 and fc_1, plus the forwarded
 // fc_0[30] - fc_0[31] output term. Integer math follows the Stockfish paths,
 // so official SFNNv16 .nnue files load and evaluate through the same model.
-// Outer UCI/search score scaling remains Rudim-specific.
+// Outer UCI/search score scaling remains Whale-specific.
 //
-// What is intentionally Rudim-specific:
+// What is intentionally Whale-specific:
 // - HalfKA/PSQT are incrementally maintained; threats/pairs recompute per eval,
 // - optional custom "RUDI" checkpoint layout,
 // - file loading only (no embedding of Stockfish weights in this repo).
@@ -69,7 +69,7 @@ pub const MAX_ACTIVE: usize = 32 + MAX_THREAT_ACTIVE + MAX_PAIR_ACTIVE;
 
 // ---------------------------------------------------------------------------
 // Square helpers. Internal feature math uses Stockfish numbering (A1 = 0);
-// Rudim squares are vertically flipped (A8 = 0), converted with `^ 56`.
+// Whale squares are vertically flipped (A8 = 0), converted with `^ 56`.
 // ---------------------------------------------------------------------------
 
 #[inline(always)]
@@ -102,7 +102,7 @@ fn sf_piece_code(side: Side, piece: Piece) -> usize {
 // ---------------------------------------------------------------------------
 
 pub struct SfnnPosition {
-    pub pieces: [u64; 6], // per Rudim Piece discriminant, A1=0 bitboards
+    pub pieces: [u64; 6], // per Whale Piece discriminant, A1=0 bitboards
     pub white: u64,
     pub black: u64,
     // 0..5 = piece type, 6 = empty, in A1=0 order
@@ -302,10 +302,10 @@ fn pseudo_attacks_sf(piece_code: usize, sq: usize) -> u64 {
     }
 }
 
-// Rudim Piece discriminant -> SF piece type (1..6)
+// Whale Piece discriminant -> SF piece type (1..6)
 #[inline(always)]
-fn sf_piece_type(pt_rudim: usize) -> usize {
-    pt_rudim + 1
+fn sf_piece_type(pt_whale: usize) -> usize {
+    pt_whale + 1
 }
 
 // ---------------------------------------------------------------------------
@@ -1004,13 +1004,13 @@ impl Sfnn16Net {
         if use_threats && thash != transformer_hash(true, l1 as u32) {
             return Err("bad transformer hash");
         }
-        let mut bias = read_leb128_section(data, &mut pos, l1, decode_leb128_i16)?;
+        let bias = read_leb128_section(data, &mut pos, l1, decode_leb128_i16)?;
 
         let psq_inputs = PSQ_DIMS;
         let thr_inputs = if use_threats { THREAT_DIMS } else { 0 };
         let pair_inputs = if use_threats { PAIR_DIMS } else { 0 };
 
-        let (mut weights, psqt_w, threat_w, threat_psqt_w, pair_w, pair_psqt_w) = if use_threats {
+        let (weights, psqt_w, threat_w, threat_psqt_w, pair_w, pair_psqt_w) = if use_threats {
             let thr_bytes = thr_inputs * l1;
             let is_sf17 = pos + thr_bytes + LEB128_MAGIC.len() <= data.len()
                 && &data[pos + thr_bytes..pos + thr_bytes + LEB128_MAGIC.len()] == LEB128_MAGIC;
@@ -1077,15 +1077,6 @@ impl Sfnn16Net {
             (w, pw_psqt, Vec::new(), Vec::new(), Vec::new(), Vec::new())
         };
 
-        if !use_threats {
-            for w in weights.iter_mut() {
-                *w = w.wrapping_mul(2);
-            }
-            for b in bias.iter_mut() {
-                *b = b.wrapping_mul(2);
-            }
-        }
-
         let ahash = arch_hash(l1 as u32);
         let mut stacks = Vec::with_capacity(N_BUCKETS);
         for _ in 0..N_BUCKETS {
@@ -1115,15 +1106,19 @@ impl Sfnn16Net {
     }
 
     pub fn load_rudi(data: &[u8]) -> Result<Self, &'static str> {
-        let raw_payload = if data.len() >= 4 && &data[0..4] == b"RUDI" {
-            if data.len() < 64 + 181_011_108 {
-                return Err("truncated rudim.nnue");
+        let raw_payload = if data.starts_with(b"RUDI") {
+            let mut header_offset = 4;
+            let payload_len = read_u32_le(data, &mut header_offset)? as usize;
+            if !matches!(payload_len, 181_011_108 | 181_011_136)
+                || data.len() != header_offset + payload_len
+            {
+                return Err("unsupported RUDI payload layout");
             }
-            &data[64..]
+            &data[header_offset..]
         } else if data.len() == 181_011_136 || data.len() == 181_011_108 {
             data
         } else {
-            return Err("not a rudim net");
+            return Err("not a whale net");
         };
 
         let mut offset = 0;
@@ -1195,7 +1190,7 @@ impl Sfnn16Net {
 
         Ok(Self {
             l1: L1,
-            use_threats: false,
+            use_threats: true,
             is_rudi: true,
             transformer: SfnnTransformer {
                 bias,
@@ -1226,7 +1221,7 @@ impl Sfnn16Net {
 
 fn read_rudi_i8(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i8>, &'static str> {
     if *offset + count > data.len() {
-        return Err("truncated rudim payload");
+        return Err("truncated whale payload");
     }
     let out = data[*offset..*offset + count]
         .iter()
@@ -1238,9 +1233,9 @@ fn read_rudi_i8(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i8>
 
 #[allow(clippy::chunks_exact_to_as_chunks)]
 fn read_rudi_i16(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i16>, &'static str> {
-    let bytes = count.checked_mul(2).ok_or("bad rudim length")?;
+    let bytes = count.checked_mul(2).ok_or("bad whale length")?;
     if *offset + bytes > data.len() {
-        return Err("truncated rudim payload");
+        return Err("truncated whale payload");
     }
     let mut out = Vec::with_capacity(count);
     for chunk in data[*offset..*offset + bytes].chunks_exact(2) {
@@ -1252,9 +1247,9 @@ fn read_rudi_i16(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i1
 
 #[allow(clippy::chunks_exact_to_as_chunks)]
 fn read_rudi_i32(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i32>, &'static str> {
-    let bytes = count.checked_mul(4).ok_or("bad rudim length")?;
+    let bytes = count.checked_mul(4).ok_or("bad whale length")?;
     if *offset + bytes > data.len() {
-        return Err("truncated rudim payload");
+        return Err("truncated whale payload");
     }
     let mut out = Vec::with_capacity(count);
     for chunk in data[*offset..*offset + bytes].chunks_exact(4) {
@@ -1305,9 +1300,12 @@ unsafe fn fc0_avx2(arch: &SfnnArch, in_row: &[u8], fc0: &mut [i32; FC0_OUT]) {
             for j in 0..chunks {
                 let in_vec = _mm256_loadu_si256(in_ptr.add(j));
                 let w_vec = _mm256_loadu_si256(w_ptr.add(j));
-                let prod16 = _mm256_maddubs_epi16(in_vec, w_vec);
-                let prod32 = _mm256_madd_epi16(prod16, ones);
-                sum = _mm256_add_epi32(sum, prod32);
+                let mask = _mm256_set1_epi8(0x7f);
+                let low = _mm256_and_si256(in_vec, mask);
+                let high = _mm256_andnot_si256(mask, in_vec);
+                let low32 = _mm256_madd_epi16(_mm256_maddubs_epi16(low, w_vec), ones);
+                let high32 = _mm256_madd_epi16(_mm256_maddubs_epi16(high, w_vec), ones);
+                sum = _mm256_add_epi32(sum, _mm256_add_epi32(low32, high32));
             }
 
             fc0[o] = arch.fc0_bias[o] + hsum256_ps_avx2(sum);
@@ -1371,7 +1369,7 @@ unsafe fn fc2_avx2(arch: &SfnnArch, concat: &[u8]) -> i32 {
 fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
     if arch.is_rudi {
         #[cfg(target_arch = "x86_64")]
-        let use_avx2 = is_x86_feature_detected!("avx2") && (l1 % 32 == 0);
+        let use_avx2 = is_x86_feature_detected!("avx2") && l1.is_multiple_of(32);
         #[cfg(not(target_arch = "x86_64"))]
         let use_avx2 = false;
 
@@ -1548,23 +1546,27 @@ pub fn try_load_default_path() -> Option<&'static str> {
         return Some("active");
     }
     let candidates = [
+        "whale_farseer_final.nnue",
+        "v16/whale_farseer_final.nnue",
+        "whale_farseerT76.nnue",
+        "v16/whale_farseerT76.nnue",
+        "v16/nn-1a298aa575a0.nnue",
+        "v16/whale.nnue",
+        "v16/quantised.bin",
+        "whale.nnue",
+        "quantised.bin",
+        // Legacy Rudim names (backward compat)
         "rudim_farseer_final.nnue",
         "v16/rudim_farseer_final.nnue",
         "rudim_farseerT76.nnue",
         "v16/rudim_farseerT76.nnue",
-        "v16/nn-1a298aa575a0.nnue",
         "v16/rudim.nnue",
-        "v16/quantised.bin",
         "rudim.nnue",
-        "quantised.bin",
         "resources/sfnn16-big-checkpoint.bin",
     ];
-    for path in candidates {
-        if std::path::Path::new(path).exists() && load_net(path).is_ok() {
-            return Some(path);
-        }
-    }
-    None
+    candidates
+        .into_iter()
+        .find(|&path| std::path::Path::new(path).exists() && load_net(path).is_ok())
 }
 
 pub fn try_load_default() -> bool {
@@ -1674,7 +1676,7 @@ fn scatter_halfka(
     sign: i16,
 ) {
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2") && (l1 % 16 == 0);
+    let use_avx2 = is_x86_feature_detected!("avx2") && l1.is_multiple_of(16);
     #[cfg(not(target_arch = "x86_64"))]
     let use_avx2 = false;
 
@@ -2002,8 +2004,14 @@ unsafe fn pairwise_transform_rudi_avx2(
             let prod_lo = _mm256_mullo_epi32(c0_lo, c1_lo);
             let prod_hi = _mm256_mullo_epi32(c0_hi, c1_hi);
 
-            let div_lo = _mm256_srli_epi32(_mm256_add_epi32(_mm256_mullo_epi32(prod_lo, mult257), mult257), 16);
-            let div_hi = _mm256_srli_epi32(_mm256_add_epi32(_mm256_mullo_epi32(prod_hi, mult257), mult257), 16);
+            let div_lo = _mm256_srli_epi32(
+                _mm256_add_epi32(_mm256_mullo_epi32(prod_lo, mult257), mult257),
+                16,
+            );
+            let div_hi = _mm256_srli_epi32(
+                _mm256_add_epi32(_mm256_mullo_epi32(prod_hi, mult257), mult257),
+                16,
+            );
 
             let d_lo_0 = _mm256_castsi256_si128(div_lo);
             let d_lo_1 = _mm256_extracti128_si256(div_lo, 1);
@@ -2172,7 +2180,8 @@ fn eval_with_net(
 ) -> (i32, i32) {
     let l1 = net.l1;
     let half = l1 / 2;
-    let clip_max: i32 = if net.use_threats { 255 } else { 254 };
+    // Stockfish FtMaxVal (nnue_common.h): always 255, with threats or not.
+    let clip_max: i32 = 255;
     let perspectives = [stm, stm.other()];
 
     let mut threat_lists = [[0usize; MAX_THREAT_ACTIVE]; 2];
@@ -2183,7 +2192,7 @@ fn eval_with_net(
     if net.use_threats {
         for (slot, &persp) in perspectives.iter().enumerate() {
             threat_lens[slot] = collect_threats(pos, persp, &mut threat_lists[slot]);
-            if !net.transformer.pair_w.is_empty() {
+            if !net.transformer.pair_w.is_empty() || !net.transformer.pair_w_i16.is_empty() {
                 pair_lens[slot] = collect_pairs(pos, persp, &mut pair_lists[slot]);
             }
         }
@@ -2203,7 +2212,7 @@ fn eval_with_net(
         if net.use_threats {
             if net.is_rudi {
                 #[cfg(target_arch = "x86_64")]
-                let use_rudi_avx2 = is_x86_feature_detected!("avx2") && (l1 % 8 == 0);
+                let use_rudi_avx2 = is_x86_feature_detected!("avx2") && l1 == L1;
                 #[cfg(not(target_arch = "x86_64"))]
                 let use_rudi_avx2 = false;
 
@@ -2211,6 +2220,20 @@ fn eval_with_net(
                     let t = f - PSQ_DIMS;
                     let base = t * l1;
                     let w_slice = &net.transformer.threat_w_i16[base..base + l1];
+                    if use_rudi_avx2 {
+                        #[cfg(target_arch = "x86_64")]
+                        unsafe {
+                            add_threat_w_i16_avx2(&mut threat_buf, w_slice);
+                        }
+                    } else {
+                        for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
+                            *acc += i32::from(w);
+                        }
+                    }
+                }
+                for &f in &pair_lists[slot][..pair_lens[slot]] {
+                    let base = (f - PSQ_DIMS - THREAT_DIMS) * l1;
+                    let w_slice = &net.transformer.pair_w_i16[base..base + l1];
                     if use_rudi_avx2 {
                         #[cfg(target_arch = "x86_64")]
                         unsafe {
@@ -2290,7 +2313,7 @@ fn eval_with_net(
         let dst = &mut feats[slot * half..(slot + 1) * half];
         if net.is_rudi {
             #[cfg(target_arch = "x86_64")]
-            let use_rudi_avx2 = is_x86_feature_detected!("avx2") && (half % 16 == 0);
+            let use_rudi_avx2 = is_x86_feature_detected!("avx2") && half.is_multiple_of(16);
             #[cfg(not(target_arch = "x86_64"))]
             let use_rudi_avx2 = false;
 
@@ -2365,6 +2388,11 @@ pub struct SfnnEval {
 }
 
 pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Option<SfnnEval> {
+    // Kingless mid-parse boards would yield trailing_zeros() == 64 below
+    // (king-square-indexed tables); bail out instead of indexing OOB.
+    if !kings_present(pos) {
+        return None;
+    }
     let nets = loaded_nets()?;
     ensure_fresh(pos, accs);
 
@@ -2398,10 +2426,10 @@ pub fn evaluate_board(board: &mut BoardState) -> Option<i16> {
     }
     let accs = &mut board.history.sfnn16[idx];
     ensure_fresh(&pos, accs);
-    evaluate_nets(&pos, accs, board.side_to_move).map(|e| {
-        let cp = (e.combined as i64 * 100) / 256;
-        cp.clamp(-29000, 29000) as i16
-    })
+    // Internal units, same as evaluate_board_detailed: the single caller
+    // (nnue::evaluate_with_optimism fallback) applies gate/material/damping
+    // itself. No *100/256 rescale here (that scale is only for UCI display).
+    evaluate_nets(&pos, accs, board.side_to_move).map(|e| e.combined.clamp(-29000, 29000) as i16)
 }
 
 pub fn evaluate_board_detailed(board: &mut BoardState) -> Option<SfnnEval> {
@@ -2531,6 +2559,10 @@ pub fn trainer_features(
     append_halfka(&pos, Side::Black, &mut b_h);
     let mut w_t = Vec::new();
     let mut b_t = Vec::new();
+    append_threats(&pos, Side::White, &mut w_t);
+    append_threats(&pos, Side::Black, &mut b_t);
+    append_pairs(&pos, Side::White, &mut w_t);
+    append_pairs(&pos, Side::Black, &mut b_t);
     for v in w_t.iter_mut().chain(b_t.iter_mut()) {
         *v -= PSQ_DIMS;
     }
@@ -2545,10 +2577,167 @@ pub fn trainer_features(
 mod tests {
     use super::*;
 
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn regression_fc0_full_range_dot() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let mut arch = SfnnArch {
+            fc0_bias: [0; FC0_OUT],
+            fc0_w: vec![0; 32 * FC0_OUT],
+            fc1_bias: [0; FC1_OUT],
+            fc1_w: vec![0; FC1_IN * FC1_OUT],
+            fc2_bias: 0,
+            fc2_w: [0; FC0_OUT * 2 + FC1_OUT * 2],
+            is_rudi: true,
+        };
+        arch.fc0_bias[0] = 3;
+        arch.fc0_bias[1] = -5;
+        arch.fc0_w[..2].fill(127);
+        arch.fc0_w[32..34].fill(-128);
+        let mut input = [0u8; 32];
+        input[..2].fill(255);
+        let mut actual = [0; FC0_OUT];
+        unsafe { fc0_avx2(&arch, &input, &mut actual) };
+        assert_eq!(actual[0], 3 + 255 * 127 + 255 * 127);
+        assert_eq!(actual[1], -5 - 255 * 128 - 255 * 128);
+        assert!(actual[2..].iter().all(|&value| value == 0));
+    }
+
+    #[test]
+    fn regression_rudi_division_identity() {
+        for product in 0..=255 * 255 {
+            assert_eq!((product * 257 + 257) >> 16, product / 255);
+        }
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn regression_pairwise_clipping_parity() {
+        if !is_x86_feature_detected!("avx2") {
+            return;
+        }
+        let half = L1 / 2;
+        let mut base = [0i16; L1];
+        let mut threats = [0i32; L1];
+        let mut actual = [0u8; L1 / 2];
+        let values = [i16::MIN, -256, -1, 0, 1, 127, 254, 255, 256, i16::MAX];
+        for a in 0..256 {
+            for j in 0..half {
+                base[j] = a;
+                base[j + half] = (j % 256) as i16;
+            }
+            unsafe { pairwise_transform_rudi_avx2(&base, &threats, &mut actual, half, false) };
+            for (j, &value) in actual.iter().enumerate() {
+                assert_eq!(value, (i32::from(a) * (j % 256) as i32 / 255) as u8);
+            }
+        }
+        for j in 0..L1 {
+            base[j] = values[j % values.len()];
+            threats[j] = ((j * 37) % 1024) as i32 - 512;
+        }
+        for with_threats in [false, true] {
+            for rudi in [false, true] {
+                unsafe {
+                    if rudi {
+                        pairwise_transform_rudi_avx2(
+                            &base,
+                            &threats,
+                            &mut actual,
+                            half,
+                            with_threats,
+                        );
+                    } else if with_threats {
+                        pairwise_transform_threats_avx2(&base, &threats, &mut actual, half, 255);
+                    } else {
+                        pairwise_transform_no_threats_avx2(&base, &mut actual, half, 255);
+                    }
+                }
+                for j in 0..half {
+                    let extra = |i| if with_threats { threats[i] } else { 0 };
+                    let a = (i32::from(base[j]) + extra(j)).clamp(0, 255);
+                    let b = (i32::from(base[j + half]) + extra(j + half)).clamp(0, 255);
+                    assert_eq!(actual[j], (a * b / if rudi { 255 } else { 512 }) as u8);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn regression_rudi_converter_header() {
+        let mut bytes = Vec::with_capacity(181_011_116);
+        bytes.extend_from_slice(b"RUDI");
+        bytes.extend_from_slice(&181_011_108u32.to_le_bytes());
+        bytes.resize(181_011_116, 0);
+        let net = Sfnn16Net::load_rudi(&bytes).unwrap();
+        assert!(net.use_threats);
+        assert_eq!(net.transformer.threat_w_i16.len(), THREAT_DIMS * L1);
+        assert_eq!(net.transformer.pair_w_i16.len(), PAIR_DIMS * L1);
+        bytes.push(0);
+        assert!(Sfnn16Net::load_rudi(&bytes).is_err());
+    }
+
+    #[test]
+    fn regression_rudi_rejects_unknown_header() {
+        let mut bytes = vec![0; 64 + 181_011_108];
+        bytes[..4].copy_from_slice(b"RUDI");
+        assert!(Sfnn16Net::load_rudi(&bytes).is_err());
+    }
+
+    #[test]
+    fn regression_rudi_dynamic_features() {
+        let board = BoardState::parse_fen("4k3/8/8/8/2p5/2n5/1PP5/4K3 w - - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        let mut arch = SfnnArch {
+            fc0_bias: [0; FC0_OUT],
+            fc0_w: vec![0; 2 * FC0_OUT],
+            fc1_bias: [0; FC1_OUT],
+            fc1_w: vec![0; FC1_IN * FC1_OUT],
+            fc2_bias: 0,
+            fc2_w: [0; FC0_OUT * 2 + FC1_OUT * 2],
+            is_rudi: true,
+        };
+        arch.fc0_w[0] = 64;
+        arch.fc1_w[FC0_OUT] = 64;
+        arch.fc2_w[0] = 64;
+        let mut net = Sfnn16Net {
+            l1: 2,
+            use_threats: true,
+            is_rudi: true,
+            transformer: SfnnTransformer {
+                threat_w_i16: vec![0; THREAT_DIMS * 2],
+                pair_w_i16: vec![0; PAIR_DIMS * 2],
+                ..Default::default()
+            },
+            stacks: vec![arch],
+        };
+        let mut threats = Vec::new();
+        let mut pairs = Vec::new();
+        append_threats(&pos, Side::White, &mut threats);
+        append_pairs(&pos, Side::White, &mut pairs);
+        assert!(!threats.is_empty());
+        assert!(!pairs.is_empty());
+        let base = [0, 255];
+        let psqt = [0; N_BUCKETS];
+        let eval =
+            |net: &Sfnn16Net| eval_with_net(&pos, net, [&base; 2], [&psqt; 2], Side::White, 0);
+        let baseline = eval(&net);
+        let t = (threats[0] - PSQ_DIMS) * 2;
+        net.transformer.threat_w_i16[t] = 255;
+        assert_ne!(eval(&net), baseline);
+        net.transformer.threat_w_i16[t] = 0;
+        let p = (pairs[0] - PSQ_DIMS - THREAT_DIMS) * 2;
+        net.transformer.pair_w_i16[p] = 255;
+        assert_ne!(eval(&net), baseline);
+        net.use_threats = false;
+        assert_eq!(eval(&net), baseline);
+    }
+
     #[test]
     fn test_eval_breakdown() {
         let mut loaded_any = false;
-        for net_path in ["v16/nn-1a298aa575a0.nnue", "v16/rudim.nnue"] {
+        for net_path in ["v16/nn-1a298aa575a0.nnue", "v16/whale.nnue"] {
             println!("=== Testing net: {} ===", net_path);
             if !std::path::Path::new(net_path).exists() {
                 println!("Missing {net_path}, skipping (network files are git-ignored fixtures)");

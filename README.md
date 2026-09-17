@@ -1,124 +1,198 @@
-# Rudim
-[![Pipeline](https://github.com/znxftw/rudim/actions/workflows/pipeline.yml/badge.svg)](https://github.com/znxftw/rudim/actions/workflows/pipeline.yml)
+# 🐋 Whale
 
-Rudim is a UCI compatible chess engine written in Rust which uses Efficiently Updatable Neural Networks (NNUE).
+Whale is a fast chess engine that works with UCI, built using Rust.
 
-You can play against Rudim on lichess: [rudim-bot](https://lichess.org/@/rudim-bot). (Hosted version: v3.0.5)
+It started as a fork of [znxftw/rudim](https://github.com/znxftw/rudim). We’ve completely rebuilt the core engine, including **Board Representation & Move Generation**, **Search Pipeline**, **Evaluation Architecture**, and **NNUE Subsystems**. We took inspiration from [Stockfish](https://github.com/official-stockfish/Stockfish) for algorithms and used high-performance Rust patterns from [Reckless](https://github.com/codedeliveryservice/Reckless).
 
-Series of blog posts on how I wrote rudim : [vishnubhagyanath.dev](https://vishnubhagyanath.dev/tags/rudim/) (these reference the older C# implementation, rudim was rewritten in rust)
+We're training evaluation networks with [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch).
 
-## Architecture Overview
+**Training Backend Research:** We’re exploring [Bullet](https://github.com/jw1912/bullet) as a possible replacement for `nnue-pytorch` in NNUE model training.
 
-Rudim currently implements these core engine capabilities:
+---
 
-<details>
-<summary><b>Board Representation</b></summary>
+## Technical Architecture
 
-- Bitboards, Magic Bitboards
-- Phased Pseudo-Legal Move Generation
-- Zobrist Hashing
-</details>
+### 1. Board Representation & Move Generation
 
-<details>
-<summary><b>Search</b></summary>
+* **High-Performance Bitboards:** A new 64-bit board model that tracks piece placements and colors.
+* **Magic Bitboards:** Custom precomputed lookups for sliding piece attacks (bishops, rooks, queens) with a generator for runtime use (`--generate-magics`).
+* **Phased Move Generation & Staged Picker:**
 
-- Iterative Deepening with Aspiration Windows
-- Negamax + Alpha-Beta Pruning
-- Principal Variation Search
-- Quiescence Search
-- Two-tiered Transposition Table
-- Move Ordering (SEE, MVV-LVA, Killer, History, Hash, PV)
-- Null Move Pruning
-- Late Move Reductions
-- Futility Pruning
-- Reverse Futility Pruning
-</details>
+  * Gradually generate candidates: Hash/PV Move → Good Captures (SEE ≥ 0) → Killer Moves → Counter Moves → Quiet Moves → Bad Captures.
+  * Check for legality directly in the search loop to skip illegal moves.
+* **Fast Zobrist Hashing & History:** Updates hash states quickly during moves, captures, promotions, castling, and en-passant; includes a check for three-fold repetition.
+* **Syzygy Tablebase Support:** Endgame tablebase probing using `shakmaty-syzygy` (WDL bounds and optimal move extraction).
 
-<details>
-<summary><b>Evaluation</b></summary>
+### 2. Search Engine & Novel Heuristics
 
-- [NNUE](https://github.com/znxftw/rudim-networks) Architecture: (768 -> 256) x 2 -> 1
-- Trained purely on Self-Play games from scratch without any external data or games of HCE version of Rudim
-- Experimental SFNNv10 path (Stockfish 18 architecture, bit-exact inference):
-  set `EvalFile` + `EvalFileSmall` to real SFNNv10 nets to activate it
-</details>
+The search engine uses a multi-threaded Principal Variation Search (PVS) with iterative deepening and 16 new search and pruning algorithms:
 
-<details>
-<summary><b>Other</b></summary>
+* **Depth Allocation & Root Search:**
 
-- UCI Protocol support
-</details>
+  * **Disagreement-Allocated Depth (DAD):** Adjusts depth and time for tactical positions based on score disagreements.
+  * **Speculative Persona Search (SPS):** Multi-threaded search that explores different strategies (Aggressive, Tactical, Solid, Standard).
 
-## Estimated Strength
+* **Neural & Adaptive Pruning:**
 
-Ratings and rankings from [CCRL 40/15](https://computerchess.org.uk/4040/), [CCRL Blitz](https://computerchess.org.uk/404/), and the [Computer Chess Index (CCI)](https://github.com/computer-chess-index/cci/blob/main/engines/Rudim.md):
+  * **Adversarial Learned Pruner (ALP):** Predicts safe pruning chances based on various factors.
+  * **GNN Tree Pruner (GTP):** Uses a graph neural network to prune less important branches.
+  * **Sibling Cutoff Rate Pruning (SCR):** Prunes quiet moves based on real-time ratios.
+  * **Positional Momentum Tracking (PMT):** Adjusts evaluations based on recent moves.
+  * **Reverse Futility Pruning (RFP)** & **ProbCut:** Dynamically adjusts margins.
+  * **Null Move Pruning (NMP):** Verifies searches with adaptive reductions.
 
-<details>
-<summary><b>Ratings & Rankings</b></summary>
+* **Extensions & Quiescence:**
 
-| Version | Release Date | CCRL 40/15 | CCRL Blitz | CCI STC | CCI VLTC |
-| ------- | ------------ | ---------- | ---------- | ------- | -------- |
-| v3.0.5  | 2026-07-06   | 3136       | -          | 2624 (#133) | 3002 (#133) |
-| v3.0.4  | 2026-06-20   | 3013 (#253)| 3038 (#232)| 2612        | 2869        |
-| v3.0.3  | 2026-06-18   | -          | -          | 2525        | 2862        |
-| v3.0.2  | 2026-06-13   | -          | -          | 2445        | 2774        |
-| v3.0.1  | 2026-06-09   | -          | -          | 2273        | 2591        |
-| v3.0.0  | 2026-06-06   | 2615       | -          | 2225        | 2584        |
-| v2.2.2  | 2026-05-29   | -          | -          | -           | -           |
-| v2.2.1  | 2026-05-28   | -          | -          | -           | -           |
-| v2.2.0  | 2026-05-26   | -          | -          | -           | -           |
-| v2.1.3  | 2026-05-23   | -          | -          | -           | -           |
-| v2.1.2  | 2026-05-20   | -          | -          | 1800        | 2148        |
-| v2.1.1  | 2026-05-16   | -          | -          | 1716        | 2071        |
-| v2.1.0  | 2026-05-14   | -          | -          | 1728        | 1941        |
-| v2.0.0  | 2026-05-03   | -          | -          | 1646        | 1948        |
-| v1.5    | 2026-04-30   | -          | 1850       | 1586        | 1951        |
-| v1.4.1  | 2024-12-18   | -          | -          | -           | -           |
-| v1.4    | 2024-12-18   | -          | -          | -           | -           |
-| v1.3    | 2024-12-05   | -          | 1437       | -           | -           |
-| v1.2    | 2022-02-25   | -          | -          | -           | -           |
-| v1.1    | 2022-02-08   | -          | -          | -           | -           |
-| v1.0    | 2022-02-06   | -          | -          | -           | -           |
+  * **Threat-Conditioned Extension (TCE):** Predicts extensions for threats.
+  * **Learned Quiescence Termination (LQT):** Prevents early termination during tactical shifts.
 
-*Ranks are shown in brackets when available in the official rating lists.*
-</details>
+* **Memory, Ordering & Multi-Resolution Search:**
 
-## Prerequisites
+  * **Persistent Search Memory (PSM):** Shares context across sibling nodes to avoid unproductive lines.
+  * **Bandit Move Ordering (BMO):** Adapts move ordering strategies.
+  * **Coarse-to-Fine Selective Search (CFSS):** Filters out unpromising moves before detailed expansion.
+  * **Runtime Annealing Search (RAS):** Dynamically adjusts search parameters.
+  * **Speculative Move Pre-computation (SMP):** Prepares responses to expected opponent moves.
+  * **Transposition Table:** Two-tiered design for efficient storage.
+  * **Multi-Level History:** Tracks various move histories.
 
-- [Rust](https://www.rust-lang.org/) (stable toolchain)
-- `make` (for ease of development)
+### 3. NNUE Evaluation
 
-## Usage
+* **Primary Network:** Custom dual-accumulator architecture with efficient execution.
+* **Depth-Conditioned NNUE (DCN):** Adjusts network representation based on tactical and strategic depth.
+* **Robustness & Augmentation:**
 
+  * **Adversarial Robustness Regularization (ARR):** Regularizes against noise in training.
+  * **Counterfactual Move Augmentation (CMA):** Evaluates potential threats for long-range awareness.
+* **SFNNv16 Dual-Net Architecture:** Supports large Stockfish 19 style setups.
+* **Training Pipeline:** Utilizes [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch).
 
-- Build Binary : `cargo build --release`
+### 4. NNUE Training Backend Research
 
-- Run engine : `cargo run --release`
-- Run engine benchmark: `cargo run --release -- bench`
-- Misc : `cargo run --release -- --generate-magics`, `cargo run --release --features cuda -- --train <binpack_path>`
-- Teacher-labelled data: `cargo run --release --features train -- datagen-teacher <output.binpack> <games> <book.fen> <depth> <threads> <path/to/stockfish-19>`
-- Use unoptimized versions (non `--release`) only if debugging
+Whale is looking into new training setups to enhance its evaluation network training.
 
-## Quality Checks
+#### Bullet Training Backend
 
-Install required dependencies, tools, and Git pre-push hooks: `make install-deps`
+We’re checking out [Bullet](https://github.com/jw1912/bullet) as a potential alternative to [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch).
 
-Run all quality checks: `make quality`
+The focus is on:
 
+* Evaluating Bullet as a new NNUE training backend.
+* Comparing performance and resource use.
+* Checking compatibility with Whale's NNUE setups.
+* Exploring integration with current training data.
+* Assessing replacing the existing `nnue-pytorch` workflow.
 
+> **Status:** Research is ongoing. `nnue-pytorch` is still in use until we finish evaluating Bullet.
+
+---
+
+## Getting Started
+
+### Prerequisites
+
+* [Rust](https://www.rust-lang.org/) (stable version 1.75+)
+* Cargo
+
+### Building the Release Binary
+
+```bash
+cargo build --release
+```
+
+The optimized binary will be at:
+
+* `target/release/whale` (Linux / macOS)
+* `target/release/whale.exe` (Windows)
+
+To build with NNUE training and datagen support:
+
+```bash
+cargo build --release --features train
+```
+
+With CUDA acceleration:
+
+```bash
+cargo build --release --features cuda
+```
+
+---
+
+## CLI & Engine Modes
+
+### UCI Interactive Mode
+
+```bash
+cargo run --release
+```
+
+### Engine Benchmark (NPS Measurement)
+
+```bash
+cargo run --release -- bench
+```
+
+### CPU Profiling
+
+```bash
+cargo run --release -- --profile
+```
+
+### Self-Play Binpack Datagen
+
+```bash
+cargo run --release --features train -- datagen <output.binpack> <games> <book.fen> [depth] [threads]
+```
+
+### Teacher-Supervised Datagen
+
+```bash
+cargo run --release --features train -- datagen-teacher <output.binpack> <games> <book.fen> [depth] [threads] <stockfish_binary>
+```
+
+### Recompute Magic Bitboards
+
+```bash
+cargo run --release -- --generate-magics
+```
+
+---
+
+## UCI Options
+
+| Option          |  Type  |    Default   | Description                                             |
+| :-------------- | :----: | :----------: | :------------------------------------------------------ |
+| `Hash`          |  spin  |      16      | Size of the Transposition Table in MB (1 to 2048 MB).  |
+| `Threads`       |  spin  |       1      | Number of concurrent search threads (1 to 256).        |
+| `Move Overhead` |  spin  |      10      | Latency buffer in milliseconds (0 to 5000 ms).         |
+| `SyzygyPath`    | string |   `<empty>`  | Path to directory with `.rtbw` and `.rtbz` files.     |
+| `EvalFile`      | string | `<embedded>` | Path to custom NNUE weights file.                       |
+| `EvalFileSmall` | string |   `<empty>`  | Path to small NNUE net for dual-net mode.              |
+| `Clear Hash`    | button |       -      | Clears all entries in the Transposition Table.         |
+
+---
+
+## Testing
+
+To run the full verification suite (233 unit tests, search integration, movegen, and perft validation):
+
+```bash
+cargo test --release
+```
+
+---
 
 ## Acknowledgements
 
-- [maksimKorzh](https://github.com/maksimKorzh) for his YouTube series on on bitboard chess engines
-- [bullet](https://github.com/jw1912/bullet) - used for training the NNUE
-- [OpenBench](https://github.com/AndyGrant/OpenBench) - used for SPRT testing on my Homelab
-- [Reckless](https://github.com/codedeliveryservice/Reckless), [Viridithas](https://github.com/cosmobobak/viridithas), [Hobbes](https://github.com/kelseyde/hobbes-chess-engine) - took some references for Rust optimizations they did
-- ChessProgramming wiki, TalkChess, Engine Programming Discord Server, CCRL, CCI
+* [znxftw/rudim](https://github.com/znxftw/rudim): Base repository.
+* [Stockfish](https://github.com/official-stockfish/Stockfish): Ideas and benchmarks.
+* [Reckless](https://github.com/codedeliveryservice/Reckless): Design references and optimization patterns.
+* [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch): NNUE training pipeline.
+* [Bullet](https://github.com/jw1912/bullet): Alternative NNUE training backend under research.
 
-## Contributing
+---
 
-PRs are welcome.
+## License
 
-Before opening a PR, please run all the quality checks and perft.
-
-If your change affects search strength, run a 1000 match 10+0.1 tournament as well.
+This project is licensed under the [GNU General Public License v3.0](LICENSE).

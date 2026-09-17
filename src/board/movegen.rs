@@ -30,7 +30,13 @@ impl BoardState {
         search_state: &mut SearchState,
         num_threads: usize,
     ) -> Move {
-        if let Some(tb_move) = crate::syzygy::root_move(self) {
+        // Only shortcut on an unconditional tablebase win at halfmove 0:
+        // with halfmove > 0 the 50-move rule may convert the win, and
+        // losses/draws are always left to normal search. probe/root_move
+        // signatures are owned by another team and stay untouched.
+        if self.half_move_clock == 0
+            && let Some(tb_move) = crate::syzygy::root_move(self)
+        {
             search_state.best_move = tb_move;
             search_state.score = crate::syzygy::TB_WIN;
             return tb_move;
@@ -90,6 +96,9 @@ impl BoardState {
                 MoveGenType::Captures => {
                     self.generate_en_passants(source, move_list, gen_type);
                     self.generate_pawn_attacks(source, move_list, gen_type);
+                    // Quiet queen promotions belong to the captures stage;
+                    // add_pawn_move filters out everything else here.
+                    self.generate_pawn_pushes(source, move_list, gen_type);
                 }
             }
             bitboard.clear_lsb();
@@ -320,50 +329,52 @@ impl BoardState {
 
         if on_rank1 || on_rank8 {
             let capture = self.is_square_capture(target);
-            if gen_type == MoveGenType::Captures && !capture {
-                return;
-            }
-            if gen_type == MoveGenType::Quiets && capture {
-                return;
-            }
             let src = Square::from(source);
             let tgt = Square::from(target);
-            move_list.push(ScoredMove::new(
-                src,
-                tgt,
-                if capture {
-                    MoveType::KnightPromotionCapture
-                } else {
-                    MoveType::KnightPromotion
-                },
-            ));
-            move_list.push(ScoredMove::new(
-                src,
-                tgt,
-                if capture {
-                    MoveType::BishopPromotionCapture
-                } else {
-                    MoveType::BishopPromotion
-                },
-            ));
-            move_list.push(ScoredMove::new(
-                src,
-                tgt,
-                if capture {
-                    MoveType::RookPromotionCapture
-                } else {
-                    MoveType::RookPromotion
-                },
-            ));
-            move_list.push(ScoredMove::new(
-                src,
-                tgt,
-                if capture {
-                    MoveType::QueenPromotionCapture
-                } else {
-                    MoveType::QueenPromotion
-                },
-            ));
+            const PROMOS: [(MoveType, MoveType, bool); 4] = [
+                (
+                    MoveType::KnightPromotion,
+                    MoveType::KnightPromotionCapture,
+                    false,
+                ),
+                (
+                    MoveType::BishopPromotion,
+                    MoveType::BishopPromotionCapture,
+                    false,
+                ),
+                (
+                    MoveType::RookPromotion,
+                    MoveType::RookPromotionCapture,
+                    false,
+                ),
+                (
+                    MoveType::QueenPromotion,
+                    MoveType::QueenPromotionCapture,
+                    true,
+                ),
+            ];
+            for (quiet_mt, cap_mt, is_queen) in PROMOS {
+                match gen_type {
+                    // The captures stage owns every capture plus quiet
+                    // queen promotions (L1 movegen boundary).
+                    MoveGenType::Captures => {
+                        if !capture && !is_queen {
+                            continue;
+                        }
+                    }
+                    // The quiets stage owns quiet underpromotions only.
+                    MoveGenType::Quiets => {
+                        if capture || is_queen {
+                            continue;
+                        }
+                    }
+                }
+                move_list.push(ScoredMove::new(
+                    src,
+                    tgt,
+                    if capture { cap_mt } else { quiet_mt },
+                ));
+            }
         } else if enpassant || double_push {
             if enpassant {
                 if gen_type == MoveGenType::Quiets {

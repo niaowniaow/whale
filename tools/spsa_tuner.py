@@ -94,8 +94,8 @@ class SpsaTuner:
         print(f"Iteration {k+1:03d} | Diff: {diff:+.3f} | Current Params: {self.theta}")
 
 def main():
-    parser = argparse.ArgumentParser(description="Turnkey SPSA Tuner for Rudim")
-    parser.add_argument("--engine", default="target/release/rudim.exe", help="Path to rudim binary")
+    parser = argparse.ArgumentParser(description="Turnkey SPSA Tuner for Whale")
+    parser.add_argument("--engine", default="target/release/whale.exe", help="Path to whale binary")
     parser.add_argument("--book", default="resources/openings.epd", help="Path to openings book")
     parser.add_argument("--iterations", type=int, default=100, help="Number of SPSA iterations")
     parser.add_argument("--games", type=int, default=20, help="Games per iteration")

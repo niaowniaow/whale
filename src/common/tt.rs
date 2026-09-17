@@ -2,7 +2,7 @@ use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::square::Square;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -129,25 +129,22 @@ fn unpack_entry(hash: u64, data: u64) -> TranspositionTableEntry {
 }
 
 #[repr(C, align(64))]
+#[derive(Default)]
 pub struct Cluster {
     pub entries: [AtomicEntry; CLUSTER_SIZE],
 }
 
-impl Default for Cluster {
-    fn default() -> Self {
-        Self {
-            entries: [
-                AtomicEntry::default(),
-                AtomicEntry::default(),
-                AtomicEntry::default(),
-                AtomicEntry::default(),
-            ],
-        }
+struct ClusterGuard<'a>(&'a AtomicBool);
+
+impl Drop for ClusterGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::Release);
     }
 }
 
 pub struct TranspositionTable {
     clusters: Vec<Cluster>,
+    locks: Vec<AtomicBool>,
     cluster_count: usize,
     pub capacity: usize,
     pub generation: AtomicU8,
@@ -167,6 +164,7 @@ impl TranspositionTable {
         let clusters = (0..cluster_count).map(|_| Cluster::default()).collect();
         Self {
             clusters,
+            locks: (0..cluster_count).map(|_| AtomicBool::new(false)).collect(),
             cluster_count,
             capacity,
             generation: AtomicU8::new(0),
@@ -185,6 +183,7 @@ impl TranspositionTable {
         let clusters = (0..cluster_count).map(|_| Cluster::default()).collect();
         Self {
             clusters,
+            locks: (0..cluster_count).map(|_| AtomicBool::new(false)).collect(),
             cluster_count,
             capacity: cluster_count * 2,
             generation: AtomicU8::new(0),
@@ -209,6 +208,14 @@ impl TranspositionTable {
         self.cluster_count = cluster_count;
         self.capacity = cluster_count * 2;
         self.clusters = (0..cluster_count).map(|_| Cluster::default()).collect();
+        self.locks = (0..cluster_count).map(|_| AtomicBool::new(false)).collect();
+    }
+
+    fn try_lock(&self, index: usize) -> Option<ClusterGuard<'_>> {
+        self.locks[index]
+            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
+            .ok()
+            .map(|_| ClusterGuard(&self.locks[index]))
     }
 
     pub fn capacity(&self) -> usize {
@@ -216,7 +223,13 @@ impl TranspositionTable {
     }
 
     pub fn clear(&self) {
-        for cluster in &self.clusters {
+        for (index, cluster) in self.clusters.iter().enumerate() {
+            let _guard = loop {
+                if let Some(guard) = self.try_lock(index) {
+                    break guard;
+                }
+                std::hint::spin_loop();
+            };
             for entry in &cluster.entries {
                 entry.key.store(0, Ordering::Relaxed);
                 entry.data.store(0, Ordering::Relaxed);
@@ -228,7 +241,7 @@ impl TranspositionTable {
     pub fn prefetch(&self, hash: u64) {
         #[cfg(target_arch = "x86_64")]
         unsafe {
-            use core::arch::x86_64::{_mm_prefetch, _MM_HINT_T0};
+            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
             let index = (hash as usize) & (self.cluster_count - 1);
             let ptr = self.clusters.as_ptr().add(index) as *const i8;
             _mm_prefetch(ptr, _MM_HINT_T0);
@@ -238,6 +251,7 @@ impl TranspositionTable {
     #[inline(always)]
     pub fn probe(&self, hash: u64) -> Option<TranspositionTableEntry> {
         let index = (hash as usize) & (self.cluster_count - 1);
+        let _guard = self.try_lock(index)?;
         let cluster = &self.clusters[index];
         for entry in &cluster.entries {
             let k = entry.key.load(Ordering::Relaxed);
@@ -259,6 +273,7 @@ impl TranspositionTable {
         beta: i16,
         depth: u8,
         ply: u8,
+        halfmove: u8,
     ) -> (bool, i16, Option<Move>) {
         let entry = match self.probe(hash) {
             Some(e) => e,
@@ -269,7 +284,7 @@ impl TranspositionTable {
             return (false, 0, Some(entry.best_move));
         }
 
-        let tt_score = Self::retrieve_score(entry.score, ply as i32);
+        let tt_score = Self::retrieve_score(entry.score, ply as i32, halfmove);
 
         match entry.entry_type {
             TranspositionEntryType::Exact => (true, tt_score, Some(entry.best_move)),
@@ -300,13 +315,19 @@ impl TranspositionTable {
         entry_type: TranspositionEntryType,
     ) {
         let index = (hash as usize) & (self.cluster_count - 1);
+        let Some(_guard) = self.try_lock(index) else {
+            return;
+        };
         let cluster = &self.clusters[index];
         let cur_gen = self.generation.load(Ordering::Relaxed);
 
         for entry in &cluster.entries {
-            let k = entry.key.load(Ordering::Relaxed);
+            let k = entry.key.load(Ordering::Acquire);
             if k == hash {
-                let d = entry.data.load(Ordering::Relaxed);
+                let d = entry.data.load(Ordering::Acquire);
+                if entry.key.load(Ordering::Acquire) != hash {
+                    continue;
+                }
                 let existing = unpack_entry(k, d);
                 if existing.entry_type != TranspositionEntryType::None {
                     if best_move == Move::NO_MOVE {
@@ -330,8 +351,9 @@ impl TranspositionTable {
                             existing.generation,
                             best_move,
                         );
-                        entry.data.store(packed, Ordering::Relaxed);
-                        entry.key.store(hash, Ordering::Relaxed);
+                        entry.key.store(0, Ordering::Relaxed);
+                        entry.data.store(packed, Ordering::Release);
+                        entry.key.store(hash, Ordering::Release);
                     }
                     return;
                 }
@@ -342,8 +364,8 @@ impl TranspositionTable {
         let mut lowest_priority = i32::MAX;
 
         for (i, entry) in cluster.entries.iter().enumerate() {
-            let k = entry.key.load(Ordering::Relaxed);
-            let d = entry.data.load(Ordering::Relaxed);
+            let k = entry.key.load(Ordering::Acquire);
+            let d = entry.data.load(Ordering::Acquire);
             let existing = unpack_entry(k, d);
             if existing.entry_type == TranspositionEntryType::None {
                 replace_idx = i;
@@ -359,26 +381,75 @@ impl TranspositionTable {
 
         let packed = pack_entry(score, depth, entry_type, cur_gen, best_move);
         let target = &cluster.entries[replace_idx];
-        target.data.store(packed, Ordering::Relaxed);
-        target.key.store(hash, Ordering::Relaxed);
+        target.key.store(0, Ordering::Relaxed);
+        target.data.store(packed, Ordering::Release);
+        target.key.store(hash, Ordering::Release);
     }
 
-    pub fn adjust_score(score: i16, ply: i32) -> i16 {
-        if !Self::is_close_to_checkmate(score) {
+    // FIX MATE-DOWNGRADE-50: mirror Reckless transposition.rs:315-351.
+    // Write path only folds ply into decisive scores; read path additionally
+    // downgrades mate/TB scores that the 50-move rule may invalidate.
+    // Thresholds are derived from our own MAX_CENTIPAWN_EVAL/MAX_PLY so they
+    // stay consistent with syzygy::TB_WIN.
+    const fn mate_score() -> i32 {
+        MAX_CENTIPAWN_EVAL as i32
+    }
+    const fn mate_in_max() -> i32 {
+        MAX_CENTIPAWN_EVAL as i32 - MAX_PLY as i32
+    }
+    const fn tb_win() -> i32 {
+        MAX_CENTIPAWN_EVAL as i32 - MAX_PLY as i32 - 10
+    }
+    const fn tb_win_in_max() -> i32 {
+        MAX_CENTIPAWN_EVAL as i32 - MAX_PLY as i32 - 10 - MAX_PLY as i32
+    }
+    #[inline(always)]
+    fn is_win_score(score: i32) -> bool {
+        score >= Self::tb_win_in_max()
+    }
+    #[inline(always)]
+    fn is_loss_score(score: i32) -> bool {
+        score <= -Self::tb_win_in_max()
+    }
+
+    pub fn adjust_score(score: i16, ply: i32, _halfmove: u8) -> i16 {
+        let s = score as i32;
+        if Self::is_win_score(s) {
+            return (s + ply) as i16;
+        }
+        if Self::is_loss_score(s) {
+            return (s - ply) as i16;
+        }
+        score
+    }
+
+    pub fn retrieve_score(score: i16, ply: i32, halfmove: u8) -> i16 {
+        let s = score as i32;
+        let hm = halfmove as i32;
+        if s == 0 {
             return score;
         }
-        score + if score > 0 { ply as i16 } else { -ply as i16 }
-    }
-
-    pub fn retrieve_score(score: i16, ply: i32) -> i16 {
-        if !Self::is_close_to_checkmate(score) {
-            return score;
+        if Self::is_win_score(s) {
+            // Downgrade a potentially false mate score.
+            if s >= Self::mate_in_max() && Self::mate_score() - s > 100 - hm {
+                return (Self::tb_win_in_max() - 1) as i16;
+            }
+            // Downgrade a potentially false TB score.
+            if Self::tb_win() - s > 100 - hm {
+                return (Self::tb_win_in_max() - 1) as i16;
+            }
+            return (s - ply) as i16;
         }
-        score + if score > 0 { -ply as i16 } else { ply as i16 }
-    }
-
-    fn is_close_to_checkmate(score: i16) -> bool {
-        (MAX_CENTIPAWN_EVAL as i32 - (score as i32).abs()) <= MAX_PLY as i32
+        if Self::is_loss_score(s) {
+            if s <= -Self::mate_in_max() && Self::mate_score() + s > 100 - hm {
+                return (-Self::tb_win_in_max() + 1) as i16;
+            }
+            if Self::tb_win() + s > 100 - hm {
+                return (-Self::tb_win_in_max() + 1) as i16;
+            }
+            return (s + ply) as i16;
+        }
+        score
     }
 }
 
@@ -396,6 +467,36 @@ mod tests {
     }
 
     #[test]
+    fn test_tt_concurrent_colliding_entries() {
+        let tt = TranspositionTable::new(1024);
+        std::thread::scope(|scope| {
+            for worker in 0..8u64 {
+                let tt = &tt;
+                scope.spawn(move || {
+                    for iteration in 0..20_000u64 {
+                        let id = (iteration + worker) % 8;
+                        let hash = id * tt.cluster_count as u64;
+                        tt.submit_entry(
+                            hash,
+                            id as i16 * 101,
+                            id as u8 + 1,
+                            Move::NO_MOVE,
+                            TranspositionEntryType::Exact,
+                        );
+                        for expected in 0..8u64 {
+                            if let Some(entry) = tt.probe(expected * tt.cluster_count as u64) {
+                                assert_eq!(entry.score, expected as i16 * 101);
+                                assert_eq!(entry.depth, expected as u8 + 1);
+                                assert_eq!(entry.entry_type, TranspositionEntryType::Exact);
+                            }
+                        }
+                    }
+                });
+            }
+        });
+    }
+
+    #[test]
     fn test_tt_store_retrieve() {
         let tt = TranspositionTable::new(1024);
         let hash = 123456789;
@@ -403,7 +504,7 @@ mod tests {
 
         tt.submit_entry(hash, 100, 5, best_move, TranspositionEntryType::Exact);
 
-        let (found, score, m) = tt.get_entry(hash, -1000, 1000, 5, 0);
+        let (found, score, m) = tt.get_entry(hash, -1000, 1000, 5, 0, 0);
         assert!(found);
         assert_eq!(score, 100);
         assert_eq!(m, Some(best_move));
@@ -419,12 +520,12 @@ mod tests {
         tt.submit_entry(hash, 100, 5, m1, TranspositionEntryType::Exact);
         tt.submit_entry(hash, 200, 3, m2, TranspositionEntryType::Exact);
 
-        let (_, score, m) = tt.get_entry(hash, -1000, 1000, 1, 0);
+        let (_, score, m) = tt.get_entry(hash, -1000, 1000, 1, 0, 0);
         assert_eq!(score, 100);
         assert_eq!(m, Some(m1));
 
         tt.submit_entry(hash, 300, 10, m2, TranspositionEntryType::Exact);
-        let (_, score, m) = tt.get_entry(hash, -1000, 1000, 1, 0);
+        let (_, score, m) = tt.get_entry(hash, -1000, 1000, 1, 0, 0);
         assert_eq!(score, 300);
         assert_eq!(m, Some(m2));
     }
@@ -432,11 +533,24 @@ mod tests {
     #[test]
     fn test_tt_score_adjustment() {
         let mate_score = MAX_CENTIPAWN_EVAL - 5;
-        let adjusted = TranspositionTable::adjust_score(mate_score, 10);
+        let adjusted = TranspositionTable::adjust_score(mate_score, 10, 0);
         assert_eq!(adjusted, mate_score + 10);
 
-        let retrieved = TranspositionTable::retrieve_score(adjusted, 10);
+        let retrieved = TranspositionTable::retrieve_score(adjusted, 10, 0);
         assert_eq!(retrieved, mate_score);
+    }
+
+    #[test]
+    fn test_tt_mate_downgrade_near_fifty() {
+        // Mate score that the 50-move rule may invalidate must downgrade.
+        let mate_score = MAX_CENTIPAWN_EVAL - 5;
+        let stored = TranspositionTable::adjust_score(mate_score, 0, 0);
+        // halfmove=95: MATE - score(5) <= 100-95(5)? 5 > 5 false, no downgrade at boundary;
+        // halfmove=96: 5 > 4 true -> downgrade.
+        let ok = TranspositionTable::retrieve_score(stored, 0, 0);
+        assert_eq!(ok, mate_score);
+        let downgraded = TranspositionTable::retrieve_score(stored, 0, 96);
+        assert!(downgraded < mate_score);
     }
 
     #[test]

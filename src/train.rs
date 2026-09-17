@@ -203,7 +203,7 @@ const FINAL_LR: f32 = 0.00001;
 const WDL_START: f32 = 0.2;
 const WDL_END: f32 = 0.7;
 const EVAL_SCALE: f32 = 400.0;
-const BIG_NET_ID: &str = "rudim-sfnn16-big";
+const BIG_NET_ID: &str = "whale-sfnn16-big";
 const BATCH_SIZE: usize = 16_384;
 const BATCHES_PER_SUPERBATCH: usize = 6104;
 const START_SUPERBATCH: usize = 1;
@@ -247,6 +247,11 @@ fn sfnn_save_format(prefix: &str, psqt_scale: i32) -> Vec<SavedFormat> {
     ]
 }
 
+fn fc0_activation_pair(fc0: bullet_lib::nn::ModelNode<'_>) -> bullet_lib::nn::ModelNode<'_> {
+    let clipped = fc0.crelu();
+    (clipped * clipped).concat(clipped)
+}
+
 fn build_big_trainer() -> BigTrainer {
     ValueTrainerBuilder::default()
         .dual_perspective()
@@ -272,7 +277,7 @@ fn build_big_trainer() -> BigTrainer {
 
             // Per-bucket fc_0, pair [sqr, clip] over all 32 outputs.
             let fc0 = l1.forward(trans).select(buckets);
-            let pair = fc0.abs_pow(2.0).crelu().concat(fc0.crelu());
+            let pair = fc0_activation_pair(fc0);
             let fc1 = l2.forward(pair).crelu();
             let final_out = out.forward(fc1);
 
@@ -373,5 +378,98 @@ fn copy_trained_weights() {
     println!("Copying big weights from {} to {}", big_cp, BIG_KEEPER_PATH);
     if let Err(e) = std::fs::copy(&big_cp, BIG_KEEPER_PATH) {
         eprintln!("Error copying big weights: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::board::state::BoardState;
+    use crate::eval::nnue::v16::{append_halfka, append_pairs, append_threats, material_bucket};
+
+    #[test]
+    fn regression_fc0_activation_pair_matches_rudi_inference() {
+        let cases = [
+            -2.0,
+            -1.0,
+            -0.5,
+            -f32::EPSILON,
+            0.0,
+            0.25,
+            0.5,
+            1.0,
+            1.5,
+            2.0,
+        ];
+        let values: [f32; FC0_OUT] = std::array::from_fn(|i| cases[i % cases.len()]);
+        let builder = bullet_lib::nn::ModelBuilder::default();
+        let input = builder.new_constant(bullet_lib::nn::Shape::new(FC0_OUT, 1), &values);
+        let pair = builder.no_grad(|| fc0_activation_pair(input));
+        assert_eq!(pair.shape().rows(), FC1_IN);
+        assert_eq!(pair.shape().cols(), 1);
+        let output = pair.detach();
+        let graph = output.builder().build([output]);
+        let evaluated = graph
+            .evaluate(std::collections::BTreeMap::new())
+            .unwrap()
+            .unwrap();
+        let actual = evaluated.get(&output.node()).unwrap().f32();
+        assert_eq!(actual.len(), FC1_IN);
+        for (i, value) in values.into_iter().enumerate() {
+            let clipped = value.clamp(0.0, 1.0);
+            assert_eq!(
+                actual[i],
+                clipped * clipped,
+                "squared branch, input {value}"
+            );
+            assert_eq!(
+                actual[FC0_OUT + i],
+                clipped,
+                "clipped branch, input {value}"
+            );
+        }
+    }
+
+    #[test]
+    fn regression_training_features_match_inference() {
+        for fen in [
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1",
+            "4k3/8/8/8/2p5/2n5/1PP5/4K3 w - - 0 1",
+            "2k5/1p2p3/2n5/3P4/2B1P3/8/8/6K1 w - - 0 1",
+        ] {
+            let board = BoardState::parse_fen(fen);
+            let pos = SfnnPosition::from_board(&board);
+            let mut bbs = [0; 8];
+            bbs[0] = pos.white;
+            bbs[1] = pos.black;
+            bbs[2..].copy_from_slice(&pos.pieces);
+            for stm in [Side::White, Side::Black] {
+                let data = ChessBoard::from_raw(bbs, stm as usize, 0, 0.5).unwrap();
+                let mut actual = [Vec::new(), Vec::new()];
+                Sfnn16BigInput.map_features(&data, |us, them| {
+                    actual[0].push(us);
+                    actual[1].push(them);
+                });
+                for (slot, perspective) in [stm, stm.other()].into_iter().enumerate() {
+                    let mut expected = Vec::new();
+                    append_halfka(&pos, perspective, &mut expected);
+                    append_threats(&pos, perspective, &mut expected);
+                    append_pairs(&pos, perspective, &mut expected);
+                    expected.sort_unstable();
+                    actual[slot].sort_unstable();
+                    assert_eq!(actual[slot], expected, "{fen}, {stm:?}, slot {slot}");
+                    assert!(actual[slot].len() <= Sfnn16BigInput.max_active());
+                    assert!(
+                        actual[slot]
+                            .iter()
+                            .all(|&f| f < Sfnn16BigInput.num_inputs())
+                    );
+                }
+                assert_eq!(
+                    SfnnBuckets.bucket(&data) as usize,
+                    material_bucket(pos.piece_count())
+                );
+            }
+        }
     }
 }

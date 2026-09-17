@@ -1,4 +1,6 @@
 pub mod accumulator;
+pub mod arr;
+pub mod dcn;
 pub mod features;
 pub mod loader;
 pub mod v16;
@@ -13,10 +15,11 @@ pub const INPUT_SIZE: usize = 768;
 
 pub const SCALE: i32 = 400;
 
-// Hash-keyed cache for the raw network score (before the fifty-move damp,
-// which is not part of the board hash). The score is a pure function of the
-// position, so caching it is exact. Thread-local: each search thread gets
-// its own table, no locking on the hot path.
+// Hash-keyed cache for the final evaluation (after optimism correction and
+// fifty-move damping). Both vary independently of the board hash — optimism
+// changes per iteration/side, halfmove clock is not part of the Zobrist hash —
+// so both are part of the key. Thread-local: each search thread gets its own
+// table, no locking on the hot path.
 const EVAL_CACHE_BITS: u32 = 20;
 const EVAL_CACHE_SIZE: usize = 1 << EVAL_CACHE_BITS;
 const EVAL_CACHE_MASK: u64 = (EVAL_CACHE_SIZE as u64) - 1;
@@ -24,6 +27,8 @@ const EVAL_CACHE_MASK: u64 = (EVAL_CACHE_SIZE as u64) - 1;
 #[derive(Clone, Copy)]
 struct EvalCacheEntry {
     hash: u64,
+    optimism: i32,
+    halfmove: u8,
     score: i16,
 }
 
@@ -32,6 +37,8 @@ std::thread_local! {
         vec![
             EvalCacheEntry {
                 hash: u64::MAX,
+                optimism: 0,
+                halfmove: 0,
                 score: 0
             };
             EVAL_CACHE_SIZE
@@ -41,26 +48,34 @@ std::thread_local! {
 }
 
 #[inline(always)]
-fn probe_eval_cache(hash: u64) -> Option<i16> {
+fn probe_eval_cache(hash: u64, optimism: i32, halfmove: u8) -> Option<i16> {
     EVAL_CACHE.with(|cache| {
         let entry = cache.borrow()[(hash & EVAL_CACHE_MASK) as usize];
-        (entry.hash == hash).then_some(entry.score)
+        (entry.hash == hash && entry.optimism == optimism && entry.halfmove == halfmove)
+            .then_some(entry.score)
     })
 }
 
 #[inline(always)]
-fn store_eval_cache(hash: u64, score: i16) {
+fn store_eval_cache(hash: u64, optimism: i32, halfmove: u8, score: i16) {
     EVAL_CACHE.with(|cache| {
-        cache.borrow_mut()[(hash & EVAL_CACHE_MASK) as usize] = EvalCacheEntry { hash, score };
+        cache.borrow_mut()[(hash & EVAL_CACHE_MASK) as usize] = EvalCacheEntry {
+            hash,
+            optimism,
+            halfmove,
+            score,
+        };
     });
 }
 
-/// Drop all cached raw scores. Called when the active network changes so a
+/// Drop all cached scores. Called when the active network changes so a
 /// stale score from the previous net can never be served.
 pub fn clear_eval_cache() {
     EVAL_CACHE.with(|cache| {
         cache.borrow_mut().fill(EvalCacheEntry {
             hash: u64::MAX,
+            optimism: 0,
+            halfmove: 0,
             score: 0,
         });
     });
@@ -72,8 +87,16 @@ pub fn evaluate(board: &mut BoardState) -> i16 {
 }
 
 #[inline(always)]
+pub fn evaluate_with_depth(board: &mut BoardState, optimism: i32, depth: u8) -> i16 {
+    let base_score = evaluate_with_optimism(board, optimism);
+    dcn::DcnModel::condition_evaluation(base_score, depth, board, dcn::DcnConfig::default())
+}
+
+#[inline(always)]
 pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
-    let score = if let Some(hit) = probe_eval_cache(board.board_hash) {
+    let board_hash = board.board_hash;
+    let halfmove = board.half_move_clock;
+    let score = if let Some(hit) = probe_eval_cache(board_hash, optimism, halfmove) {
         hit
     } else {
         board.ensure_accumulators_fresh();
@@ -101,8 +124,10 @@ pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
                 let queen_cnt = board.pieces[crate::common::piece::Piece::Queen]
                     .0
                     .count_ones() as i64;
-                let non_pawn_mat =
-                    knight_cnt * 300 + bishop_cnt * 300 + rook_cnt * 500 + queen_cnt * 900;
+                let non_pawn_mat = knight_cnt * v16::KNIGHT_VALUE as i64
+                    + bishop_cnt * v16::BISHOP_VALUE as i64
+                    + rook_cnt * v16::ROOK_VALUE as i64
+                    + queen_cnt * v16::QUEEN_VALUE as i64;
                 let material = 534 * pawn_cnt + non_pawn_mat;
                 let mut v = nnue + (nnue * material + opt * 7675) / 91000;
                 v -= v * board.half_move_clock as i64 / 199;
@@ -113,7 +138,7 @@ pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
         } else {
             evaluate_fast(board, optimism)
         };
-        store_eval_cache(board.board_hash, raw);
+        store_eval_cache(board_hash, optimism, halfmove, raw);
         raw
     };
 
@@ -140,8 +165,10 @@ pub fn evaluate_fast(board: &mut BoardState, optimism: i32) -> i16 {
     let queen_cnt = board.pieces[crate::common::piece::Piece::Queen]
         .0
         .count_ones() as i64;
-    let non_pawn_mat =
-        knight_cnt * 300 + bishop_cnt * 300 + rook_cnt * 500 + queen_cnt * 900;
+    let non_pawn_mat = knight_cnt * v16::KNIGHT_VALUE as i64
+        + bishop_cnt * v16::BISHOP_VALUE as i64
+        + rook_cnt * v16::ROOK_VALUE as i64
+        + queen_cnt * v16::QUEEN_VALUE as i64;
     let material = 534 * pawn_cnt + non_pawn_mat;
     let opt = optimism as i64;
     let mut v = s as i64 + (s as i64 * material + opt * 7675) / 91000;

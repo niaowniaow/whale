@@ -11,13 +11,13 @@ else
     FIX_PATH = $1
 endif
 
-# OpenBench passes the output path via the EXE variable (e.g., EXE=rudim-master)
-# Default to "rudim" if not specified
-EXE ?= rudim$(EXE_SUFFIX)
+# OpenBench passes the output path via the EXE variable (e.g., EXE=whale-master)
+# Default to "whale" if not specified
+EXE ?= whale$(EXE_SUFFIX)
 
 all:
 	cargo build --release
-	$(COPY) $(call FIX_PATH,target/release/rudim$(EXE_SUFFIX)) $(call FIX_PATH,$(EXE))
+	$(COPY) $(call FIX_PATH,target/release/whale$(EXE_SUFFIX)) $(call FIX_PATH,$(EXE))
 
 clean:
 	cargo clean

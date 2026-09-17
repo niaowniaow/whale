@@ -58,6 +58,9 @@ pub struct LmrQuery {
     pub history_score: i32,
     pub alpha: i16,
     pub static_eval: i16,
+    pub momentum: i16,
+    pub found_pv: bool,
+    pub structural_disagreement: i16,
 }
 
 #[inline(always)]
@@ -105,6 +108,20 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
             } else if diff < -48 {
                 reduction = reduction.saturating_sub(1);
             }
+        }
+
+        if query.momentum < -120 {
+            reduction = reduction.saturating_sub(1);
+        } else if query.momentum > 150 && query.move_count >= 6 {
+            reduction += 1;
+        }
+
+        if !query.is_pv_node && !query.found_pv && query.move_count >= 6 && query.momentum >= -100 {
+            reduction += 1;
+        }
+
+        if query.structural_disagreement > 100 {
+            reduction = reduction.saturating_sub(1);
         }
     }
 
@@ -161,6 +178,9 @@ mod tests {
                     history_score: -50000,
                     alpha: 0,
                     static_eval: 0,
+                    momentum: 0,
+                    found_pv: false,
+                    structural_disagreement: 0,
                 };
                 let r = compute_reduction(&query, &table, &divisors);
                 assert!(r < d);
@@ -183,6 +203,9 @@ mod tests {
             history_score: 0,
             alpha: 0,
             static_eval: 0,
+            momentum: 0,
+            found_pv: false,
+            structural_disagreement: 0,
         };
         let pv_query = LmrQuery {
             is_pv_node: true,
@@ -214,6 +237,9 @@ mod tests {
             history_score: 0,
             alpha: 0,
             static_eval: 0,
+            momentum: 0,
+            found_pv: false,
+            structural_disagreement: 0,
         };
         let improving_query = LmrQuery {
             is_improving: true,
@@ -222,5 +248,95 @@ mod tests {
         let r_normal = compute_reduction(&normal_query, &table, &divisors);
         let r_improving = compute_reduction(&improving_query, &table, &divisors);
         assert!(r_improving <= r_normal);
+    }
+
+    #[test]
+    fn momentum_adjusts_reduction() {
+        let table = LmrTable::default();
+        let divisors = [3000; 16];
+        let base_query = LmrQuery {
+            depth: 8,
+            move_count: 8,
+            is_pv_node: false,
+            is_improving: false,
+            gives_check: false,
+            is_tactical: false,
+            has_non_pawn_material: true,
+            history_score: 0,
+            alpha: 0,
+            static_eval: 0,
+            momentum: 0,
+            found_pv: true,
+            structural_disagreement: 0,
+        };
+        let crisis_query = LmrQuery {
+            momentum: -150,
+            ..base_query
+        };
+        let comfort_query = LmrQuery {
+            momentum: 200,
+            ..base_query
+        };
+        let r_base = compute_reduction(&base_query, &table, &divisors);
+        let r_crisis = compute_reduction(&crisis_query, &table, &divisors);
+        let r_comfort = compute_reduction(&comfort_query, &table, &divisors);
+        assert!(r_crisis <= r_base);
+        assert!(r_comfort >= r_base);
+    }
+
+    #[test]
+    fn sibling_cutoff_rate_reduces_all_node_late_moves() {
+        let table = LmrTable::default();
+        let divisors = [3000; 16];
+        let pv_found_query = LmrQuery {
+            depth: 8,
+            move_count: 8,
+            is_pv_node: false,
+            is_improving: false,
+            gives_check: false,
+            is_tactical: false,
+            has_non_pawn_material: true,
+            history_score: 0,
+            alpha: 0,
+            static_eval: 0,
+            momentum: 0,
+            found_pv: true,
+            structural_disagreement: 0,
+        };
+        let no_pv_query = LmrQuery {
+            found_pv: false,
+            ..pv_found_query
+        };
+        let r_pv_found = compute_reduction(&pv_found_query, &table, &divisors);
+        let r_no_pv = compute_reduction(&no_pv_query, &table, &divisors);
+        assert!(r_no_pv >= r_pv_found);
+    }
+
+    #[test]
+    fn disagreement_reduces_less() {
+        let table = LmrTable::default();
+        let divisors = [3000; 16];
+        let normal_query = LmrQuery {
+            depth: 8,
+            move_count: 8,
+            is_pv_node: false,
+            is_improving: false,
+            gives_check: false,
+            is_tactical: false,
+            has_non_pawn_material: true,
+            history_score: 0,
+            alpha: 0,
+            static_eval: 0,
+            momentum: 0,
+            found_pv: true,
+            structural_disagreement: 0,
+        };
+        let dis_query = LmrQuery {
+            structural_disagreement: 150,
+            ..normal_query
+        };
+        let r_normal = compute_reduction(&normal_query, &table, &divisors);
+        let r_dis = compute_reduction(&dis_query, &table, &divisors);
+        assert!(r_dis <= r_normal);
     }
 }

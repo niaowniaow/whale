@@ -6,7 +6,7 @@ import os
 import math
 import time
 
-MINE_EXE = os.path.abspath("target/release/rudim.exe")
+MINE_EXE = os.path.abspath("target/release/whale.exe")
 ORIG_EXE = os.path.abspath("rudim-v305-orig.exe")
 
 def calculate_elo(score, total_games):
@@ -19,7 +19,7 @@ def calculate_elo(score, total_games):
 
 def play_match(games=10, time_limit=2.0, depth=None, book_path=None, show=False):
     print("=" * 60)
-    print("      RUDIM NEW (SFNNv16) VS RUDIM v3.0.5 ORIGINAL")
+    print("      WHALE NEW (SFNNv16) VS RUDIM v3.0.5 ORIGINAL")
     print("=" * 60)
     if depth:
         print(f"Games: {games}, Fixed Depth: {depth}")
@@ -50,12 +50,12 @@ def play_match(games=10, time_limit=2.0, depth=None, book_path=None, show=False)
             board = chess.Board()
         mine_is_white = (g % 2 == 1)
 
-        white_name = "Rudim-Mine" if mine_is_white else "Rudim-v3.0.5"
-        black_name = "Rudim-v3.0.5" if mine_is_white else "Rudim-Mine"
+        white_name = "Whale-Mine" if mine_is_white else "Rudim-v3.0.5"
+        black_name = "Rudim-v3.0.5" if mine_is_white else "Whale-Mine"
 
         # Start engines
         mine_engine = chess.engine.SimpleEngine.popen_uci(MINE_EXE)
-        eval_file = os.environ.get("RUDIM_EVAL_FILE")
+        eval_file = os.environ.get("WHALE_EVAL_FILE")
         if eval_file:
             mine_engine.configure({"EvalFile": os.path.abspath(eval_file)})
         orig_engine = chess.engine.SimpleEngine.popen_uci(ORIG_EXE)
@@ -124,7 +124,7 @@ def play_match(games=10, time_limit=2.0, depth=None, book_path=None, show=False)
 
         # Save to PGN
         game = chess.pgn.Game()
-        game.headers["Event"] = "Rudim NNUE Benchmark"
+        game.headers["Event"] = "Whale NNUE Benchmark"
         game.headers["White"] = white_name
         game.headers["Black"] = black_name
         game.headers["Result"] = outcome.result() if outcome else "1/2-1/2"

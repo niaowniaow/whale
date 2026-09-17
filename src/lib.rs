@@ -1,5 +1,6 @@
 pub mod bitboard;
 pub mod board;
+pub mod cma;
 pub mod common;
 pub mod eval;
 pub mod nnue_pipeline;
@@ -19,7 +20,7 @@ pub mod datagen {
         _depth: u8,
         _threads: usize,
     ) {
-        eprintln!("Error: This build of rudim was compiled without the 'train' feature.");
+        eprintln!("Error: This build of whale was compiled without the 'train' feature.");
         std::process::exit(1);
     }
 
@@ -31,7 +32,7 @@ pub mod datagen {
         _threads: usize,
         _teacher_path: Option<&str>,
     ) {
-        eprintln!("Error: This build of rudim was compiled without the 'train' feature.");
+        eprintln!("Error: This build of whale was compiled without the 'train' feature.");
         std::process::exit(1);
     }
 }
@@ -41,12 +42,12 @@ pub mod train;
 #[cfg(not(feature = "train"))]
 pub mod train {
     pub fn run(_custom_dataset_path: Option<&str>) {
-        eprintln!("Error: This build of rudim was compiled without the 'train' feature.");
+        eprintln!("Error: This build of whale was compiled without the 'train' feature.");
         std::process::exit(1);
     }
 
     pub fn run_smoke(_custom_dataset_path: Option<&str>) {
-        eprintln!("Error: This build of rudim was compiled without the 'train' feature.");
+        eprintln!("Error: This build of whale was compiled without the 'train' feature.");
         std::process::exit(1);
     }
 }

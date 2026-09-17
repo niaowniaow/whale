@@ -5,7 +5,7 @@ import chess
 
 def start_engine(eval_file):
     proc = subprocess.Popen(
-        [r".\target\release\rudim.exe"],
+        [r".\target\release\whale.exe"],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

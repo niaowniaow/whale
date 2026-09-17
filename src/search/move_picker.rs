@@ -4,6 +4,7 @@ use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::eval::move_ordering::{self, MoveOrdering};
+use crate::search::bmo::BanditArm;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchPhase {
@@ -20,6 +21,7 @@ pub enum SearchPhase {
 
 pub struct MovePicker {
     pub phase: SearchPhase,
+    pub arm: BanditArm,
     pv_move: Option<Move>,
     tt_best: Option<Move>,
     previous_move: Option<Move>,
@@ -38,9 +40,11 @@ impl MovePicker {
         previous_move: Option<Move>,
         ply: usize,
         excluded_move: Option<Move>,
+        arm: BanditArm,
     ) -> Self {
         Self {
             phase: SearchPhase::PvMove,
+            arm,
             pv_move,
             tt_best,
             previous_move,
@@ -56,6 +60,7 @@ impl MovePicker {
     pub fn new_qsearch(ply: usize) -> Self {
         Self {
             phase: SearchPhase::PvMove,
+            arm: BanditArm::CapturesFirst,
             pv_move: None,
             tt_best: None,
             previous_move: None,
@@ -104,7 +109,10 @@ impl MovePicker {
                     }
                 }
                 SearchPhase::TtMove => {
-                    self.phase = SearchPhase::GenerateCaptures;
+                    self.phase = match self.arm {
+                        BanditArm::CapturesFirst => SearchPhase::GenerateCaptures,
+                        BanditArm::QuietsFirst => SearchPhase::GenerateQuiets,
+                    };
                     if let Some(mv) = self.tt_best
                         && mv != Move::NO_MOVE
                         && Some(mv) != self.pv_move
@@ -164,8 +172,11 @@ impl MovePicker {
                         return Some(mv);
                     } else if self.is_qsearch {
                         self.phase = SearchPhase::Done;
-                    } else {
+                    } else if self.arm == BanditArm::CapturesFirst {
                         self.phase = SearchPhase::GenerateQuiets;
+                    } else {
+                        self.phase = SearchPhase::BadCaptures;
+                        self.current_index = self.good_captures_count.min(captures.len());
                     }
                 }
                 SearchPhase::GenerateQuiets => {
@@ -191,8 +202,12 @@ impl MovePicker {
                         return Some(mv);
                     } else {
                         self.saved_quiet_index = self.current_index;
-                        self.phase = SearchPhase::BadCaptures;
-                        self.current_index = self.good_captures_count.min(captures.len());
+                        if self.arm == BanditArm::CapturesFirst {
+                            self.phase = SearchPhase::BadCaptures;
+                            self.current_index = self.good_captures_count.min(captures.len());
+                        } else {
+                            self.phase = SearchPhase::GenerateCaptures;
+                        }
                     }
                 }
                 SearchPhase::BadCaptures => {
@@ -305,7 +320,7 @@ mod tests {
     fn test_move_picker_normal_search_all_phases() {
         let mut board = BoardState::parse_fen("k7/8/8/5n2/1p1p4/2B5/3R4/K7 w - - 0 1");
 
-        let mut picker = MovePicker::new(None, None, None, 0, None);
+        let mut picker = MovePicker::new(None, None, None, 0, None, BanditArm::CapturesFirst);
         let mut captures = MoveList::new();
         let mut quiets = MoveList::new();
         let mut returned_moves = Vec::new();
@@ -346,9 +361,38 @@ mod tests {
     }
 
     #[test]
+    fn test_move_picker_quiets_first_arm() {
+        let mut board = BoardState::parse_fen("k7/8/8/5n2/1p1p4/2B5/3R4/K7 w - - 0 1");
+
+        let mut picker = MovePicker::new(None, None, None, 0, None, BanditArm::QuietsFirst);
+        let mut captures = MoveList::new();
+        let mut quiets = MoveList::new();
+        let mut returned_moves = Vec::new();
+        let move_ordering = MoveOrdering::new();
+        while let Some(mv) = picker.next(&mut board, &move_ordering, &mut captures, &mut quiets) {
+            returned_moves.push(mv);
+        }
+
+        let good_capture_idx = returned_moves
+            .iter()
+            .position(|m| m.source == Square::C3 && m.target == Square::B4)
+            .unwrap();
+
+        let quiet_indices: Vec<usize> = returned_moves
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| m.move_type == MoveType::Quiet)
+            .map(|(i, _)| i)
+            .collect();
+
+        assert!(!quiet_indices.is_empty());
+        assert!(quiet_indices[0] < good_capture_idx);
+    }
+
+    #[test]
     fn test_bad_quiets_searched_after_bad_captures() {
         let mut board = BoardState::parse_fen("k7/8/8/5n2/1p1p4/2B5/3R4/K7 w - - 0 1");
-        let mut picker = MovePicker::new(None, None, None, 0, None);
+        let mut picker = MovePicker::new(None, None, None, 0, None, BanditArm::CapturesFirst);
         let mut captures = MoveList::new();
         let mut quiets = MoveList::new();
         let mut move_ordering = MoveOrdering::new();

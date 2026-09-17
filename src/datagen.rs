@@ -6,12 +6,12 @@ use std::sync::atomic::AtomicBool;
 use std::sync::mpsc;
 
 use crate::board::state::BoardState;
-use crate::common::castle::Castle as RudimCastle;
+use crate::common::castle::Castle as WhaleCastle;
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
-use crate::common::piece::Piece as RudimPiece;
-use crate::common::side::Side as RudimSide;
-use crate::common::square::Square as RudimSquare;
+use crate::common::piece::Piece as WhalePiece;
+use crate::common::side::Side as WhaleSide;
+use crate::common::square::Square as WhaleSquare;
 use crate::search::search_state::SearchState;
 use crate::teacher::StockfishTeacher;
 
@@ -24,7 +24,7 @@ use bullet_lib::game::formats::viriformat::{
 };
 
 pub struct SelfPlayPosition {
-    pub side_to_move: RudimSide,
+    pub side_to_move: WhaleSide,
     pub mv: Move,
     pub engine_eval: i16,
 }
@@ -33,7 +33,7 @@ struct CompletedGame {
     initial_state: BoardState,
     initial_eval: i16,
     positions: Vec<SelfPlayPosition>,
-    outcome: RudimSide,
+    outcome: WhaleSide,
 }
 
 pub fn load_opening_book(file_path: &str) -> Result<Vec<String>> {
@@ -51,63 +51,63 @@ pub fn load_opening_book(file_path: &str) -> Result<Vec<String>> {
     Ok(fens)
 }
 
-pub fn board_state_to_viriboard(rudim_state: &BoardState) -> ViriBoard {
+pub fn board_state_to_viriboard(whale_state: &BoardState) -> ViriBoard {
     let mut viriboard = ViriBoard::new();
 
-    *viriboard.turn_mut() = match rudim_state.side_to_move {
-        RudimSide::White => ViriColour::White,
-        RudimSide::Black => ViriColour::Black,
+    *viriboard.turn_mut() = match whale_state.side_to_move {
+        WhaleSide::White => ViriColour::White,
+        WhaleSide::Black => ViriColour::Black,
         _ => panic!("Invalid turn side"),
     };
 
-    *viriboard.ep_sq_mut() = if rudim_state.en_passant_square == RudimSquare::NoSquare {
+    *viriboard.ep_sq_mut() = if whale_state.en_passant_square == WhaleSquare::NoSquare {
         None
     } else {
         // Viriboard mapping is flipped
-        let viri_ep_idx = (rudim_state.en_passant_square as u8) ^ 56;
+        let viri_ep_idx = (whale_state.en_passant_square as u8) ^ 56;
         ViriSquare::new(viri_ep_idx)
     };
 
-    // Viriboard castling is represented differently to Rudim.
+    // Viriboard castling is represented differently to Whale.
     let mut castling = ViriCastlingRights::NONE;
-    if rudim_state.castle.contains(RudimCastle::WHITE_SHORT) {
+    if whale_state.castle.contains(WhaleCastle::WHITE_SHORT) {
         castling.wk = Some(ViriSquare::H1);
     }
-    if rudim_state.castle.contains(RudimCastle::WHITE_LONG) {
+    if whale_state.castle.contains(WhaleCastle::WHITE_LONG) {
         castling.wq = Some(ViriSquare::A1);
     }
-    if rudim_state.castle.contains(RudimCastle::BLACK_SHORT) {
+    if whale_state.castle.contains(WhaleCastle::BLACK_SHORT) {
         castling.bk = Some(ViriSquare::H8);
     }
-    if rudim_state.castle.contains(RudimCastle::BLACK_LONG) {
+    if whale_state.castle.contains(WhaleCastle::BLACK_LONG) {
         castling.bq = Some(ViriSquare::A8);
     }
     *viriboard.castling_rights_mut() = castling;
 
-    *viriboard.halfmove_clock_mut() = rudim_state.half_move_clock;
-    viriboard.set_fullmove_clock((1 + rudim_state.move_count / 2) as u16);
+    *viriboard.halfmove_clock_mut() = whale_state.half_move_clock;
+    viriboard.set_fullmove_clock((1 + whale_state.move_count / 2) as u16);
 
-    for rudim_idx in 0..64 {
-        let piece = rudim_state.piece_mapping[rudim_idx];
-        if piece != RudimPiece::None {
-            let side = if rudim_state.occupancies[RudimSide::White].get_bit(rudim_idx) == 1 {
+    for whale_idx in 0..64 {
+        let piece = whale_state.piece_mapping[whale_idx];
+        if piece != WhalePiece::None {
+            let side = if whale_state.occupancies[WhaleSide::White].get_bit(whale_idx) == 1 {
                 ViriColour::White
             } else {
                 ViriColour::Black
             };
 
             let viri_pt = match piece {
-                RudimPiece::Pawn => ViriPieceType::Pawn,
-                RudimPiece::Knight => ViriPieceType::Knight,
-                RudimPiece::Bishop => ViriPieceType::Bishop,
-                RudimPiece::Rook => ViriPieceType::Rook,
-                RudimPiece::Queen => ViriPieceType::Queen,
-                RudimPiece::King => ViriPieceType::King,
-                RudimPiece::None => unreachable!(),
+                WhalePiece::Pawn => ViriPieceType::Pawn,
+                WhalePiece::Knight => ViriPieceType::Knight,
+                WhalePiece::Bishop => ViriPieceType::Bishop,
+                WhalePiece::Rook => ViriPieceType::Rook,
+                WhalePiece::Queen => ViriPieceType::Queen,
+                WhalePiece::King => ViriPieceType::King,
+                WhalePiece::None => unreachable!(),
             };
 
             // Viriboard mapping is flipped
-            let viri_sq_idx = (rudim_idx as u8) ^ 56;
+            let viri_sq_idx = (whale_idx as u8) ^ 56;
             let viri_sq = ViriSquare::new_clamped(viri_sq_idx);
 
             viriboard.add_piece(viri_sq, ViriPiece::new(side, viri_pt));
@@ -120,15 +120,15 @@ pub fn board_state_to_viriboard(rudim_state: &BoardState) -> ViriBoard {
     viriboard
 }
 
-pub fn map_rudim_move(m: &Move) -> ViriMove {
+pub fn map_whale_move(m: &Move) -> ViriMove {
     let from_viri = ViriSquare::new_clamped((m.source as u8) ^ 56);
     let to_viri = if m.move_type == MoveType::Castle {
         // Viriboard maps castle differently
         let rook_sq = match m.target {
-            RudimSquare::G1 => RudimSquare::H1,
-            RudimSquare::C1 => RudimSquare::A1,
-            RudimSquare::G8 => RudimSquare::H8,
-            RudimSquare::C8 => RudimSquare::A8,
+            WhaleSquare::G1 => WhaleSquare::H1,
+            WhaleSquare::C1 => WhaleSquare::A1,
+            WhaleSquare::G8 => WhaleSquare::H8,
+            WhaleSquare::C8 => WhaleSquare::A8,
             _ => m.target,
         };
         ViriSquare::new_clamped((rook_sq as u8) ^ 56)
@@ -160,12 +160,12 @@ pub fn write_game_to_binpack<W: Write>(
     initial_state: &BoardState,
     initial_eval: i16,
     positions: &[SelfPlayPosition],
-    outcome: RudimSide,
+    outcome: WhaleSide,
     writer: &mut W,
 ) -> Result<()> {
     let start_board = board_state_to_viriboard(initial_state);
 
-    let initial_white_pov_eval = if initial_state.side_to_move == RudimSide::White {
+    let initial_white_pov_eval = if initial_state.side_to_move == WhaleSide::White {
         initial_eval
     } else {
         -initial_eval
@@ -173,8 +173,8 @@ pub fn write_game_to_binpack<W: Write>(
 
     // 2 = Win, 1 = Draw, 0 = Loss
     let wdl_outcome = match outcome {
-        RudimSide::White => 2,
-        RudimSide::Black => 0,
+        WhaleSide::White => 2,
+        WhaleSide::Black => 0,
         _ => 1,
     };
 
@@ -187,8 +187,8 @@ pub fn write_game_to_binpack<W: Write>(
     };
 
     for pos in positions {
-        let viri_move = map_rudim_move(&pos.mv);
-        let white_pov_eval = if pos.side_to_move == RudimSide::White {
+        let viri_move = map_whale_move(&pos.mv);
+        let white_pov_eval = if pos.side_to_move == WhaleSide::White {
             pos.engine_eval
         } else {
             -pos.engine_eval
@@ -341,7 +341,7 @@ pub fn run_with_teacher(
 
                     loop {
                         if board_state.is_draw() {
-                            outcome = RudimSide::Both;
+                            outcome = WhaleSide::Both;
                             break;
                         }
 
@@ -358,7 +358,7 @@ pub fn run_with_teacher(
                             if board_state.is_in_check(board_state.side_to_move) {
                                 outcome = board_state.side_to_move.other();
                             } else {
-                                outcome = RudimSide::Both;
+                                outcome = WhaleSide::Both;
                             }
                             break;
                         }
@@ -423,8 +423,8 @@ pub fn run_with_teacher(
                 batch_positions += game.positions.len();
 
                 match game.outcome {
-                    RudimSide::White => white_wins += 1,
-                    RudimSide::Black => black_wins += 1,
+                    WhaleSide::White => white_wins += 1,
+                    WhaleSide::Black => black_wins += 1,
                     _ => draws += 1,
                 }
 

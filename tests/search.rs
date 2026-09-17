@@ -1,15 +1,15 @@
-use rudim::board::state::BoardState;
-use rudim::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
-use rudim::common::move_type::MoveType;
-use rudim::common::moves::Move;
-use rudim::search::search_state::SearchState;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
+use whale::board::state::BoardState;
+use whale::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
+use whale::common::move_type::MoveType;
+use whale::common::moves::Move;
+use whale::search::search_state::SearchState;
 
 fn find_move_from_move_list(board: &mut BoardState, expected_move: Move) -> Move {
-    let mut move_list = rudim::common::move_list::MoveList::new();
+    let mut move_list = whale::common::move_list::MoveList::new();
     board.generate_moves(&mut move_list);
 
     for m in move_list.iter() {
@@ -25,7 +25,7 @@ fn find_move_from_move_list(board: &mut BoardState, expected_move: Move) -> Move
     Move::NO_MOVE
 }
 
-fn assert_traversal(position: &str, expected_nodes: i32, expected_score: i16, depth: u8) {
+fn assert_traversal(position: &str, expected_nodes: u64, expected_score: i16, depth: u8) {
     let mut board_state = BoardState::parse_fen(position);
     let cancellation_token = AtomicBool::new(false);
     let mut debug_mode = false;
@@ -36,6 +36,7 @@ fn assert_traversal(position: &str, expected_nodes: i32, expected_score: i16, de
         &cancellation_token,
         &mut debug_mode,
         &mut search_state,
+        1,
     );
 
     assert_eq!(expected_nodes, search_state.nodes);
@@ -59,6 +60,7 @@ fn assert_tactic_best_move(fen: &str, move_lan: &str) {
         cancellation_token.as_ref(),
         &mut debug_mode,
         &mut search_state,
+        1,
     );
 
     let expected_move =

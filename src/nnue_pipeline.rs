@@ -78,6 +78,7 @@ impl TeacherStudentConfig {
                 "tactical-suite",
                 "self-play-benchmark",
                 "endgame-regression",
+                "arr-adversarial-robustness",
             ],
             checkpoint_every: 5,
             max_epochs: 30,
@@ -133,7 +134,7 @@ pub fn initialize_pipeline(config: &NnuePipelineConfig) {
 }
 
 pub fn teacher_student_training_plan() -> &'static str {
-    "1. Snapshot current NNUE baseline.\n2. Collect real self-play positions and teacher labels.\n3. Train a student model in Rudim format without replacing the engine architecture.\n4. Validate on benchmark suites and keep only stronger checkpoints.\n5. Promote the best checkpoint after regression checks."
+    "1. Snapshot current NNUE baseline.\n2. Collect real self-play positions and teacher labels.\n3. Train a student model in Whale format without replacing the engine architecture.\n4. Validate on benchmark suites and keep only stronger checkpoints.\n5. Promote the best checkpoint after regression checks."
 }
 
 pub fn recommended_dataset_order() -> Vec<&'static str> {
@@ -146,8 +147,9 @@ pub fn dataset_ingestion_plan() -> Vec<&'static str> {
     vec![
         "download public PGN archives from preferred sources",
         "filter by Elo range and time-control diversity",
-        "normalize board states to Rudim feature encoding",
+        "normalize board states to Whale feature encoding",
         "extract teacher labels and tactical samples",
+        "counterfactual-move-augmentation",
         "save a validation split separate from training split",
         "run benchmark validation before promoting the checkpoint",
     ]
@@ -155,6 +157,89 @@ pub fn dataset_ingestion_plan() -> Vec<&'static str> {
 
 pub fn dataset_is_ready_for_training(total_positions: usize) -> bool {
     total_positions >= 1_000_000
+}
+
+pub fn augment_dataset_with_cma(
+    board: &crate::board::state::BoardState,
+    best_move: crate::common::moves::Move,
+    eval: i16,
+) -> Vec<crate::cma::CounterfactualSample> {
+    crate::cma::generate_counterfactual_samples(
+        board,
+        best_move,
+        eval,
+        crate::cma::CmaConfig::default(),
+    )
+}
+
+pub fn verify_checkpoint_adversarial_robustness(
+    board: &mut crate::board::state::BoardState,
+) -> bool {
+    let report = crate::eval::nnue::arr::audit_adversarial_robustness(
+        board,
+        crate::eval::nnue::arr::ArrConfig::default(),
+    );
+    report.is_robust
+}
+
+pub fn verify_checkpoint_depth_consistency(board: &crate::board::state::BoardState) -> bool {
+    let config = crate::eval::nnue::dcn::DcnConfig::default();
+    let eval_d19 = crate::eval::nnue::dcn::DcnModel::condition_evaluation(100, 19, board, config);
+    let eval_d20 = crate::eval::nnue::dcn::DcnModel::condition_evaluation(100, 20, board, config);
+    (eval_d20 as i32 - eval_d19 as i32).abs() <= 60
+}
+
+pub fn verify_checkpoint_alp_accuracy() -> bool {
+    let features = crate::search::alp::AlpFeatures {
+        eval_margin: -600,
+        depth: 2,
+        move_index: 25,
+        is_null_move: false,
+        is_capture: false,
+        is_pv: false,
+        in_check: false,
+        history_score: -800,
+        momentum: -100,
+    };
+    crate::search::alp::AlpModel::should_prune(&features, 70)
+}
+
+pub fn verify_checkpoint_psm_state() -> bool {
+    let parent = crate::search::psm::PsmHiddenState::new();
+    let features = crate::search::psm::PsmFeatures {
+        static_eval: 50,
+        depth: 5,
+        alpha: 0,
+        beta: 100,
+        move_history: 150,
+        is_capture: false,
+        sibling_index: 2,
+        failed_low: false,
+    };
+    let next = crate::search::psm::PsmEngine::step(&parent, &features);
+    crate::search::psm::PsmEngine::readout(&next).abs() <= 60
+}
+
+pub fn verify_checkpoint_gtp_stability() -> bool {
+    let mut graph = crate::search::gtp::GtpTreeGraph::new();
+    let root = graph.add_node(crate::search::gtp::GtpNode {
+        depth: 6,
+        eval_margin: 0,
+        is_capture: false,
+        in_check: false,
+        history_score: 0,
+        parent_idx: None,
+    });
+    let child = graph.add_node(crate::search::gtp::GtpNode {
+        depth: 5,
+        eval_margin: -100,
+        is_capture: false,
+        in_check: false,
+        history_score: -200,
+        parent_idx: Some(root),
+    });
+    let scores = crate::search::gtp::GtpModel::message_passing(&graph);
+    scores[child] <= 100
 }
 
 #[cfg(test)]
@@ -184,7 +269,8 @@ mod tests {
         let cfg = TeacherStudentConfig::default_config();
         assert_eq!(cfg.teacher_name, "Stockfish 19");
         assert_eq!(cfg.teacher_depth, 12);
-        assert!(cfg.validation_suite.len() >= 4);
+        assert!(cfg.validation_suite.len() >= 5);
+        assert!(cfg.validation_suite.contains(&"arr-adversarial-robustness"));
         assert_eq!(cfg.checkpoint_every, 5);
         assert_eq!(cfg.max_epochs, 30);
         assert_eq!(
@@ -204,5 +290,45 @@ mod tests {
     fn small_datasets_are_not_marked_training_ready() {
         assert!(!dataset_is_ready_for_training(847));
         assert!(dataset_is_ready_for_training(1_000_000));
+    }
+
+    #[test]
+    fn checkpoint_passes_adversarial_robustness_check() {
+        let mut board =
+            crate::board::state::BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        assert!(verify_checkpoint_adversarial_robustness(&mut board));
+    }
+
+    #[test]
+    fn cma_dataset_augmentation_produces_samples() {
+        let board = crate::board::state::BoardState::parse_fen(
+            "rnbqkbnr/pppp1ppp/8/4p3/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 2",
+        );
+        let samples = augment_dataset_with_cma(&board, crate::common::moves::Move::NO_MOVE, 0);
+        for s in &samples {
+            assert!(s.penalized_eval <= -400);
+        }
+    }
+
+    #[test]
+    fn checkpoint_passes_depth_consistency_check() {
+        let board =
+            crate::board::state::BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        assert!(verify_checkpoint_depth_consistency(&board));
+    }
+
+    #[test]
+    fn checkpoint_passes_alp_accuracy_check() {
+        assert!(verify_checkpoint_alp_accuracy());
+    }
+
+    #[test]
+    fn checkpoint_passes_psm_state_check() {
+        assert!(verify_checkpoint_psm_state());
+    }
+
+    #[test]
+    fn checkpoint_passes_gtp_stability_check() {
+        assert!(verify_checkpoint_gtp_stability());
     }
 }

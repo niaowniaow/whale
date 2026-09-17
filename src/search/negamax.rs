@@ -1,16 +1,22 @@
 use crate::board::state::BoardState;
+use crate::common::castle::Castle;
 use crate::common::constants;
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::common::side::Side;
 use crate::common::tt::{self, TranspositionEntryType};
-use crate::eval::evaluate_with_optimism;
+use crate::eval::evaluate_with_depth;
 use crate::search::move_picker::MovePicker;
 use crate::search::pv_table::PvTable;
 use crate::search::search_state::SearchState;
-use crate::search::{lmr, nmp, quiescence};
+use crate::search::{alp, cfss, gtp, lmr, nmp, psm, quiescence, tce};
 use std::sync::atomic::{AtomicBool, Ordering};
+
+#[inline(always)]
+fn is_cancelled(ctx: &SearchContext) -> bool {
+    ctx.cancellation_token.load(Ordering::Relaxed)
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn search(
@@ -28,6 +34,9 @@ pub fn search(
         on_pv_path: true,
         previous_pv,
         excluded_move: None,
+        cut_node: false,
+        gtp_graph: gtp::GtpTreeGraph::new(),
+        gtp_parent: None,
         pv_table,
         cancellation_token,
         search_state,
@@ -45,29 +54,39 @@ fn search_internal(
     previous_move: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
-    if ctx.cancellation_token.load(Ordering::Relaxed) {
+    // FIX ABORT-PROPAGATION: 0 here is *not* a valid score; every caller must
+    // check `is_cancelled` after a child returns and exit without TT store or
+    // history updates (cf. Reckless search.rs:316-318, Stockfish search.cpp).
+    if is_cancelled(ctx) {
         return 0;
     }
 
-    ctx.pv_table.clear(ply as usize);
+    let is_pv_node = beta > 1 + alpha;
+    let in_check = board_state.is_in_check(board_state.side_to_move);
+    let cut_node = ctx.cut_node;
+    let halfmove = board_state.half_move_clock;
+
+    // FIX PV-TABLE: only touch the shared PV table on PV nodes; excluded and
+    // helper searches use temp tables / snapshot-restore below.
+    if is_pv_node {
+        ctx.pv_table.clear(ply as usize);
+    }
+
+    // FIX NODES-SELDEPTH: exactly one node count per visit (no double count
+    // on draw/TT-cutoff paths below).
+    ctx.search_state.nodes += 1;
+    if is_pv_node {
+        let sd = ply as u32 + 1;
+        if sd > ctx.search_state.seldepth {
+            ctx.search_state.seldepth = sd;
+        }
+    }
 
     let mut best_move = Move::NO_MOVE;
     let mut best_score = -constants::MAX_CENTIPAWN_EVAL;
 
-    let is_pv_node = beta > 1 + alpha;
-    let in_check = board_state.is_in_check(board_state.side_to_move);
-
     if ply > 0 && board_state.is_draw_in_search(ply as u16) {
-        ctx.search_state.nodes += 1;
         return 0;
-    }
-
-    // Syzygy tablebase bounds: never walk out of a won ending (or into a
-    // lost one) once few enough pieces remain.
-    if ply > 0
-        && let Some(tb) = crate::syzygy::probe_bound(board_state, ply)
-    {
-        return tb;
     }
 
     let mated = -constants::MAX_CENTIPAWN_EVAL + ply as i16;
@@ -83,11 +102,10 @@ fn search_internal(
         return alpha;
     }
 
-    let depth = if in_check {
-        (depth + 1).min(constants::MAX_PLY as u8)
-    } else {
-        depth
-    };
+    // FIX EXTENSIONS: no unconditional +1 for being in check (that overextends
+    // every check-evasion line); checking-move extensions are handled per-move
+    // below via gives_check/LMR. Just clamp runaway extended depth.
+    let depth = depth.min(constants::MAX_PLY as u8 - 1);
 
     if ply as usize >= constants::MAX_PLY {
         return quiescence::search(
@@ -103,23 +121,78 @@ fn search_internal(
     let tt_entry = ctx.search_state.tt.probe(board_state.board_hash);
     let mut tt_best = None;
 
+    // FIX TT-CUTOFF-CONDITIONS (Reckless search.rs:386-406, Stockfish 880-920):
+    // depth margin for fail-low entries, cut-node gating, fifty>=90 skip.
     if let Some(entry) = tt_entry {
         if entry.best_move != Move::NO_MOVE {
             tt_best = Some(entry.best_move);
         }
 
-        if entry.depth >= depth && !is_pv_node && ctx.excluded_move.is_none() {
-            let tt_score = tt::TranspositionTable::retrieve_score(entry.score, ply as i32);
-            let cutoff = match entry.entry_type {
+        if !is_pv_node && ctx.excluded_move.is_none() {
+            let tt_score =
+                tt::TranspositionTable::retrieve_score(entry.score, ply as i32, halfmove);
+            let depth_cond = (entry.depth as i32) > depth as i32 - i32::from(tt_score < beta);
+            let bound_ok = match entry.entry_type {
                 TranspositionEntryType::Exact => true,
-                TranspositionEntryType::Alpha => tt_score <= alpha,
-                TranspositionEntryType::Beta => tt_score >= beta,
+                TranspositionEntryType::Alpha => tt_score <= alpha && (!cut_node || depth > 5),
+                TranspositionEntryType::Beta => tt_score >= beta && (cut_node || depth > 5),
                 TranspositionEntryType::None => false,
             };
-            if cutoff {
-                ctx.search_state.nodes += 1;
+            if depth_cond && bound_ok && halfmove < 90 {
                 return tt_score;
             }
+        }
+    }
+
+    // FIX SYZYGY-BOUND + M12 GUARDS (Stockfish search.cpp:931-981):
+    // probe only with few pieces, probe-depth respected at the limit,
+    // 50mr respected, no castling rights; cut only on EXACT or matching bound.
+    if ply > 0 && ctx.excluded_move.is_none() {
+        let pieces = board_state.occupancy().count_ones() as usize;
+        let limit = crate::syzygy::probe_limit() as usize;
+        let pdepth = crate::syzygy::probe_depth();
+        let rule50_ok = board_state.half_move_clock == 0 || !crate::syzygy::use_50mr();
+        let castle_ok = board_state.castle == Castle::NONE;
+        let depth_ok = pieces < limit || depth >= pdepth;
+        if pieces <= limit
+            && pieces <= crate::syzygy::TB_MAX_PIECES
+            && depth_ok
+            && rule50_ok
+            && castle_ok
+            && let Some((tb_value, tb_bound)) = crate::syzygy::probe_bound(board_state, ply)
+        {
+            ctx.search_state.tbhits += 1;
+            let tb_cutoff = match tb_bound {
+                TranspositionEntryType::Exact => true,
+                TranspositionEntryType::Beta => tb_value >= beta,
+                TranspositionEntryType::Alpha => tb_value <= alpha,
+                TranspositionEntryType::None => false,
+            };
+            if tb_cutoff {
+                let tb_depth = (depth + 6).min(constants::MAX_PLY as u8 - 1);
+                ctx.search_state.tt.submit_entry(
+                    board_state.board_hash,
+                    tt::TranspositionTable::adjust_score(tb_value, ply as i32, halfmove),
+                    tb_depth,
+                    Move::NO_MOVE,
+                    tb_bound,
+                );
+                return tb_value;
+            }
+            // PV tightening without cutoff (Stockfish): a lower bound raises
+            // best/alpha so search below never walks out of the TB win.
+            if is_pv_node && tb_bound == TranspositionEntryType::Beta && tb_value > best_score {
+                best_score = tb_value;
+                if tb_value > alpha {
+                    alpha = tb_value;
+                    if alpha >= beta {
+                        return tb_value;
+                    }
+                }
+            }
+        }
+        if is_cancelled(ctx) {
+            return 0;
         }
     }
 
@@ -133,8 +206,6 @@ fn search_internal(
             ctx.search_state,
         );
     }
-
-    ctx.search_state.nodes += 1;
 
     let mut static_eval = 0;
     let has_static_eval = !in_check;
@@ -151,16 +222,40 @@ fn search_internal(
         }
     } else {
         let optimism = ctx.search_state.optimism[board_state.side_to_move as usize];
-        let raw_static_eval = evaluate_with_optimism(&mut *board_state, optimism);
+        let raw_static_eval = evaluate_with_depth(&mut *board_state, optimism, depth);
         let correction = ctx
             .search_state
             .correction_history
             .get_correction(board_state, previous_move);
 
-        static_eval = (raw_static_eval as i32 + correction as i32)
+        let psm_delta =
+            if ctx.search_state.params.psm_enabled && (ply as usize) < constants::MAX_PLY {
+                psm::PsmEngine::readout(&ctx.search_state.psm_stack.stack[ply as usize])
+            } else {
+                0
+            };
+        static_eval = (raw_static_eval as i32 + correction as i32 + psm_delta as i32 / 2)
             .clamp(-mate_bound as i32, mate_bound as i32) as i16;
         ctx.search_state.eval_stack[ply as usize] = static_eval;
     }
+
+    let momentum = if !in_check
+        && (ply as usize) >= 2
+        && ctx.search_state.eval_stack[ply as usize - 2] != i16::MIN
+    {
+        static_eval.saturating_sub(ctx.search_state.eval_stack[ply as usize - 2])
+    } else {
+        0
+    };
+
+    let structural_disagreement = if has_static_eval && let Some(entry) = tt_entry {
+        let tt_val = tt::TranspositionTable::retrieve_score(entry.score, ply as i32, halfmove);
+        (tt_val as i32 - static_eval as i32)
+            .abs()
+            .min(i16::MAX as i32) as i16
+    } else {
+        0
+    };
 
     let mut singular_extension: i8 = 0;
     if !in_check
@@ -172,20 +267,28 @@ fn search_internal(
         #[allow(clippy::unnecessary_unwrap)]
         let entry = tt_entry.unwrap();
         if entry.depth >= depth - 3 && entry.entry_type != tt::TranspositionEntryType::Alpha {
-            let original_score = tt::TranspositionTable::retrieve_score(entry.score, ply as i32);
+            let original_score =
+                tt::TranspositionTable::retrieve_score(entry.score, ply as i32, halfmove);
             let margin = (depth as i16) * 2;
             let mut singular_beta = original_score - margin;
             if singular_beta < -constants::MAX_CENTIPAWN_EVAL {
                 singular_beta = -constants::MAX_CENTIPAWN_EVAL;
             }
 
+            // FIX PV-TABLE: singular search must not pollute the shared PV.
+            let mut se_pv_table = PvTable::new();
+            // Re-borrow split: pv_table and search_state are disjoint fields.
+            let (se_pv, se_state) = (&mut se_pv_table, &mut *ctx.search_state);
             let mut se_ctx = SearchContext {
                 allow_null_move: false,
                 on_pv_path: false,
                 previous_pv: ctx.previous_pv,
                 excluded_move: tt_best,
-                pv_table: ctx.pv_table,
-                search_state: ctx.search_state,
+                cut_node,
+                gtp_graph: ctx.gtp_graph,
+                gtp_parent: ctx.gtp_parent,
+                pv_table: se_pv,
+                search_state: se_state,
                 cancellation_token: ctx.cancellation_token,
             };
 
@@ -199,6 +302,11 @@ fn search_internal(
                 &mut se_ctx,
             );
 
+            // FIX ABORT-PROPAGATION: never trust se_score after cancellation.
+            if is_cancelled(ctx) {
+                return 0;
+            }
+
             if se_score < singular_beta {
                 if se_score < singular_beta - margin {
                     singular_extension = 2;
@@ -207,9 +315,13 @@ fn search_internal(
                 }
             } else if se_score >= beta {
                 if has_static_eval && !in_check && se_score > static_eval {
-                    let bonus = (((se_score as i32 - static_eval as i32) * ((depth as i32 - 1) / 2) * 177) / 1024)
-                        .clamp(-256, 256);
-                    ctx.search_state.correction_history.update(board_state, previous_move, bonus);
+                    let bonus =
+                        (((se_score as i32 - static_eval as i32) * ((depth as i32 - 1) / 2) * 177)
+                            / 1024)
+                            .clamp(-256, 256);
+                    ctx.search_state
+                        .correction_history
+                        .update(board_state, previous_move, bonus);
                 }
                 return se_score;
             } else if original_score >= beta {
@@ -226,11 +338,20 @@ fn search_internal(
         is_improving = true;
     }
 
-    if !is_pv_node && has_static_eval {
+    // FIX EXCLUDED-MOVE GUARDS (Reckless search.rs:386-570, Stockfish 839-840):
+    // no RFP/futility/LMP/history/ALP/PSM/GTP prune inside singular searches.
+    if !is_pv_node && has_static_eval && ctx.excluded_move.is_none() {
         let mut margin = ctx.search_state.params.rfp_margin_mult * depth as i16;
         if !is_improving {
             margin += margin / 3;
         }
+        if momentum < -100 {
+            margin += 60;
+        }
+        margin += ctx
+            .search_state
+            .ras
+            .rfp_margin_adjustment(ply as usize, depth);
         if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
             return static_eval;
         }
@@ -240,7 +361,7 @@ fn search_internal(
             && entry.entry_type != tt::TranspositionEntryType::Alpha
             && entry.depth >= depth.saturating_sub(4)
         {
-            let tt_val = tt::TranspositionTable::retrieve_score(entry.score, ply as i32);
+            let tt_val = tt::TranspositionTable::retrieve_score(entry.score, ply as i32, halfmove);
             if tt_val >= small_prob_beta && tt_val.abs() < mate_bound {
                 return small_prob_beta;
             }
@@ -296,7 +417,23 @@ fn search_internal(
                         ctx.cancellation_token,
                         ctx.search_state,
                     );
+                    if is_cancelled(ctx) {
+                        board_state.unmake_move(mv);
+                        return 0;
+                    }
                     let score = if q_score >= prob_beta && prob_depth > 1 {
+                        // FIX PV-TABLE: probcut verify must not touch shared PV.
+                        let mut prob_graph = ctx.gtp_graph;
+                        let prob_parent = prob_graph.add_node(gtp::GtpNode {
+                            depth: prob_depth,
+                            eval_margin: static_eval.saturating_sub(prob_beta),
+                            is_capture: true,
+                            in_check,
+                            history_score: 0,
+                            parent_idx: ctx.gtp_parent,
+                        });
+                        let mut prob_pv_table = PvTable::new();
+                        let (prob_pv, prob_state) = (&mut prob_pv_table, &mut *ctx.search_state);
                         -search_internal(
                             board_state,
                             prob_depth,
@@ -309,16 +446,19 @@ fn search_internal(
                                 on_pv_path: false,
                                 previous_pv: ctx.previous_pv,
                                 excluded_move: None,
-                                pv_table: &mut *ctx.pv_table,
+                                cut_node: false,
+                                gtp_graph: prob_graph,
+                                gtp_parent: Some(prob_parent),
+                                pv_table: prob_pv,
                                 cancellation_token: ctx.cancellation_token,
-                                search_state: ctx.search_state,
+                                search_state: prob_state,
                             },
                         )
                     } else {
                         q_score
                     };
                     board_state.unmake_move(mv);
-                    if ctx.cancellation_token.load(Ordering::Relaxed) {
+                    if is_cancelled(ctx) {
                         return 0;
                     }
                     if score >= prob_beta {
@@ -330,7 +470,7 @@ fn search_internal(
                         if ctx.excluded_move.is_none() {
                             ctx.search_state.tt.submit_entry(
                                 board_state.board_hash,
-                                tt::TranspositionTable::adjust_score(score, ply as i32),
+                                tt::TranspositionTable::adjust_score(score, ply as i32, halfmove),
                                 prob_depth,
                                 mv,
                                 TranspositionEntryType::Beta,
@@ -343,19 +483,34 @@ fn search_internal(
         }
     }
 
-    // PRUNE: Null Move Pruning
-    if nmp::can_prune(
-        is_pv_node,
-        board_state,
-        ctx.allow_null_move,
-        depth,
-        in_check,
-        static_eval,
-        beta,
-    ) {
+    // PRUNE: Null Move Pruning (never inside singular search).
+    if ctx.excluded_move.is_none()
+        && nmp::can_prune(
+            is_pv_node,
+            board_state,
+            ctx.allow_null_move,
+            depth,
+            in_check,
+            static_eval,
+            beta,
+            momentum,
+        )
+    {
         board_state.make_null_move();
-        let reduction = nmp::get_reduction(depth, &ctx.search_state.params);
+        let reduction = nmp::get_reduction(depth, &ctx.search_state.params, momentum);
         let reduced_depth = depth.saturating_sub(reduction).max(1);
+        // FIX PV-TABLE: NMP verify uses a temp table.
+        let mut nmp_graph = ctx.gtp_graph;
+        let nmp_parent = nmp_graph.add_node(gtp::GtpNode {
+            depth: reduced_depth,
+            eval_margin: static_eval.saturating_sub(beta),
+            is_capture: false,
+            in_check,
+            history_score: 0,
+            parent_idx: ctx.gtp_parent,
+        });
+        let mut nmp_pv_table = PvTable::new();
+        let (nmp_pv, nmp_state) = (&mut nmp_pv_table, &mut *ctx.search_state);
         let score = -search_internal(
             board_state,
             reduced_depth,
@@ -368,14 +523,17 @@ fn search_internal(
                 on_pv_path: false,
                 previous_pv: ctx.previous_pv,
                 excluded_move: None,
-                pv_table: &mut *ctx.pv_table,
+                cut_node: false,
+                gtp_graph: nmp_graph,
+                gtp_parent: Some(nmp_parent),
+                pv_table: nmp_pv,
                 cancellation_token: ctx.cancellation_token,
-                search_state: ctx.search_state,
+                search_state: nmp_state,
             },
         );
         board_state.undo_null_move();
 
-        if ctx.cancellation_token.load(Ordering::Relaxed) {
+        if is_cancelled(ctx) {
             return 0;
         }
 
@@ -383,7 +541,7 @@ fn search_internal(
             if ctx.excluded_move.is_none() {
                 ctx.search_state.tt.submit_entry(
                     board_state.board_hash,
-                    tt::TranspositionTable::adjust_score(score, ply as i32),
+                    tt::TranspositionTable::adjust_score(score, ply as i32, halfmove),
                     reduced_depth,
                     Move::NO_MOVE,
                     TranspositionEntryType::Beta,
@@ -401,6 +559,62 @@ fn search_internal(
 
     let mut found_pv = false;
     let mut entry_type = TranspositionEntryType::Alpha;
+    let mut coarse_failed_low = false;
+    let mut current_depth = depth;
+
+    if cfss::should_run_coarse_pass(
+        current_depth,
+        is_pv_node,
+        in_check,
+        tt_best,
+        ctx.excluded_move,
+    ) {
+        let coarse_depth = cfss::get_coarse_depth(current_depth);
+        // FIX PV-TABLE: coarse pass must not clobber the shared PV line.
+        let mut coarse_pv_table = PvTable::new();
+        let (coarse_pv, coarse_state) = (&mut coarse_pv_table, &mut *ctx.search_state);
+        let coarse_score = search_internal(
+            board_state,
+            coarse_depth,
+            ply,
+            alpha,
+            beta,
+            previous_move,
+            &mut SearchContext {
+                allow_null_move: false,
+                on_pv_path: false,
+                previous_pv: ctx.previous_pv,
+                excluded_move: None,
+                cut_node: false,
+                gtp_graph: ctx.gtp_graph,
+                gtp_parent: ctx.gtp_parent,
+                pv_table: coarse_pv,
+                cancellation_token: ctx.cancellation_token,
+                search_state: coarse_state,
+            },
+        );
+
+        if is_cancelled(ctx) {
+            return 0;
+        }
+
+        if let Some(entry) = ctx.search_state.tt.probe(board_state.board_hash)
+            && entry.best_move != Move::NO_MOVE
+        {
+            tt_best = Some(entry.best_move);
+        }
+
+        if coarse_score <= alpha.saturating_sub(250) {
+            coarse_failed_low = true;
+            current_depth = current_depth.saturating_sub(1).max(1);
+        }
+    }
+
+    let bandit_arm = if !is_pv_node {
+        ctx.search_state.bmo.select_arm(current_depth)
+    } else {
+        crate::search::bmo::BanditArm::CapturesFirst
+    };
 
     let mut move_picker = MovePicker::new(
         pv_move,
@@ -408,6 +622,7 @@ fn search_internal(
         previous_move,
         ply as usize,
         ctx.excluded_move,
+        bandit_arm,
     );
     let mut number_of_legal_moves = 0;
     let mut has_legal_moves = false;
@@ -416,6 +631,7 @@ fn search_internal(
     let mut tried_captures = [Move::NO_MOVE; 32];
     let mut tried_captures_count = 0;
     let has_non_pawn_material = board_state.has_non_pawn_material(board_state.side_to_move);
+    let mut consecutive_fail_lows: u8 = 0;
 
     while let Some(move_obj) = move_picker.next(
         board_state,
@@ -423,8 +639,16 @@ fn search_internal(
         &mut ctx.search_state.captures_stack[ply as usize],
         &mut ctx.search_state.quiets_stack[ply as usize],
     ) {
-        if ctx.cancellation_token.load(Ordering::Relaxed) {
+        if is_cancelled(ctx) {
             break;
+        }
+
+        // FIX LIMIT searchmoves: root filters to the UCI allow-list.
+        if ply == 0
+            && !ctx.search_state.searchmoves.is_empty()
+            && !ctx.search_state.searchmoves.contains(&move_obj)
+        {
+            continue;
         }
 
         let cap_or_promo = move_obj.is_capture() || move_obj.is_promotion();
@@ -449,12 +673,17 @@ fn search_internal(
             }
         }
 
-        // PRUNE: SEE Pruning
-        if !is_pv_node && !in_check && depth <= 8 && has_legal_moves {
+        // FIX EXCLUDED-MOVE GUARDS: SEE prune never runs inside singular search.
+        if !is_pv_node
+            && !in_check
+            && current_depth <= 8
+            && has_legal_moves
+            && ctx.excluded_move.is_none()
+        {
             let see_threshold = if cap_or_promo {
-                -100 * depth as i16
+                -100 * current_depth as i16
             } else if has_non_pawn_material {
-                -35 * (depth as i16) * (depth as i16)
+                -35 * (current_depth as i16) * (current_depth as i16)
             } else {
                 i16::MIN
             };
@@ -471,11 +700,15 @@ fn search_internal(
         ctx.search_state.tt.prefetch(board_state.board_hash);
 
         has_legal_moves = true;
+        // FIX LMR-CHECK: 1-based count BEFORE any prune/LMR (Reckless
+        // search.rs:781), so reduction thresholds are not off by one.
+        number_of_legal_moves += 1;
 
         let alpha_is_mate = alpha.abs() >= mate_bound;
 
-        let mut gives_check = false;
-        let mut gives_check_computed = false;
+        // FIX LMR-CHECK: eager gives_check right after make_move, before every
+        // prune and LMR (lazy evaluation over-reduced checking moves).
+        let gives_check = board_state.is_in_check(board_state.side_to_move);
 
         let mut extension: i8 = if Some(move_obj) == tt_best {
             singular_extension
@@ -499,11 +732,30 @@ fn search_internal(
         {
             extension = extension.max(1);
         }
-        let depth = (depth as i16 + extension as i16).max(1) as u8;
 
-        // PRUNE: Futility Pruning
+        // FIX EXTENSIONS: TCE capped to +1 and only at depth>=6.
+        let tce_raw = tce::compute_extension(
+            board_state,
+            move_obj,
+            current_depth,
+            in_check,
+            ply,
+            previous_move,
+        );
+        let tce_ext = if current_depth >= 6 {
+            tce_raw.clamp(0, 1)
+        } else {
+            0
+        };
+        extension = extension.max(tce_ext).clamp(-1, 2);
+
+        let depth = (current_depth as i16 + extension as i16).max(1) as u8;
+        let excluded_here = ctx.excluded_move.is_some();
+
+        // PRUNE: Futility Pruning (first move protected with 1-based count).
         if !is_pv_node
-            && number_of_legal_moves > 0
+            && !excluded_here
+            && number_of_legal_moves > 1
             && has_static_eval
             && depth < 3
             && !cap_or_promo
@@ -512,48 +764,138 @@ fn search_internal(
             && static_eval
                 .saturating_add(ctx.search_state.params.futility_margin_mult * depth as i16)
                 <= alpha
+            && !gives_check
         {
-            gives_check = board_state.is_in_check(board_state.side_to_move);
-            gives_check_computed = true;
-            if !gives_check {
-                board_state.unmake_move(move_obj);
-                continue;
-            }
+            board_state.unmake_move(move_obj);
+            continue;
         }
 
         // PRUNE: Late Move Pruning
-        let lmp_threshold = if is_improving {
+        let mut lmp_threshold = if is_improving {
             3 + (depth as usize * depth as usize)
         } else {
             (3 + (depth as usize * depth as usize)) / 2
         };
+        if !found_pv && number_of_legal_moves >= 8 {
+            lmp_threshold = lmp_threshold.saturating_sub(2).max(4);
+        }
         if !is_pv_node
+            && !excluded_here
             && has_static_eval
             && depth < 4
             && !cap_or_promo
             && !alpha_is_mate
             && has_non_pawn_material
             && number_of_legal_moves >= lmp_threshold
+            && !gives_check
         {
-            if !gives_check_computed {
-                gives_check = board_state.is_in_check(board_state.side_to_move);
-                gives_check_computed = true;
-            }
-            if !gives_check {
-                board_state.unmake_move(move_obj);
-                continue;
-            }
+            board_state.unmake_move(move_obj);
+            continue;
         }
 
-        let is_tactical = if cap_or_promo {
-            true
-        } else if gives_check_computed {
-            gives_check
-        } else if depth >= 3 && number_of_legal_moves >= 3 && !in_check {
-            board_state.is_in_check(board_state.side_to_move)
-        } else {
-            false
+        if !is_pv_node
+            && !excluded_here
+            && !in_check
+            && !found_pv
+            && !cap_or_promo
+            && depth <= 4
+            && number_of_legal_moves >= 12
+            && history_score < 0
+            && !gives_check
+        {
+            board_state.unmake_move(move_obj);
+            continue;
+        }
+
+        let alp_features = alp::AlpFeatures {
+            eval_margin: (static_eval as i32 - alpha as i32).clamp(-32768, 32767),
+            depth: depth as i32,
+            move_index: number_of_legal_moves,
+            is_null_move: false,
+            is_capture: cap_or_promo,
+            is_pv: is_pv_node,
+            in_check,
+            history_score,
+            momentum: momentum as i32,
         };
+
+        if ctx.search_state.params.alp_enabled
+            && !is_pv_node
+            && !excluded_here
+            && !in_check
+            && !found_pv
+            && !cap_or_promo
+            && depth <= 4
+            && number_of_legal_moves >= 8
+            && alp::AlpModel::should_prune(&alp_features, ctx.search_state.params.alp_threshold)
+            && !gives_check
+        {
+            board_state.unmake_move(move_obj);
+            continue;
+        }
+
+        let is_tactical = cap_or_promo || gives_check;
+
+        if !excluded_here
+            && cfss::should_prune_coarse_quiet(
+                coarse_failed_low,
+                number_of_legal_moves,
+                is_tactical,
+                current_depth,
+            )
+        {
+            board_state.unmake_move(move_obj);
+            continue;
+        }
+
+        if ctx.search_state.params.psm_enabled
+            && !is_pv_node
+            && !excluded_here
+            && !in_check
+            && !cap_or_promo
+            && !found_pv
+            && (ply as usize) < constants::MAX_PLY
+            && !gives_check
+            && psm::PsmEngine::should_prune_sibling(
+                &ctx.search_state.psm_stack.stack[ply as usize],
+                number_of_legal_moves,
+                depth,
+                consecutive_fail_lows,
+            )
+        {
+            board_state.unmake_move(move_obj);
+            continue;
+        }
+
+        let gtp_node = gtp::GtpNode {
+            depth,
+            eval_margin: (static_eval as i32 - alpha as i32).clamp(-32768, 32767) as i16,
+            is_capture: cap_or_promo,
+            in_check,
+            history_score,
+            parent_idx: ctx.gtp_parent,
+        };
+        let mut gtp_graph = ctx.gtp_graph;
+        let gtp_idx = gtp_graph.add_node(gtp_node);
+
+        if ctx.search_state.params.gtp_enabled
+            && !is_pv_node
+            && !excluded_here
+            && !in_check
+            && !cap_or_promo
+            && !found_pv
+            && depth <= 4
+            && number_of_legal_moves >= 10
+            && !gives_check
+            && gtp::GtpModel::should_prune_subtree(
+                &gtp_graph,
+                gtp_idx,
+                ctx.search_state.params.gtp_threshold,
+            )
+        {
+            board_state.unmake_move(move_obj);
+            continue;
+        }
 
         let needs_lmr = lmr::needs_reduction(depth, number_of_legal_moves, is_tactical, in_check)
             || (is_tactical
@@ -568,10 +910,12 @@ fn search_internal(
         if depth <= 3
             && number_of_legal_moves > 3
             && !is_pv_node
+            && !excluded_here
             && !in_check
             && !cap_or_promo
             && has_non_pawn_material
             && history_score < -4000 * depth as i32
+            && !gives_check
         {
             board_state.unmake_move(move_obj);
             continue;
@@ -580,6 +924,25 @@ fn search_internal(
         let mut score;
         let next_on_pv = ctx.on_pv_path && Some(move_obj) == pv_move;
         let move_nodes_start = ctx.search_state.nodes;
+        // Child cut-node: LMR-reduced searches are cut-nodes; full searches
+        // flip the parent flag (Stockfish: reduced=true, re-search=!cutNode,
+        // PV search=false).
+        let child_cut = !cut_node;
+
+        if (ply as usize + 1) < constants::MAX_PLY {
+            let psm_feat = psm::PsmFeatures {
+                static_eval,
+                depth,
+                alpha,
+                beta,
+                move_history: history_score,
+                is_capture: cap_or_promo,
+                sibling_index: number_of_legal_moves,
+                failed_low: consecutive_fail_lows > 0,
+            };
+            ctx.search_state.psm_stack.stack[ply as usize + 1] =
+                psm::PsmEngine::step(&ctx.search_state.psm_stack.stack[ply as usize], &psm_feat);
+        }
 
         // REDUCTION: Late Move Reductions
         if needs_lmr {
@@ -594,12 +957,21 @@ fn search_internal(
                 history_score,
                 alpha,
                 static_eval,
+                momentum,
+                found_pv,
+                structural_disagreement,
             };
-            let reduction = lmr::compute_reduction(
+            let base_reduction = lmr::compute_reduction(
                 &lmr_query,
                 &ctx.search_state.lmr_table,
                 &ctx.search_state.params.lmr_divisor,
             );
+            let ras_perturbation =
+                ctx.search_state
+                    .ras
+                    .lmr_perturbation(ply as usize, depth, board_state.board_hash);
+            let reduction =
+                (base_reduction as i8 + ras_perturbation).clamp(0, depth as i8 - 1) as u8;
             score = -search_internal(
                 board_state,
                 depth.saturating_sub(1 + reduction),
@@ -612,11 +984,20 @@ fn search_internal(
                     on_pv_path: false,
                     previous_pv: ctx.previous_pv,
                     excluded_move: None,
+                    cut_node: true,
+                    gtp_graph,
+                    gtp_parent: Some(gtp_idx),
                     pv_table: &mut *ctx.pv_table,
                     cancellation_token: ctx.cancellation_token,
                     search_state: ctx.search_state,
                 },
             );
+
+            // FIX ABORT-PROPAGATION: discard reduced-search scores on abort.
+            if is_cancelled(ctx) {
+                board_state.unmake_move(move_obj);
+                return 0;
+            }
 
             if score > alpha {
                 let mut child_ctx = SearchContext {
@@ -624,6 +1005,9 @@ fn search_internal(
                     on_pv_path: next_on_pv,
                     previous_pv: ctx.previous_pv,
                     excluded_move: None,
+                    cut_node: if next_on_pv { false } else { child_cut },
+                    gtp_graph,
+                    gtp_parent: Some(gtp_idx),
                     pv_table: &mut *ctx.pv_table,
                     cancellation_token: ctx.cancellation_token,
                     search_state: ctx.search_state,
@@ -645,6 +1029,9 @@ fn search_internal(
                 on_pv_path: next_on_pv,
                 previous_pv: ctx.previous_pv,
                 excluded_move: None,
+                cut_node: if next_on_pv { false } else { child_cut },
+                gtp_graph,
+                gtp_parent: Some(gtp_idx),
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -661,26 +1048,37 @@ fn search_internal(
             );
         }
 
-        number_of_legal_moves += 1;
-
         board_state.unmake_move(move_obj);
 
-        if ctx.cancellation_token.load(Ordering::Relaxed) {
+        // FIX ABORT-PROPAGATION: propagate without touching TT/history/PV.
+        if is_cancelled(ctx) {
             return 0;
         }
 
+        if score <= alpha {
+            consecutive_fail_lows = consecutive_fail_lows.saturating_add(1);
+        } else {
+            consecutive_fail_lows = 0;
+        }
+
+        // FIX FAIL-LOW-NOMOVE (Stockfish search.cpp:1529-1540): best move tracks
+        // best score even below alpha; alpha/PV update only above alpha.
         if score > best_score {
             best_score = score;
+            best_move = move_obj;
 
             if score > alpha {
-                alpha_update(score, move_obj, &mut alpha, &mut best_move);
+                alpha = score;
                 entry_type = TranspositionEntryType::Exact;
                 found_pv = true;
 
-                ctx.pv_table.update(ply as usize, move_obj);
+                // FIX PV-TABLE: shared table updated on PV nodes only.
+                if is_pv_node {
+                    ctx.pv_table.update(ply as usize, move_obj);
+                }
                 if ply == 0 {
                     ctx.search_state.root_best_move_nodes =
-                        (ctx.search_state.nodes - move_nodes_start) as i64;
+                        ctx.search_state.nodes.saturating_sub(move_nodes_start);
                     if number_of_legal_moves > 1 {
                         ctx.search_state.best_move_changes += 1;
                     }
@@ -689,14 +1087,27 @@ fn search_internal(
         }
 
         if score >= beta {
+            if !is_pv_node && ctx.excluded_move.is_none() {
+                let early_cutoff = number_of_legal_moves <= 2;
+                ctx.search_state
+                    .bmo
+                    .update(current_depth, bandit_arm, early_cutoff);
+            }
+            // FIX ABORT-PROPAGATION + LMR-CHECK: no store/update after abort;
+            // TT stores the parent depth (current_depth), same variable as the
+            // fail-low path below.
+            if is_cancelled(ctx) {
+                return score;
+            }
             return beta_cutoff(
                 score,
                 move_obj,
                 ply as usize,
                 board_state,
-                depth,
+                current_depth,
                 previous_move,
                 ctx.search_state,
+                ctx.cancellation_token,
                 &tried_quiets[..tried_quiets_count],
                 &tried_captures[..tried_captures_count],
                 ctx.excluded_move,
@@ -712,6 +1123,18 @@ fn search_internal(
         }
     }
 
+    // FIX ABORT-PROPAGATION: a break above means cancellation; exit now with
+    // no TT store and no history updates.
+    if is_cancelled(ctx) {
+        return 0;
+    }
+
+    if !is_pv_node && ctx.excluded_move.is_none() && number_of_legal_moves >= 3 {
+        ctx.search_state
+            .bmo
+            .update(current_depth, bandit_arm, false);
+    }
+
     if !has_legal_moves {
         if in_check {
             return -constants::MAX_CENTIPAWN_EVAL + ply as i16;
@@ -719,33 +1142,39 @@ fn search_internal(
         return 0;
     }
 
-    if !ctx.cancellation_token.load(Ordering::Relaxed) {
+    // FIX EXCLUDED-MOVE GUARDS: singular searches update nothing (Stockfish
+    // search.cpp:1634-1642 writes TT only when !excludedMove; histories likewise).
+    if !is_cancelled(ctx) {
         if ctx.excluded_move.is_none() {
             ctx.search_state.tt.submit_entry(
                 board_state.board_hash,
-                tt::TranspositionTable::adjust_score(best_score, ply as i32),
-                depth,
+                tt::TranspositionTable::adjust_score(best_score, ply as i32, halfmove),
+                current_depth,
                 best_move,
                 entry_type,
             );
         }
 
-        if has_static_eval
+        if ctx.excluded_move.is_none()
+            && has_static_eval
             && !in_check
             && !best_move.is_capture()
             && best_score.abs() < mate_bound
             && (best_score > static_eval) == (best_move != Move::NO_MOVE)
         {
             let move_factor = if best_move != Move::NO_MOVE { 12 } else { 18 };
-            let bonus = (((best_score as i32 - static_eval as i32) * depth as i32 * move_factor) / 128)
-                .clamp(-256, 256);
+            let bonus =
+                (((best_score as i32 - static_eval as i32) * current_depth as i32 * move_factor)
+                    / 128)
+                    .clamp(-256, 256);
             let final_bonus = bonus * 1061 / 1024;
             ctx.search_state
                 .correction_history
                 .update(board_state, previous_move, final_bonus);
         }
 
-        if entry_type == TranspositionEntryType::Exact
+        if ctx.excluded_move.is_none()
+            && entry_type == TranspositionEntryType::Exact
             && best_move != Move::NO_MOVE
             && !best_move.is_capture()
         {
@@ -753,7 +1182,7 @@ fn search_internal(
                 board_state,
                 ctx.search_state,
                 best_move,
-                depth,
+                current_depth,
                 previous_move,
                 &tried_quiets[..tried_quiets_count],
             );
@@ -777,6 +1206,7 @@ fn search_deeper(
     if found_pv {
         principal_variation_search(board_state, depth, ply, alpha, beta, previous_move, ctx)
     } else {
+        let child_cut = ctx.cut_node;
         -search_internal(
             board_state,
             depth.saturating_sub(1),
@@ -789,6 +1219,9 @@ fn search_deeper(
                 on_pv_path: ctx.on_pv_path,
                 previous_pv: ctx.previous_pv,
                 excluded_move: None,
+                cut_node: child_cut,
+                gtp_graph: ctx.gtp_graph,
+                gtp_parent: ctx.gtp_parent,
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -806,6 +1239,7 @@ fn principal_variation_search(
     previous_move: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
+    let child_cut = ctx.cut_node;
     let mut score = -search_internal(
         board_state,
         depth.saturating_sub(1),
@@ -818,6 +1252,9 @@ fn principal_variation_search(
             on_pv_path: ctx.on_pv_path,
             previous_pv: ctx.previous_pv,
             excluded_move: None,
+            cut_node: child_cut,
+            gtp_graph: ctx.gtp_graph,
+            gtp_parent: ctx.gtp_parent,
             pv_table: &mut *ctx.pv_table,
             cancellation_token: ctx.cancellation_token,
             search_state: ctx.search_state,
@@ -836,6 +1273,9 @@ fn principal_variation_search(
                 on_pv_path: ctx.on_pv_path,
                 previous_pv: ctx.previous_pv,
                 excluded_move: None,
+                cut_node: false,
+                gtp_graph: ctx.gtp_graph,
+                gtp_parent: ctx.gtp_parent,
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -915,12 +1355,6 @@ fn update_continuation(
     }
 }
 
-#[inline(always)]
-fn alpha_update(score: i16, move_obj: Move, alpha: &mut i16, best_move: &mut Move) {
-    *alpha = score;
-    *best_move = move_obj;
-}
-
 #[allow(clippy::too_many_arguments)]
 fn beta_cutoff(
     score: i16,
@@ -930,19 +1364,26 @@ fn beta_cutoff(
     depth: u8,
     previous_move: Option<Move>,
     search_state: &mut SearchState,
+    cancellation_token: &AtomicBool,
     tried_quiets: &[Move],
     tried_captures: &[Move],
     excluded_move: Option<Move>,
 ) -> i16 {
-    if excluded_move.is_none() {
-        search_state.tt.submit_entry(
-            board_state.board_hash,
-            tt::TranspositionTable::adjust_score(score, ply as i32),
-            depth,
-            move_obj,
-            TranspositionEntryType::Beta,
-        );
+    // FIX ABORT-PROPAGATION + EXCLUDED-MOVE GUARDS: cancelled or singular
+    // searches submit nothing and update no histories (Stockfish 1634-1642).
+    if cancellation_token.load(Ordering::Relaxed) {
+        return score;
     }
+    if excluded_move.is_some() {
+        return score;
+    }
+    search_state.tt.submit_entry(
+        board_state.board_hash,
+        tt::TranspositionTable::adjust_score(score, ply as i32, board_state.half_move_clock),
+        depth,
+        move_obj,
+        TranspositionEntryType::Beta,
+    );
 
     if !move_obj.is_capture() {
         search_state.move_ordering.add_killer_move(move_obj, ply);
@@ -1014,6 +1455,12 @@ pub struct SearchContext<'a> {
     pub on_pv_path: bool,
     pub previous_pv: &'a [Move],
     pub excluded_move: Option<Move>,
+    /// Stockfish cut-node flag: expected cut-node (fail-high) or all-node.
+    /// Root starts false; LMR-reduced children are cut-nodes, re-searches flip
+    /// the parent flag, PV searches are never cut-nodes.
+    pub cut_node: bool,
+    gtp_graph: gtp::GtpTreeGraph,
+    gtp_parent: Option<usize>,
     pub pv_table: &'a mut PvTable,
     pub cancellation_token: &'a AtomicBool,
     pub search_state: &'a mut SearchState,

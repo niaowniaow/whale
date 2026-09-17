@@ -19,15 +19,15 @@ jobs:
           rustc --version
           cargo --version
 
-      - name: Build Latest Rudim (Rust)
+      - name: Build Latest Whale (Rust)
         run: cargo build --release
 
-      - name: Download Stable Rudim
+      - name: Download Stable Whale
         run: |
-          mkdir -p stable-rudim
+          mkdir -p stable-whale
           wget https://github.com/znxftw/rudim/releases/latest/download/linux-x64.zip
-          unzip -o linux-x64.zip -d stable-rudim
-          chmod +x stable-rudim/Rudim
+          unzip -o linux-x64.zip -d stable-whale
+          chmod +x stable-whale/Whale
 
       - name: Download Fastchess and Openings
         run: |
@@ -43,7 +43,7 @@ jobs:
       - name: Run Tournaments
         run: |
           ./fastchess-linux-x86-64/fastchess \
-            -engine cmd=./target/release/rudim name="Current Rudim" \
-            -engine cmd=./stable-rudim/Rudim name="Stable Rudim" \
+            -engine cmd=./target/release/whale name="Current Whale" \
+            -engine cmd=./stable-whale/Whale name="Stable Whale" \
             -games 250 -each tc=10+0.1 -concurrency 4 \
             -openings file=8moves_v3.pgn order=random format=pgn

@@ -45,6 +45,11 @@ pub struct History {
     pub dirty_updates: Box<[DirtyUpdate]>,
     pub computed: Box<[bool]>,
     pub index: usize,
+    /// Plies since the last null move (cf. Stockfish `pliesFromNull`).
+    /// Repetition windows must stop at a null move, so callers use
+    /// `min(half_move_clock, plies_from_null)` as the lookback distance.
+    pub plies_from_null: usize,
+    plies_from_null_stack: Box<[usize]>,
 }
 
 impl History {
@@ -58,6 +63,8 @@ impl History {
             dirty_updates: vec![DirtyUpdate::default(); HISTORY_SIZE].into_boxed_slice(),
             computed,
             index: 0,
+            plies_from_null: 0,
+            plies_from_null_stack: vec![0usize; HISTORY_SIZE].into_boxed_slice(),
         }
     }
 
@@ -78,6 +85,7 @@ impl History {
                 board_hash,
                 half_move_clock,
             };
+            self.plies_from_null_stack[self.index] = self.plies_from_null;
             self.index += 1;
         } else {
             panic!("History stack overflow");
@@ -87,6 +95,7 @@ impl History {
     pub fn restore(&mut self) -> BoardHistory {
         if self.index > 0 {
             self.index -= 1;
+            self.plies_from_null = self.plies_from_null_stack[self.index];
             self.entries[self.index]
         } else {
             panic!("History stack underflow");
@@ -100,6 +109,7 @@ impl History {
         self.computed.fill(false);
         self.computed[0] = true;
         self.index = 0;
+        self.plies_from_null = 0;
     }
 
     pub fn has_hash_appeared_twice(&self, board_hash: u64, starting_index: usize) -> bool {

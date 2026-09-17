@@ -1,6 +1,6 @@
-use rudim::board::state::BoardState;
-use rudim::common::helpers::{ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
-use rudim::common::move_list::MoveList;
+use whale::board::state::BoardState;
+use whale::common::helpers::{ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
+use whale::common::move_list::MoveList;
 
 fn traverse(board_state: &mut BoardState, depth: u8) -> u64 {
     if depth == 0 {

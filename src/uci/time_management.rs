@@ -3,9 +3,12 @@ pub fn calculate_move_time(clock: i32, increment: i32) -> i32 {
 }
 
 pub fn calculate_move_time_with_moves(clock: i32, increment: i32, movestogo: i32) -> i32 {
-    calculate_optimum_with_ply(clock, increment, movestogo, 0, -1, 50).0
+    calculate_optimum_with_ply(clock, increment, movestogo, 0, -1, 50, false).0
 }
 
+/// Stockfish timeman.cpp mirror (sudden-death + cyclic branches).
+/// `ponder` applies the Stockfish Ponder-option bonus (optimum += optimum/4,
+/// timeman.cpp:164-165). `movestogo <= 0` means "no movestogo" (SF: == 0).
 pub fn calculate_optimum_with_ply(
     clock: i32,
     increment: i32,
@@ -13,25 +16,17 @@ pub fn calculate_optimum_with_ply(
     ply: i32,
     opp_clock: i32,
     move_overhead: i32,
+    ponder: bool,
 ) -> (i32, i32) {
     if clock <= move_overhead {
         return (10, 10);
     }
 
-    if clock < 5000 && movestogo <= 0 {
-        let usable = (clock - move_overhead).max(20);
-        let emergency_max = (usable / 12 + increment / 2).max(15);
-        let optimum = (emergency_max * 2 / 3).max(10);
-        return (optimum, emergency_max);
-    }
-
     let scaled_time = clock.max(1);
+    // SF: mtg = movestogo ? min(movestogo, 50) : 50; mtg may become 0 below.
     let mut mtg = if movestogo > 0 { movestogo.min(50) } else { 50 };
     if scaled_time < 1000 && movestogo <= 0 {
         mtg = (scaled_time as f64 * 0.05) as i32;
-        if mtg < 1 {
-            mtg = 1;
-        }
     }
     let time_left = (clock + increment * (mtg - 1) - move_overhead * (2 + mtg)).max(1);
     let (mut opt_scale, max_scale) = if movestogo <= 0 {
@@ -40,7 +35,8 @@ pub fn calculate_optimum_with_ply(
         let max_constant = (3.3744 + 3.0608 * log_time).max(3.1441);
         let mut opt = (0.012112 + (ply as f64 + 3.22713).powf(0.46866) * opt_constant)
             .min(0.19404 * clock as f64 / time_left as f64);
-        let original_adjust = (0.3272 * (time_left as f64).log10() - 0.4141).max(0.1);
+        // SF has no .max(0.1) clamp here; the adjust may go slightly negative.
+        let original_adjust = 0.3272 * (time_left as f64).log10() - 0.4141;
         opt *= original_adjust;
         let max = (6.873_f64).min(max_constant + ply as f64 / 12.352);
         (opt, max)
@@ -57,15 +53,18 @@ pub fn calculate_optimum_with_ply(
         opt_scale *= 1.0 + 0.9 * time_advantage.min(0.0);
     }
 
-    let hard_max = (clock as f64 * 0.08 + increment as f64 * 0.8).min(45_000.0).max(10.0);
-    let hard_opt = (clock as f64 * 0.04 + increment as f64 * 0.6).min(30_000.0).max(10.0);
-    let mut optimum = ((opt_scale * time_left as f64).max(1.0) as i32).min(hard_opt as i32);
-    let mut maximum = ((max_scale * optimum as f64).min(hard_max) as i32)
-        .min((0.8097 * clock as f64 - move_overhead as f64) as i32)
-        .max(optimum);
-    optimum = optimum.max(10).min(clock - move_overhead);
-    maximum = maximum.max(optimum).min(clock - move_overhead).max(10);
-    (optimum, maximum)
+    // SF: optimum = max(1, optScale * timeLeft); maximum from UNbonused optimum,
+    // then the Ponder-option bonus applies to optimum only (timeman.cpp:164-165).
+    let base_optimum = (opt_scale * time_left as f64).max(1.0) as i32;
+    // SF: maximum = max(optimum, min(0.8097 * time - overhead, maxScale * optimum)).
+    let maximum = ((max_scale * base_optimum as f64)
+        .min(0.8097 * clock as f64 - move_overhead as f64) as i32)
+        .max(base_optimum);
+    let mut optimum = base_optimum;
+    if ponder {
+        optimum += optimum / 4;
+    }
+    (optimum.max(1), maximum.max(1))
 }
 
 #[cfg(test)]
@@ -104,6 +103,18 @@ mod tests {
                 assert_manage_time_without_exhausting($starting_time, $increment);
             }
         };
+    }
+
+    #[test]
+    fn ponder_bonus_only_changes_optimum() {
+        for movestogo in [-1, 1, 30] {
+            let (optimum, maximum) =
+                calculate_optimum_with_ply(60000, 1000, movestogo, 20, 60000, 10, false);
+            let (ponder_optimum, ponder_maximum) =
+                calculate_optimum_with_ply(60000, 1000, movestogo, 20, 60000, 10, true);
+            assert_eq!(ponder_optimum, optimum + optimum / 4);
+            assert_eq!(ponder_maximum, maximum);
+        }
     }
 
     time_case!(case_180000_2000, 180000, 2000);
