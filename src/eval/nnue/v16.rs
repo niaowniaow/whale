@@ -4182,4 +4182,280 @@ mod tests {
             Err("bad whale length")
         );
     }
+
+    #[test]
+    fn cover_for_each_threat_skips_empty_mapping() {
+        // Lines 469 (pawn) and 499 (non-pawn): `continue` when the victim square
+        // is occupied in the bitboards but empty in `mapping` (> 5). Crafted
+        // inconsistent positions trigger those guards without touching globals.
+        let pawn_pos = SfnnPosition {
+            pieces: {
+                let mut p = [0u64; 6];
+                p[Piece::Pawn as usize] = 1u64 << 12;
+                p[Piece::King as usize] = (1u64 << 4) | (1u64 << 60);
+                p
+            },
+            white: (1u64 << 12) | (1u64 << 4),
+            black: (1u64 << 19) | (1u64 << 60),
+            mapping: {
+                let mut m = [6u8; 64];
+                m[12] = Piece::Pawn as u8;
+                m[4] = Piece::King as u8;
+                m[60] = Piece::King as u8;
+                m[19] = 6;
+                m
+            },
+        };
+        // White pawn on SF 12 attacks SF 19; victim mapping 6 skips the edge.
+        let mut pawn_edges = 0;
+        for_each_threat(&pawn_pos, |_, _, _, _| pawn_edges += 1);
+        let mut pawn_fixed = pawn_pos;
+        pawn_fixed.mapping[19] = Piece::Pawn as u8;
+        pawn_fixed.pieces[Piece::Pawn as usize] |= 1u64 << 19;
+        let mut pawn_fixed_edges = 0;
+        for_each_threat(&pawn_fixed, |_, _, _, _| pawn_fixed_edges += 1);
+        assert!(pawn_fixed_edges > pawn_edges);
+
+        // Knight on SF 10 reaches SF 20; victim mapping 6 skips the edge.
+        assert_ne!(knight_attacks_sf(10) & (1u64 << 20), 0);
+        let knight_pos = SfnnPosition {
+            pieces: {
+                let mut p = [0u64; 6];
+                p[Piece::Knight as usize] = 1u64 << 10;
+                p[Piece::King as usize] = (1u64 << 4) | (1u64 << 60);
+                p
+            },
+            white: (1u64 << 10) | (1u64 << 4),
+            black: (1u64 << 20) | (1u64 << 60),
+            mapping: {
+                let mut m = [6u8; 64];
+                m[10] = Piece::Knight as u8;
+                m[4] = Piece::King as u8;
+                m[60] = Piece::King as u8;
+                m[20] = 6;
+                m
+            },
+        };
+        let mut knight_edges = 0;
+        for_each_threat(&knight_pos, |_, _, _, _| knight_edges += 1);
+        let mut knight_fixed = knight_pos;
+        knight_fixed.mapping[20] = Piece::Pawn as u8;
+        knight_fixed.pieces[Piece::Pawn as usize] |= 1u64 << 20;
+        let mut knight_fixed_edges = 0;
+        for_each_threat(&knight_fixed, |_, _, _, _| knight_fixed_edges += 1);
+        assert!(knight_fixed_edges > knight_edges);
+    }
+
+    #[test]
+    fn cover_threat_index_never_overflows() {
+        // Line 434 `return None` when `index >= THREAT_DIMS` looks defensive:
+        // exhaustive sweep documents that no valid combo reaches it.
+        let mut max_seen = 0usize;
+        for perspective in [Side::White, Side::Black] {
+            for attacker in 0..16usize {
+                for from in 0..64usize {
+                    for to in 0..64usize {
+                        for attacked in 0..16usize {
+                            for ksq in [0usize, 4, 60] {
+                                if let Some(idx) = threat_make_index(
+                                    perspective,
+                                    attacker,
+                                    from,
+                                    to,
+                                    attacked,
+                                    ksq,
+                                ) {
+                                    max_seen = max_seen.max(idx);
+                                    assert!(idx < THREAT_DIMS);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        assert!(max_seen < THREAT_DIMS);
+    }
+
+    #[test]
+    fn cover_load_bytes_truncation_hits_pp_and_combined() {
+        // Lines 1043 (SF17 pp `?`) and 1056 (combined weights `?`): truncate
+        // inside those exact sections so the `?` propagates an error.
+        let sf17 = build_tiny_sf17_for_test(2);
+        // Sweep truncations; several must land inside the 36k pp payload and fail.
+        let mut saw_err = 0;
+        let mut len = sf17.len();
+        while len > 100 {
+            len = len.saturating_sub(20_000);
+            if Sfnn16Net::load_bytes(&sf17[..len], true, 2).is_err() {
+                saw_err += 1;
+            }
+            if len <= 100 {
+                break;
+            }
+        }
+        assert!(saw_err > 0);
+        // Targeted cut inside pp: after threat-PSQT + pair-raw, inside pp section.
+        // Offsets for l1=2: header/thash/bias=38, threat-raw=119_616,
+        // threat-PSQT~=478_484, pair-raw=9_120, then pp MAGIC+len+payload.
+        let pp_start = 38 + THREAT_DIMS * 2 + (16 + 4 + THREAT_DIMS * N_BUCKETS) + PAIR_DIMS * 2;
+        assert!(Sfnn16Net::load_bytes(&sf17[..pp_start + 10], true, 2).is_err());
+        assert!(Sfnn16Net::load_bytes(&sf17[..pp_start + 30], true, 2).is_err());
+
+        // Combined weights section starts right after header/bias (38).
+        let combined = build_tiny_combined_threats_for_test(2);
+        let early = 38 + 16 + 4 + 1000;
+        assert!(Sfnn16Net::load_bytes(&combined[..early], true, 2).is_err());
+        let mid = combined.len() - 50_000;
+        assert!(Sfnn16Net::load_bytes(&combined[..mid], true, 2).is_err());
+    }
+
+    #[test]
+    fn cover_load_rudi_raw_payload() {
+        // Line 1119 `data` for header-less raw payloads of exact length.
+        let raw = vec![0u8; 181_011_108];
+        let net = Sfnn16Net::load_rudi(&raw).expect("raw zero payload should parse");
+        assert!(net.use_threats);
+        assert_eq!(net.transformer.threat_w_i16.len(), THREAT_DIMS * L1);
+        assert_eq!(net.transformer.pair_w_i16.len(), PAIR_DIMS * L1);
+    }
+
+    #[test]
+    fn cover_finny_changed_common_overflow() {
+        // Lines 1807 (`break` when diff exceeds 8 via changed_common) and 1854
+        // (fallthrough to refresh when inner `diff <= 8` is false). Same
+        // occupancy, 9 mapping flips on common squares.
+        let loaded = dummy_full_loaded_nets_for_test();
+        let board = BoardState::parse_fen("6k1/8/8/8/8/P7/PPPPPPPP/1K6 w - - 0 1");
+        let pos_a = SfnnPosition::from_board(&board);
+        let occ = pos_a.occupied();
+        assert!(occ.count_ones() >= 11);
+        let mut pos_b = SfnnPosition {
+            pieces: pos_a.pieces,
+            white: pos_a.white,
+            black: pos_a.black,
+            mapping: pos_a.mapping,
+        };
+        let mut flipped = 0;
+        for (s, cell) in pos_b.mapping.iter_mut().enumerate() {
+            if ((occ >> s) & 1) == 1 && *cell == Piece::Pawn as u8 && flipped < 9 {
+                *cell = Piece::Knight as u8;
+                flipped += 1;
+            }
+        }
+        assert_eq!(flipped, 9);
+        let mut acc = Sfnn16Accs::empty();
+        update_perspective_finny_or_refresh(&pos_a, &loaded, Side::White, &mut acc);
+        update_perspective_finny_or_refresh(&pos_b, &loaded, Side::White, &mut acc);
+        let mut direct = Sfnn16Accs::empty();
+        refresh_perspective(&pos_b, &loaded, Side::White, &mut direct);
+        assert_eq!(
+            acc.halfka[Side::White as usize],
+            direct.halfka[Side::White as usize]
+        );
+        assert_eq!(
+            acc.psqt[Side::White as usize],
+            direct.psqt[Side::White as usize]
+        );
+    }
+
+    #[test]
+    fn cover_finny_skips_invalid_mapping() {
+        // Lines 1830/1845: `if pt <= 5` false when entry/pos mapping is 6 for a
+        // square in the incremental del/add sets. Small diff keeps the fast path.
+        let loaded = dummy_full_loaded_nets_for_test();
+        // Deletion side: entry has occ bit with mapping 6, then it disappears.
+        let mut pos_a =
+            SfnnPosition::from_board(&BoardState::parse_fen("6k1/8/8/8/8/8/1P6/1K6 w - - 0 1"));
+        pos_a.white |= 1u64 << 18;
+        // Keep pieces/white consistent except for the extra occ bit; mapping stays 6.
+        assert_eq!(pos_a.mapping[18], 6);
+        let pos_b =
+            SfnnPosition::from_board(&BoardState::parse_fen("6k1/8/8/8/8/8/1P6/1K6 w - - 0 1"));
+        let mut acc = Sfnn16Accs::empty();
+        update_perspective_finny_or_refresh(&pos_a, &loaded, Side::White, &mut acc);
+        update_perspective_finny_or_refresh(&pos_b, &loaded, Side::White, &mut acc);
+        let mut direct = Sfnn16Accs::empty();
+        refresh_perspective(&pos_b, &loaded, Side::White, &mut direct);
+        assert_eq!(
+            acc.halfka[Side::White as usize],
+            direct.halfka[Side::White as usize]
+        );
+        // Addition side: new occ bit with mapping 6 appears.
+        let pos_c =
+            SfnnPosition::from_board(&BoardState::parse_fen("6k1/8/8/8/8/8/1P6/1K6 w - - 0 1"));
+        let mut pos_d = SfnnPosition {
+            pieces: pos_c.pieces,
+            white: pos_c.white | (1u64 << 18),
+            black: pos_c.black,
+            mapping: pos_c.mapping,
+        };
+        pos_d.mapping[18] = 6;
+        let mut acc2 = Sfnn16Accs::empty();
+        update_perspective_finny_or_refresh(&pos_c, &loaded, Side::White, &mut acc2);
+        update_perspective_finny_or_refresh(&pos_d, &loaded, Side::White, &mut acc2);
+        let mut direct2 = Sfnn16Accs::empty();
+        refresh_perspective(&pos_d, &loaded, Side::White, &mut direct2);
+        assert_eq!(
+            acc2.halfka[Side::White as usize],
+            direct2.halfka[Side::White as usize]
+        );
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn cover_add_threat_w_i16_avx2_direct() {
+        // Lines 1941/1944-1952/1954: direct AVX2 add helper, no globals.
+        // Server and CI run on AVX2 x86_64; `cfg` gates compilation, no runtime branch.
+        let mut buf = [0i32; L1];
+        let w = [1i16; L1];
+        unsafe { add_threat_w_i16_avx2(&mut buf, &w) };
+        assert!(buf.iter().all(|&v| v == 1));
+        let w2 = [-1i16; L1];
+        unsafe { add_threat_w_i16_avx2(&mut buf, &w2) };
+        assert!(buf.iter().all(|&v| v == 0));
+    }
+
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn cover_rudi_1024_threat_pair_avx2() {
+        // Lines 2222-2224/2236-2238: rudi AVX2 call sites need l1==1024 plus
+        // non-empty threat/pair lists. Server runs AVX2 x86_64; no runtime branch.
+        let board = BoardState::parse_fen("4k3/8/8/8/2p5/2n5/1PP5/4K3 w - - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        let base = [5i16; L1];
+        let psqt = [7i32; N_BUCKETS];
+        let net = Sfnn16Net {
+            l1: L1,
+            use_threats: true,
+            is_rudi: true,
+            transformer: SfnnTransformer {
+                bias: Vec::new(),
+                weights: Vec::new(),
+                threat_w: Vec::new(),
+                threat_w_i16: vec![1i16; THREAT_DIMS * L1],
+                psqt_w: Vec::new(),
+                threat_psqt_w: Vec::new(),
+                pair_w: Vec::new(),
+                pair_w_i16: vec![2i16; PAIR_DIMS * L1],
+                pair_psqt_w: Vec::new(),
+            },
+            stacks: vec![SfnnArch {
+                fc0_bias: [0; FC0_OUT],
+                fc0_w: vec![0; L1 * FC0_OUT],
+                fc1_bias: [0; FC1_OUT],
+                fc1_w: vec![0; FC1_IN * FC1_OUT],
+                fc2_bias: 0,
+                fc2_w: [0; FC0_OUT * 2 + FC1_OUT * 2],
+                is_rudi: true,
+            }],
+        };
+        let mut tbuf = [0usize; MAX_THREAT_ACTIVE];
+        let mut pbuf = [0usize; MAX_PAIR_ACTIVE];
+        assert!(collect_threats(&pos, Side::White, &mut tbuf) > 0);
+        assert!(collect_pairs(&pos, Side::White, &mut pbuf) > 0);
+        let a = eval_with_net(&pos, &net, [&base; 2], [&psqt; 2], Side::White, 0);
+        let b = eval_with_net(&pos, &net, [&base; 2], [&psqt; 2], Side::White, 0);
+        assert_eq!(a, b);
+    }
 }

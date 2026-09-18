@@ -34,27 +34,7 @@ impl StockfishTeacher {
     }
 
     pub fn evaluate(&mut self, board: &BoardState, depth: u8) -> std::io::Result<i16> {
-        writeln!(self.stdin, "position fen {}", board.to_fen())?;
-        writeln!(self.stdin, "go depth {}", depth)?;
-        self.stdin.flush()?;
-
-        let mut score = None;
-        let mut line = String::new();
-        loop {
-            line.clear();
-            if self.stdout.read_line(&mut line)? == 0 {
-                break;
-            }
-            let tokens: Vec<&str> = line.split_whitespace().collect();
-            if let Some(parsed) = parse_score(&tokens) {
-                score = Some(parsed);
-            }
-            if tokens.first() == Some(&"bestmove") {
-                break;
-            }
-        }
-
-        Ok(score.unwrap_or(0))
+        evaluate_on(&mut self.stdin, &mut self.stdout, board, depth)
     }
 }
 
@@ -64,6 +44,38 @@ impl Drop for StockfishTeacher {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+/// Drive one `position`/`go` exchange over any byte streams. Split out of
+/// [`StockfishTeacher::evaluate`] so the protocol loop is testable without
+/// spawning a real engine.
+fn evaluate_on(
+    stdin: &mut impl Write,
+    stdout: &mut impl BufRead,
+    board: &BoardState,
+    depth: u8,
+) -> std::io::Result<i16> {
+    writeln!(stdin, "position fen {}", board.to_fen())?;
+    writeln!(stdin, "go depth {}", depth)?;
+    stdin.flush()?;
+
+    let mut score = None;
+    let mut line = String::new();
+    loop {
+        line.clear();
+        if stdout.read_line(&mut line)? == 0 {
+            break;
+        }
+        let tokens: Vec<&str> = line.split_whitespace().collect();
+        if let Some(parsed) = parse_score(&tokens) {
+            score = Some(parsed);
+        }
+        if tokens.first() == Some(&"bestmove") {
+            break;
+        }
+    }
+
+    Ok(score.unwrap_or(0))
 }
 
 fn wait_for_token(reader: &mut impl BufRead, expected: &str) -> std::io::Result<()> {
@@ -154,5 +166,65 @@ mod tests {
     #[test]
     fn teacher_rejects_missing_binary() {
         assert!(StockfishTeacher::new("definitely/not/a-chess-engine").is_err());
+    }
+
+    #[test]
+    fn evaluate_on_returns_last_score_before_bestmove() {
+        use crate::common::helpers::STARTING_FEN;
+
+        let mut stdin = Vec::new();
+        let transcript = "info depth 1 score cp 10 pv e2e4\n\
+                          info depth 1 score cp 25 pv d2d4\n\
+                          bestmove d2d4\n";
+        let mut stdout = Cursor::new(transcript.as_bytes());
+        let board = BoardState::parse_fen(STARTING_FEN);
+        assert_eq!(evaluate_on(&mut stdin, &mut stdout, &board, 1).unwrap(), 25);
+        let sent = String::from_utf8(stdin).unwrap();
+        assert!(sent.contains("position fen"));
+        assert!(sent.contains("go depth 1"));
+    }
+
+    #[test]
+    fn evaluate_on_defaults_to_zero_without_score() {
+        use crate::common::helpers::STARTING_FEN;
+
+        let board = BoardState::parse_fen(STARTING_FEN);
+        // EOF before any bestmove.
+        let mut stdin = Vec::new();
+        let mut stdout = Cursor::new(b"info string hi\n" as &[u8]);
+        assert_eq!(evaluate_on(&mut stdin, &mut stdout, &board, 1).unwrap(), 0);
+        // Bestmove with no score line at all.
+        let mut stdin = Vec::new();
+        let mut stdout = Cursor::new(b"bestmove e2e4\n" as &[u8]);
+        assert_eq!(evaluate_on(&mut stdin, &mut stdout, &board, 1).unwrap(), 0);
+    }
+
+    #[test]
+    fn drop_reaps_exited_child() {
+        // Portable instant-exit child: Drop must tolerate closed pipes and
+        // an already-dead process.
+        #[cfg(windows)]
+        let mut child = Command::new("cmd")
+            .args(["/C", "exit", "0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        #[cfg(not(windows))]
+        let mut child = Command::new("true")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap();
+        let stdin = child.stdin.take().expect("stdin was piped");
+        let stdout = child.stdout.take().expect("stdout was piped");
+        let teacher = StockfishTeacher {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+        };
+        drop(teacher);
     }
 }

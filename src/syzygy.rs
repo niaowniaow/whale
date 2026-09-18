@@ -1,9 +1,10 @@
 //! Syzygy endgame tablebase support (perfect play with few pieces left).
 //!
-//! Uses the `shakmaty-syzygy` crate for probing. Table files (`.rtbw` /
-//! `.rtbz`) are NOT shipped with this repo; point the UCI option
-//! `SyzygyPath` at a directory containing them (3-4-5 piece tables are
-//! enough to start, e.g. from https://tablebase.lichess.ovh/tables/standard/).
+//! Uses the `shakmaty-syzygy` crate for probing. Only the tiny 3-piece
+//! tables (`tables/KQvK`, `KRvK`, `KBNvK`) are vendored so unit tests can
+//! probe for real; point the UCI option `SyzygyPath` at a directory with
+//! bigger tables for real games (e.g. from
+//! https://tablebase.lichess.ovh/tables/standard/).
 //! When no tables are configured, every function below is a cheap no-op.
 //!
 //! Design (deliberately simple and safe):

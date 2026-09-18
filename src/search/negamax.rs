@@ -1844,4 +1844,372 @@ mod tests {
         assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
         assert!(nodes > 0);
     }
+
+    fn run_search_at_ply(fen: &str, depth: u8, ply: u8, alpha: i16, beta: i16) -> (i16, u64) {
+        let mut board = BoardState::parse_fen(fen);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        let score = {
+            let mut ctx = SearchContext {
+                allow_null_move: true,
+                on_pv_path: true,
+                previous_pv: &[],
+                excluded_move: None,
+                cut_node: false,
+                gtp_graph: gtp::GtpTreeGraph::new(),
+                gtp_parent: None,
+                pv_table: &mut pv_table,
+                cancellation_token: &cancel,
+                search_state: &mut state,
+            };
+            search_internal(&mut board, depth, ply, alpha, beta, None, &mut ctx)
+        };
+        (score, state.nodes)
+    }
+
+    #[test]
+    fn max_ply_delegates_to_quiescence() {
+        let (score, nodes) = run_search_at_ply(
+            FEW_PIECE_ENDGAME,
+            1,
+            constants::MAX_PLY as u8,
+            i16::MIN + 1,
+            i16::MAX - 1,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn psm_disabled_takes_zero_delta() {
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.params.psm_enabled = false;
+        let score = search(
+            &mut board,
+            1,
+            i16::MIN + 1,
+            i16::MAX - 1,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+    }
+
+    #[test]
+    fn singular_beta_clamped_to_mate_floor() {
+        use crate::common::move_type::MoveType;
+        let mut board = BoardState::parse_fen(STALEMATE);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        let tt_best = Move::new(Square::H8, Square::G8, MoveType::Quiet);
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(-30990, 0, board.half_move_clock),
+            5,
+            tt_best,
+            TranspositionEntryType::Exact,
+        );
+        let score = search(&mut board, 6, 0, 1, &cancel, &[], &mut pv_table, &mut state);
+        assert_eq!(score, 0);
+        assert!(state.nodes > 0);
+    }
+
+    const PROBCUT_FEN: &str = "7k/8/8/3pp3/8/8/3R4/K3Q3 w - - 0 1";
+
+    fn probcut_window(fen: &str, depth: u8, sub: i16) -> (i16, i16) {
+        let mut tmp = BoardState::parse_fen(fen);
+        let raw = crate::eval::evaluate_with_depth(&mut tmp, 0, depth);
+        let beta = raw.saturating_sub(sub);
+        let alpha = beta.saturating_sub(1);
+        (alpha, beta)
+    }
+
+    #[test]
+    fn probcut_improving_and_capture_sort_hit() {
+        let (alpha, beta) = probcut_window(PROBCUT_FEN, 4, 300);
+        let mut board = BoardState::parse_fen(PROBCUT_FEN);
+        let hash = board.board_hash;
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        let score = search(
+            &mut board,
+            4,
+            alpha,
+            beta,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+        let entry = state.tt.probe(hash).expect("probcut stores TT");
+        assert_eq!(entry.entry_type, TranspositionEntryType::Beta);
+        assert_eq!(entry.depth, 1);
+    }
+
+    #[test]
+    fn probcut_verify_with_depth_six_hits_tce() {
+        let (alpha, beta) = probcut_window(PROBCUT_FEN, 6, 300);
+        let mut board = BoardState::parse_fen(PROBCUT_FEN);
+        let hash = board.board_hash;
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        let score = search(
+            &mut board,
+            6,
+            alpha,
+            beta,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+        let entry = state.tt.probe(hash).expect("probcut stores TT");
+        assert_eq!(entry.entry_type, TranspositionEntryType::Beta);
+        assert_eq!(entry.depth, 2);
+    }
+
+    #[test]
+    fn coarse_pass_updates_tt_best() {
+        let (score, nodes) = run_search_at_ply("7k/8/8/8/3p4/8/3R4/K7 w - - 0 1", 7, 60, 0, 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn pawn_push_to_seventh_gets_extension() {
+        let (score, nodes) = run_search(
+            "4k3/8/4P3/8/8/8/8/4K3 w - - 0 1",
+            2,
+            i16::MIN + 1,
+            i16::MAX - 1,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    const PAWN_KING_FEN: &str = "4k3/8/8/8/8/8/PPPP4/4K3 w - - 0 1";
+
+    fn fail_low_window(fen: &str, depth: u8, add: i16) -> (i16, i16) {
+        let mut tmp = BoardState::parse_fen(fen);
+        let raw = crate::eval::evaluate_with_depth(&mut tmp, 0, depth);
+        let alpha = raw.saturating_add(add);
+        let beta = alpha.saturating_add(1);
+        (alpha, beta)
+    }
+
+    #[test]
+    fn quiet_history_negative_prunes_late_quiets() {
+        let (alpha, beta) = fail_low_window(PAWN_KING_FEN, 4, 200);
+        let mut board = BoardState::parse_fen(PAWN_KING_FEN);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.params.alp_threshold = 101;
+        state.params.gtp_threshold = 0;
+        for row in state.move_ordering.history_moves.iter_mut() {
+            for s in row.iter_mut() {
+                *s = -1000;
+            }
+        }
+        for side in state.move_ordering.quiet_history.iter_mut() {
+            for row in side.iter_mut() {
+                for s in row.iter_mut() {
+                    *s = -1000;
+                }
+            }
+        }
+        for piece in state.move_ordering.continuation_history.iter_mut() {
+            for row in piece.iter_mut() {
+                for s in row.iter_mut() {
+                    *s = -1000;
+                }
+            }
+        }
+        let score = search(
+            &mut board,
+            4,
+            alpha,
+            beta,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+    }
+
+    #[test]
+    fn psm_sibling_prune_triggers() {
+        let (alpha, beta) = fail_low_window(PAWN_KING_FEN, 4, 200);
+        let mut board = BoardState::parse_fen(PAWN_KING_FEN);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.params.alp_threshold = 101;
+        state.psm_stack.stack[0].consecutive_fail_lows = 5;
+        state.psm_stack.stack[0].hidden = [-256; 128];
+        let score = search(
+            &mut board,
+            4,
+            alpha,
+            beta,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+    }
+
+    #[test]
+    fn gtp_subtree_prune_triggers() {
+        let (alpha, beta) = fail_low_window(PAWN_KING_FEN, 4, 200);
+        let mut board = BoardState::parse_fen(PAWN_KING_FEN);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.params.alp_threshold = 101;
+        state.params.gtp_threshold = 100;
+        let score = search(
+            &mut board,
+            4,
+            alpha,
+            beta,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+    }
+
+    #[test]
+    fn late_history_prune_triggers_on_startpos() {
+        let (alpha, beta) = fail_low_window(STARTING_FEN, 3, 200);
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.params.alp_threshold = 101;
+        for row in state.move_ordering.history_moves.iter_mut() {
+            for s in row.iter_mut() {
+                *s = -10000;
+            }
+        }
+        for side in state.move_ordering.quiet_history.iter_mut() {
+            for row in side.iter_mut() {
+                for s in row.iter_mut() {
+                    *s = -10000;
+                }
+            }
+        }
+        for piece in state.move_ordering.continuation_history.iter_mut() {
+            for row in piece.iter_mut() {
+                for s in row.iter_mut() {
+                    *s = -10000;
+                }
+            }
+        }
+        let score = search(
+            &mut board,
+            3,
+            alpha,
+            beta,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+    }
+
+    #[test]
+    fn beta_cutoff_cancelled_returns_score() {
+        let board = BoardState::parse_fen(FEW_PIECE_ENDGAME);
+        let cancel = AtomicBool::new(true);
+        let mut state = SearchState::new();
+        let mv = Move::new(Square::H1, Square::G1, MoveType::Quiet);
+        let score = beta_cutoff(
+            123,
+            mv,
+            0,
+            &board,
+            2,
+            None,
+            &mut state,
+            &cancel,
+            &[],
+            &[],
+            None,
+        );
+        assert_eq!(score, 123);
+    }
+
+    #[test]
+    fn beta_cutoff_excluded_returns_score() {
+        let board = BoardState::parse_fen(FEW_PIECE_ENDGAME);
+        let cancel = AtomicBool::new(false);
+        let mut state = SearchState::new();
+        let mv = Move::new(Square::H1, Square::G1, MoveType::Quiet);
+        let excluded = Move::new(Square::H1, Square::H2, MoveType::Quiet);
+        let score = beta_cutoff(
+            77,
+            mv,
+            0,
+            &board,
+            2,
+            None,
+            &mut state,
+            &cancel,
+            &[],
+            &[],
+            Some(excluded),
+        );
+        assert_eq!(score, 77);
+    }
+
+    #[test]
+    fn beta_cutoff_en_passant_updates_capture_history() {
+        use crate::common::move_type::MoveType;
+        let board = BoardState::parse_fen("7k/8/2b5/3pP3/8/8/8/K2RQ3 w - d6 0 1");
+        let cancel = AtomicBool::new(false);
+        let mut state = SearchState::new();
+        let ep = Move::new(Square::E5, Square::D6, MoveType::EnPassant);
+        assert!(board.piece_mapping[Square::E5 as usize] == Piece::Pawn);
+        let normal = Move::new(Square::D1, Square::D5, MoveType::Capture);
+        let tried = [ep, normal];
+        let score = beta_cutoff(
+            250,
+            ep,
+            0,
+            &board,
+            2,
+            None,
+            &mut state,
+            &cancel,
+            &[],
+            &tried,
+            None,
+        );
+        assert_eq!(score, 250);
+        assert!(state.tt.probe(board.board_hash).is_some());
+    }
 }

@@ -40,8 +40,15 @@ checksum.md5
 /v16/
 
 # Syzygy tablebases (large, download separately)
-/tables/
+/tables/*
 *.rtbw
 *.rtbz
+# ...except the tiny 3-piece tables: unit tests (incl. CI) probe them.
+!/tables/KQvK.rtbw
+!/tables/KQvK.rtbz
+!/tables/KRvK.rtbw
+!/tables/KRvK.rtbz
+!/tables/KBNvK.rtbw
+!/tables/KBNvK.rtbz
 /Stockfish/
 /Reckless/

@@ -60,4 +60,98 @@ mod tests {
     fn init_is_callable() {
         super::init();
     }
+
+    /// Child entry point for subprocess tests below: the parent spawns the
+    /// current test binary filtered to this test with WHALE_EXIT_PROBE set.
+    /// Without the env var it is a no-op so normal runs are unaffected.
+    #[test]
+    fn exit_probe_child() {
+        match std::env::var("WHALE_EXIT_PROBE").as_deref() {
+            Ok("datagen_run") => crate::datagen::run("x", 0, "x", 0, 0),
+            Ok("datagen_teacher") => crate::datagen::run_with_teacher("x", 0, "x", 0, 0, None),
+            Ok("train_run") => crate::train::run(None),
+            Ok("train_smoke") => crate::train::run_smoke(None),
+            Ok("cli_run") => crate::uci::cli::run(),
+            _ => {}
+        }
+    }
+
+    #[cfg(test)]
+    fn probe_with_mode(
+        mode: &str,
+        stdin_data: Option<&[u8]>,
+    ) -> (std::process::ExitStatus, String, String) {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--exact")
+            .arg("tests::exit_probe_child")
+            .arg("--nocapture")
+            .env("WHALE_EXIT_PROBE", mode)
+            .stdin(if stdin_data.is_some() {
+                Stdio::piped()
+            } else {
+                Stdio::null()
+            })
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .unwrap();
+        if let Some(data) = stdin_data {
+            child.stdin.as_mut().unwrap().write_all(data).unwrap();
+            drop(child.stdin.take());
+        }
+        let out = child.wait_with_output().unwrap();
+        (
+            out.status,
+            String::from_utf8_lossy(&out.stdout).into_owned(),
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        )
+    }
+
+    // Without the `train` feature these stubs print an error and exit(1).
+    // (With it they would start real long-running work, so don't run there.)
+    #[cfg(not(feature = "train"))]
+    #[test]
+    fn exit_stubs_terminate_with_error() {
+        for mode in ["datagen_run", "datagen_teacher", "train_run", "train_smoke"] {
+            let (status, _, err) = probe_with_mode(mode, None);
+            assert_eq!(status.code(), Some(1), "mode {mode}");
+            assert!(err.contains("train"), "mode {mode}");
+        }
+    }
+
+    #[test]
+    fn cli_run_processes_info_and_exit() {
+        let (status, out, _) = probe_with_mode("cli_run", Some(b"\nbogus\ninfo\nexit\n"));
+        assert!(status.success());
+        assert!(out.contains("Whale v"));
+    }
+
+    #[test]
+    fn cli_run_eof_breaks_loop() {
+        // No `exit` command: closing stdin ends the loop via Ok(0).
+        let (status, out, _) = probe_with_mode("cli_run", Some(b"info\n"));
+        assert!(status.success());
+        assert!(out.contains("Whale v"));
+    }
+
+    #[test]
+    fn cli_run_dispatches_uci_and_quit() {
+        // NOTE: stdout content is not asserted here: `quit` ends the child
+        // via process::exit(0), which drops the block-buffered pipe buffer
+        // (and with it the "uciok" line). Exit code proves the dispatch ran.
+        let (status, _, _) = probe_with_mode("cli_run", Some(b"uci\nquit\n"));
+        assert!(status.success());
+    }
+
+    // Valid datagen args reach the no-train stub, which exits(1).
+    #[cfg(not(feature = "train"))]
+    #[test]
+    fn cli_run_valid_datagen_reaches_stub() {
+        let (status, _, err) = probe_with_mode("cli_run", Some(b"datagen out 1 book 1 1\n"));
+        assert_eq!(status.code(), Some(1));
+        assert!(err.contains("train"));
+    }
 }
