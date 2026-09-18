@@ -66,7 +66,7 @@ impl Drop for StockfishTeacher {
     }
 }
 
-fn wait_for_token(reader: &mut BufReader<ChildStdout>, expected: &str) -> std::io::Result<()> {
+fn wait_for_token(reader: &mut impl BufRead, expected: &str) -> std::io::Result<()> {
     let mut line = String::new();
     loop {
         line.clear();
@@ -104,11 +104,55 @@ fn parse_score(tokens: &[&str]) -> Option<i16> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn parses_centipawn_and_mate_scores() {
         assert_eq!(parse_score(&["info", "score", "cp", "42"]), Some(42));
         assert_eq!(parse_score(&["info", "score", "mate", "3"]), Some(30994));
         assert_eq!(parse_score(&["info", "score", "cp", "-50"]), Some(-50));
+    }
+
+    #[test]
+    fn parse_score_clamps_and_rejects_garbage() {
+        // Centipawn scores clamp to the eval window.
+        assert_eq!(
+            parse_score(&["info", "score", "cp", "99999"]),
+            Some(MAX_CENTIPAWN_EVAL)
+        );
+        assert_eq!(
+            parse_score(&["info", "score", "cp", "-99999"]),
+            Some(-MAX_CENTIPAWN_EVAL)
+        );
+        // Negative mate scores mirror around the window.
+        assert_eq!(
+            parse_score(&["info", "score", "mate", "-2"]),
+            Some(-(MAX_CENTIPAWN_EVAL - 4))
+        );
+        // Unknown score kinds and truncated/unparseable lines yield nothing.
+        assert_eq!(parse_score(&["info", "score", "lowerbound", "10"]), None);
+        assert_eq!(parse_score(&["info", "score"]), None);
+        assert_eq!(parse_score(&["info"]), None);
+        assert_eq!(parse_score(&[]), None);
+        assert_eq!(parse_score(&["info", "score", "cp"]), None);
+        assert_eq!(parse_score(&["info", "score", "cp", "xx"]), None);
+        assert_eq!(parse_score(&["info", "score", "mate"]), None);
+    }
+
+    #[test]
+    fn wait_for_token_finds_token_and_reports_eof() {
+        let mut found = Cursor::new("id name x\nuciok\n");
+        assert!(wait_for_token(&mut found, "uciok").is_ok());
+
+        let mut missing = Cursor::new("id name x\nreadyok\n");
+        assert!(wait_for_token(&mut missing, "uciok").is_err());
+
+        let mut empty = Cursor::new("");
+        assert!(wait_for_token(&mut empty, "uciok").is_err());
+    }
+
+    #[test]
+    fn teacher_rejects_missing_binary() {
+        assert!(StockfishTeacher::new("definitely/not/a-chess-engine").is_err());
     }
 }

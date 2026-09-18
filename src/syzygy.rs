@@ -196,3 +196,130 @@ pub fn root_move(board: &mut BoardState) -> Option<Move> {
     }
     None
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::helpers::STARTING_FEN;
+
+    // All tests below mutate the global table configuration, so they must
+    // not run concurrently with each other.
+    static SYZYGY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn clear_tables() {
+        let _ = set_path("");
+        set_probe_limit(7);
+        set_probe_depth(1);
+        set_50mr_rule(true);
+    }
+
+    #[test]
+    fn probe_guards_roundtrip_with_clamp() {
+        let _serial = SYZYGY_TEST_LOCK.lock().unwrap();
+        set_probe_limit(10);
+        assert_eq!(probe_limit(), 7);
+        set_probe_limit(5);
+        assert_eq!(probe_limit(), 5);
+        set_probe_depth(3);
+        assert_eq!(probe_depth(), 3);
+        set_50mr_rule(false);
+        assert!(!use_50mr());
+        clear_tables();
+        assert_eq!(probe_limit(), 7);
+        assert_eq!(probe_depth(), 1);
+        assert!(use_50mr());
+    }
+
+    #[test]
+    fn no_tables_means_no_probe() {
+        let _serial = SYZYGY_TEST_LOCK.lock().unwrap();
+        clear_tables();
+        assert_eq!(table_count(), 0);
+        let board = BoardState::parse_fen(STARTING_FEN);
+        assert!(probe_bound(&board, 0).is_none());
+        let tiny = BoardState::parse_fen("8/8/8/4k3/8/8/4K3/8 w - - 0 1");
+        assert!(probe_bound(&tiny, 0).is_none());
+        assert!(root_move(&mut tiny.clone()).is_none());
+        let empty = BoardState::new();
+        assert!(probe_bound(&empty, 0).is_none());
+        assert!(root_move(&mut empty.clone()).is_none());
+    }
+
+    #[test]
+    fn bad_path_is_an_error() {
+        let _serial = SYZYGY_TEST_LOCK.lock().unwrap();
+        clear_tables();
+        assert!(set_path("definitely/missing/tables").is_err());
+        assert_eq!(table_count(), 0);
+    }
+
+    #[test]
+    fn real_tables_probe_kqk() {
+        let _serial = SYZYGY_TEST_LOCK.lock().unwrap();
+        if !std::path::Path::new("tables/KQvK.rtbw").exists() {
+            return;
+        }
+        clear_tables();
+        let loaded = set_path("tables").expect("load tables");
+        assert!(loaded > 0);
+        assert_eq!(table_count(), loaded);
+
+        // Bare kings: insufficient material is an exact draw.
+        let tiny = BoardState::parse_fen("8/8/8/4k3/8/8/4K3/8 w - - 0 1");
+        assert_eq!(
+            probe_bound(&tiny, 0),
+            Some((0, TranspositionEntryType::Exact))
+        );
+
+        // Too many pieces: never probed.
+        let start = BoardState::parse_fen(STARTING_FEN);
+        assert!(probe_bound(&start, 0).is_none());
+        assert!(root_move(&mut start.clone()).is_none());
+
+        // KQvK: white mates, unconditional win from White's view.
+        let win = BoardState::parse_fen("8/8/8/8/8/2K5/2Q5/7k w - - 0 1");
+        assert_eq!(
+            probe_bound(&win, 0),
+            Some((TB_WIN, TranspositionEntryType::Beta))
+        );
+        let tb_move = root_move(&mut win.clone()).expect("table win has a move");
+        assert!(win.is_legal(tb_move));
+
+        // Same position one ply later: the bound drops by exactly one.
+        assert_eq!(
+            probe_bound(&win, 1),
+            Some((TB_WIN - 1, TranspositionEntryType::Beta))
+        );
+
+        // Stalemate with Black to move is an exact draw.
+        let stale = BoardState::parse_fen("7k/5Q2/6K1/8/8/8/8/8 b - - 0 1");
+        assert_eq!(
+            probe_bound(&stale, 0),
+            Some((0, TranspositionEntryType::Exact))
+        );
+        assert!(root_move(&mut stale.clone()).is_none());
+
+        // High halfmove clock turns the win into a cursed win: ignored
+        // while the 50-move rule applies, decisive when it does not.
+        let cursed = BoardState::parse_fen("8/8/8/8/8/2K5/2Q5/7k w - - 99 100");
+        assert!(probe_bound(&cursed, 0).is_none());
+        set_50mr_rule(false);
+        assert_eq!(
+            probe_bound(&cursed, 0),
+            Some((TB_WIN, TranspositionEntryType::Beta))
+        );
+        set_50mr_rule(true);
+
+        // ...and the mirrored loss into a blessed loss.
+        let blessed = BoardState::parse_fen("8/8/8/8/8/2k5/2q5/7K w - - 99 100");
+        assert!(probe_bound(&blessed, 0).is_none());
+        set_50mr_rule(false);
+        assert_eq!(
+            probe_bound(&blessed, 0),
+            Some((-TB_WIN, TranspositionEntryType::Alpha))
+        );
+
+        clear_tables();
+        assert_eq!(table_count(), 0);
+    }
+}
