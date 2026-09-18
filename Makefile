@@ -55,5 +55,4 @@ quality:
 	cargo clippy --all-targets -- -D warnings
 	cargo test --lib
 	cargo test --tests --release
-	# TODO: improve coverage, cases
-	cargo llvm-cov --lib --html --fail-under-lines 70
+	cargo llvm-cov --lib --html --fail-under-lines 90
