@@ -103,6 +103,9 @@ impl Default for CorrectionHistory {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::move_type::MoveType;
+    use crate::common::moves::Move;
+    use crate::common::square::Square;
 
     #[test]
     fn initial_correction_is_zero() {
@@ -120,5 +123,38 @@ mod tests {
         assert_ne!(val, 0);
         corr.clear();
         assert_eq!(corr.get_correction(&board, None), 0);
+    }
+
+    #[test]
+    fn previous_move_continuation_path() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let mv = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+        board.make_move(mv);
+        let mut corr = CorrectionHistory::new();
+        assert_eq!(corr.get_correction(&board, Some(mv)), 0);
+        corr.update(&board, Some(mv), 300);
+        assert_ne!(corr.get_correction(&board, Some(mv)), 0);
+        // Target without a piece exercises the None-piece guard (A4 is empty).
+        let empty = Move::new(Square::A3, Square::A4, MoveType::Quiet);
+        assert_eq!(
+            corr.get_correction(&board, Some(empty)),
+            corr.get_correction(&board, None)
+        );
+        corr.update(&board, Some(empty), 300);
+        let _ = CorrectionHistory::default();
+    }
+
+    #[test]
+    fn bonus_clamps_and_stays_bounded() {
+        let board = BoardState::default();
+        let mut corr = CorrectionHistory::new();
+        corr.update(&board, None, 5_000);
+        corr.update(&board, None, -5_000);
+        let v = corr.get_correction(&board, None);
+        assert!(v.abs() <= CORRECTION_LIMIT);
+        for _ in 0..200 {
+            corr.update(&board, None, 1_024);
+        }
+        assert!(corr.get_correction(&board, None).abs() <= CORRECTION_LIMIT);
     }
 }

@@ -63,3 +63,90 @@ pub fn get_reduction(
     }
     red
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::helpers::STARTING_FEN;
+
+    const BARE_KINGS: &str = "8/8/8/4k3/8/8/4K3/8 w - - 0 1";
+
+    #[test]
+    fn guards_reject_all_preconditions() {
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let _ = can_prune(false, &board, true, 3, false, 500, 0, 0);
+        assert!(!can_prune(true, &board, true, 3, false, 500, 0, 0));
+        assert!(!can_prune(false, &board, false, 3, false, 500, 0, 0));
+        assert!(!can_prune(false, &board, true, 3, true, 500, 0, 0));
+        assert!(!can_prune(false, &board, true, 1, false, 500, 0, 0));
+        assert!(!can_prune(
+            false,
+            &board,
+            true,
+            3,
+            false,
+            500,
+            MAX_CENTIPAWN_EVAL,
+            0
+        ));
+        assert!(!can_prune(false, &board, true, 3, false, 500, 0, -151));
+        let bare = BoardState::parse_fen(BARE_KINGS);
+        assert!(!can_prune(false, &bare, true, 3, false, 500, 0, 0));
+    }
+
+    #[test]
+    fn static_eval_below_beta_with_momentum_margin() {
+        let board = BoardState::parse_fen(STARTING_FEN);
+        assert!(!can_prune(false, &board, true, 4, false, 100, 100, -70));
+        assert!(!can_prune(false, &board, true, 4, false, 139, 100, -70));
+        assert!(!can_prune(false, &board, true, 4, false, 99, 100, 0));
+    }
+
+    #[test]
+    fn matches_alp_verdict_on_sweep() {
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let mut saw_false = false;
+        for depth in [2u8, 4, 6, 8] {
+            for margin in [-600i32, -100, 0, 200, 600, 1500] {
+                let beta = 100i16;
+                let static_eval = beta.saturating_add(margin.clamp(-30000, 30000) as i16);
+                let got = can_prune(false, &board, true, depth, false, static_eval, beta, 0);
+                let expect = AlpModel::should_prune(
+                    &AlpFeatures {
+                        eval_margin: (static_eval as i32 - beta as i32).clamp(-32768, 32767),
+                        depth: depth as i32,
+                        move_index: 0,
+                        is_null_move: true,
+                        is_capture: false,
+                        is_pv: false,
+                        in_check: false,
+                        history_score: 0,
+                        momentum: 0,
+                    },
+                    30,
+                ) && static_eval >= beta;
+                assert_eq!(got, expect);
+                if !got {
+                    saw_false = true;
+                }
+            }
+        }
+        assert!(saw_false);
+    }
+
+    #[test]
+    fn reduction_adds_momentum_bonus_only_when_deep() {
+        let params = crate::search::search_state::SearchParameters::default();
+        let base = params.nmp_base + 6 / params.nmp_depth_div;
+        assert_eq!(get_reduction(6, &params, 121), base + 1);
+        assert_eq!(get_reduction(6, &params, 120), base);
+        assert_eq!(
+            get_reduction(5, &params, 200),
+            params.nmp_base + 5 / params.nmp_depth_div
+        );
+        assert_eq!(
+            get_reduction(2, &params, 0),
+            params.nmp_base + 2 / params.nmp_depth_div
+        );
+    }
+}

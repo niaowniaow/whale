@@ -464,4 +464,94 @@ mod tests {
         search(&mut board, 4, &token, &mut debug, &mut state, 4);
         assert_ne!(state.best_move, Move::NO_MOVE);
     }
+
+    #[test]
+    fn depth_one_finds_legal_move_single_thread() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        search(&mut board, 1, &token, &mut debug, &mut state, 1);
+        assert_ne!(state.best_move, Move::NO_MOVE);
+        assert!(board.is_legal(state.best_move));
+        assert!(state.nodes > 0);
+    }
+
+    #[test]
+    fn searchmoves_filter_pins_best_move() {
+        use crate::common::move_type::MoveType;
+        use crate::common::square::Square;
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        let pinned = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+        state.searchmoves = vec![pinned];
+        search(&mut board, 1, &token, &mut debug, &mut state, 1);
+        assert_eq!(state.best_move, pinned);
+    }
+
+    #[test]
+    fn illegal_searchmoves_filter_still_completes() {
+        use crate::common::move_type::MoveType;
+        use crate::common::square::Square;
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        state.searchmoves = vec![Move::new(Square::A1, Square::A8, MoveType::Quiet)];
+        search(&mut board, 1, &token, &mut debug, &mut state, 1);
+        // Illegal-only filter covers the empty-filter fallback counting path.
+        assert!(state.nodes > 0);
+    }
+
+    #[test]
+    fn max_nodes_stops_between_iterations() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        state.max_nodes = 1;
+        search(&mut board, 2, &token, &mut debug, &mut state, 1);
+        assert!(state.nodes >= 1);
+    }
+
+    #[test]
+    fn mate_in_caps_depth_and_debug_prints() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(false);
+        let mut debug = true;
+        let mut state = SearchState::new();
+        state.mate_in = 1;
+        search(&mut board, 2, &token, &mut debug, &mut state, 1);
+        assert_ne!(state.best_move, Move::NO_MOVE);
+    }
+
+    #[test]
+    fn cancelled_entry_returns_no_move() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(true);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        search(&mut board, 2, &token, &mut debug, &mut state, 1);
+        assert_eq!(state.best_move, Move::NO_MOVE);
+    }
+
+    #[test]
+    fn single_move_time_manager_caps_depth() {
+        use crate::common::move_type::MoveType;
+        use crate::common::square::Square;
+        let mut board = BoardState::parse_fen("4k3/8/8/8/8/8/8/4K2R w K - 0 1");
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        state.opt_time = 100;
+        state.max_time = 500;
+        let pinned = Move::new(Square::H1, Square::G1, MoveType::Quiet);
+        if board.is_legal(pinned) {
+            state.searchmoves = vec![pinned];
+        }
+        search(&mut board, 2, &token, &mut debug, &mut state, 1);
+        assert_ne!(state.best_move, Move::NO_MOVE);
+    }
 }

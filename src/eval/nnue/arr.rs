@@ -193,4 +193,68 @@ mod tests {
         let report = audit_adversarial_robustness(&mut board, ArrConfig::default());
         assert!(report.robustness_score >= 0.0 && report.robustness_score <= 1.0);
     }
+
+    #[test]
+    fn test_arr_config_defaults() {
+        let cfg = ArrConfig::default();
+        assert!(cfg.enabled);
+        assert!((cfg.lambda_arr - 0.08).abs() < 1e-6);
+        assert_eq!(cfg.max_allowed_divergence, 30);
+    }
+
+    #[test]
+    fn test_compute_arr_loss_lambda_zero_ignores_coherence() {
+        // With lambda 0 the coherence term drops out, but aux loss still matters.
+        let same = compute_arr_loss(0.0, 0.0, 0.5, 0.0);
+        let divergent = compute_arr_loss(0.0, 2.0, 0.5, 0.0);
+        assert!(divergent > same);
+        // Identical heads give identical loss regardless of lambda.
+        assert_eq!(
+            compute_arr_loss(0.5, 0.5, 0.5, 0.0),
+            compute_arr_loss(0.5, 0.5, 0.5, 1.0)
+        );
+    }
+
+    #[test]
+    fn test_create_mirrored_board_swaps_castling_and_ep() {
+        let board = BoardState::parse_fen("r3k2r/ppp1pppp/8/3pP3/8/8/PPPP1PPP/R3K2R w Kq d6 0 2");
+        let mirrored = create_mirrored_board(&board);
+        let fen = mirrored.to_fen();
+        // K <-> Q swap on each side: "Kq" mirrors to "Qk".
+        assert!(fen.contains(" Qk "), "castling not mirrored: {fen}");
+        // d6 mirrors to e6.
+        assert!(fen.contains(" e6 "), "en-passant not mirrored: {fen}");
+        assert_eq!(board.side_to_move, mirrored.side_to_move);
+    }
+
+    #[test]
+    fn test_create_mirrored_board_dash_fields_preserved() {
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let mirrored = create_mirrored_board(&board);
+        let fen = mirrored.to_fen();
+        assert!(fen.contains(" KQkq "));
+        assert!(fen.contains(" - "));
+        // Halfmove/fullmove suffix preserved.
+        assert!(fen.ends_with("0 1"));
+    }
+
+    #[test]
+    fn test_audit_report_fields_are_consistent() {
+        let mut board = BoardState::parse_fen(
+            "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 6 5",
+        );
+        let config = ArrConfig::default();
+        let report = audit_adversarial_robustness(&mut board, config);
+        let expected_div = (report.original_eval as i32 - report.mirror_eval as i32).abs() as i16;
+        assert_eq!(report.symmetry_divergence, expected_div);
+        assert_eq!(
+            report.is_robust,
+            report.symmetry_divergence <= config.max_allowed_divergence
+        );
+        assert!((0.0..=1.0).contains(&report.robustness_score));
+        // Zero divergence yields a perfect score.
+        if report.symmetry_divergence == 0 {
+            assert_eq!(report.robustness_score, 1.0);
+        }
+    }
 }

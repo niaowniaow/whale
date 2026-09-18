@@ -331,4 +331,58 @@ mod tests {
     fn checkpoint_passes_gtp_stability_check() {
         assert!(verify_checkpoint_gtp_stability());
     }
+
+    #[test]
+    fn pipeline_plan_strings_are_actionable() {
+        let plan = teacher_student_training_plan();
+        assert!(plan.contains("Snapshot"));
+        assert!(plan.contains("Validate"));
+        let ingestion = dataset_ingestion_plan();
+        assert_eq!(ingestion.len(), 7);
+        assert!(ingestion.contains(&"save a validation split separate from training split"));
+        let order = recommended_dataset_order();
+        assert_eq!(order.first(), Some(&"Lichess Elite Database"));
+        assert_eq!(order.len(), DatasetSource::candidate_datasets().len());
+    }
+
+    #[test]
+    fn dataset_ready_boundary_is_one_million() {
+        assert!(!dataset_is_ready_for_training(0));
+        assert!(!dataset_is_ready_for_training(999_999));
+        assert!(dataset_is_ready_for_training(1_000_000));
+        assert!(dataset_is_ready_for_training(1_000_001));
+    }
+
+    #[test]
+    fn initialize_pipeline_creates_dirs_in_tempdir() {
+        let base = std::env::temp_dir().join(format!("whale-pipeline-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        let cfg = NnuePipelineConfig {
+            baseline_model_path: base.join("nnue.bin"),
+            baseline_meta_path: base.join("nnue.bin.meta"),
+            teacher_model_path: None,
+            teacher_engine_path: None,
+            teacher_depth: 12,
+            dataset_dir: base.join("data"),
+            checkpoints_dir: base.join("checkpoints"),
+            validation_dir: base.join("validation"),
+            architecture_version: crate::eval::nnue::v16::VERSION,
+        };
+        initialize_pipeline(&cfg);
+        assert!(cfg.dataset_dir.is_dir());
+        assert!(cfg.checkpoints_dir.is_dir());
+        assert!(cfg.validation_dir.is_dir());
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn candidate_datasets_have_distinct_priorities_and_urls() {
+        let sources = DatasetSource::candidate_datasets();
+        let mut seen = std::collections::HashSet::new();
+        for s in sources {
+            assert!(!s.url.is_empty());
+            assert!(!s.name.is_empty());
+            assert!(seen.insert(s.priority), "duplicate priority");
+        }
+    }
 }

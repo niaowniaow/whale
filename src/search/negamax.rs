@@ -1465,3 +1465,161 @@ pub struct SearchContext<'a> {
     pub cancellation_token: &'a AtomicBool,
     pub search_state: &'a mut SearchState,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::helpers::STARTING_FEN;
+    use crate::common::square::Square;
+
+    const MATE_IN_ONE: &str = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1";
+    const STALEMATE: &str = "7k/5K2/6Q1/8/8/8/8/8 b - - 0 1";
+    const IN_CHECK_ESCAPE: &str = "4k3/8/8/8/8/8/4Q3/4K3 b - - 0 1";
+    const FEW_PIECE_ENDGAME: &str = "4k3/8/8/8/8/8/8/4K2R w K - 0 1";
+
+    fn run_search(fen: &str, depth: u8, alpha: i16, beta: i16) -> (i16, u64) {
+        let mut board = BoardState::parse_fen(fen);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        let score = search(
+            &mut board,
+            depth,
+            alpha,
+            beta,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        (score, state.nodes)
+    }
+
+    #[test]
+    fn depth_one_startpos_returns_legal_score() {
+        let (score, nodes) = run_search(STARTING_FEN, 1, i16::MIN + 1, i16::MAX - 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn depth_two_endgame_stays_fast_and_bounded() {
+        let (score, nodes) = run_search(FEW_PIECE_ENDGAME, 2, i16::MIN + 1, i16::MAX - 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn mate_in_one_scores_near_mate() {
+        let (score, _) = run_search(MATE_IN_ONE, 1, i16::MIN + 1, i16::MAX - 1);
+        assert!(score > constants::MAX_CENTIPAWN_EVAL - 100);
+    }
+
+    #[test]
+    fn stalemate_returns_zero() {
+        let (score, _) = run_search(STALEMATE, 1, i16::MIN + 1, i16::MAX - 1);
+        assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn cancelled_root_returns_zero() {
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let cancel = AtomicBool::new(true);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        let score = search(
+            &mut board,
+            1,
+            i16::MIN + 1,
+            i16::MAX - 1,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn fifty_move_draw_returns_zero() {
+        let (score, _) = run_search(
+            "7k/8/5K2/8/8/8/8/8 b - - 100 150",
+            1,
+            i16::MIN + 1,
+            i16::MAX - 1,
+        );
+        assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn depth_zero_delegates_to_quiescence() {
+        let (score, nodes) = run_search(FEW_PIECE_ENDGAME, 0, i16::MIN + 1, i16::MAX - 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn tt_exact_cutoff_hits_on_non_pv() {
+        let mut board = BoardState::parse_fen(FEW_PIECE_ENDGAME);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(250, 0, board.half_move_clock),
+            5,
+            Move::NO_MOVE,
+            TranspositionEntryType::Exact,
+        );
+        let score = search(&mut board, 1, 0, 1, &cancel, &[], &mut pv_table, &mut state);
+        assert_eq!(score, 250);
+        assert_eq!(state.nodes, 1);
+    }
+
+    #[test]
+    fn rfp_prunes_with_depressed_beta() {
+        let (score, nodes) = run_search(STARTING_FEN, 1, -1000, -999);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert_eq!(nodes, 1);
+    }
+
+    #[test]
+    fn in_check_evasion_searches_moves() {
+        let board = BoardState::parse_fen(IN_CHECK_ESCAPE);
+        assert!(board.is_in_check(board.side_to_move));
+        let (score, nodes) = run_search(IN_CHECK_ESCAPE, 1, i16::MIN + 1, i16::MAX - 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn root_searchmoves_filter_restricts_to_one() {
+        use crate::common::move_type::MoveType;
+        let mut board = BoardState::parse_fen(FEW_PIECE_ENDGAME);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        let only = Move::new(Square::H1, Square::G1, MoveType::Quiet);
+        assert!(board.is_legal(only));
+        state.searchmoves = vec![only];
+        let score = search(
+            &mut board,
+            1,
+            i16::MIN + 1,
+            i16::MAX - 1,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert_eq!(pv_table.line().first(), Some(&only));
+    }
+
+    #[test]
+    fn narrow_window_covers_beta_cutoff_histories() {
+        let (score, nodes) = run_search("7k/8/8/8/3p4/8/3R4/K7 w - - 0 1", 2, 0, 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+}

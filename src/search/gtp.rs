@@ -355,4 +355,82 @@ mod tests {
         let loss = GtpModel::gnn_loss(&pred, &target);
         assert!((loss - 0.025f32).abs() < 1e-4);
     }
+
+    #[test]
+    fn empty_graph_uses_default_importance() {
+        let graph = GtpTreeGraph::new();
+        assert_eq!(GtpModel::message_passing(&graph), [50u8; MAX_GTP_NODES]);
+        assert!(!GtpModel::should_prune_subtree(&graph, 0, 100));
+        let _ = GtpTreeGraph::default();
+    }
+
+    #[test]
+    fn reset_clears_nodes_and_edges() {
+        let mut graph = GtpTreeGraph::new();
+        let root = graph.add_node(GtpNode {
+            depth: 4,
+            ..GtpNode::default()
+        });
+        let _ = graph.add_node(GtpNode {
+            parent_idx: Some(root),
+            ..GtpNode::default()
+        });
+        assert_eq!(graph.count, 2);
+        graph.reset();
+        assert_eq!(graph.count, 0);
+        assert_eq!(graph.adjacency, [0; MAX_GTP_NODES]);
+        assert_eq!(GtpModel::message_passing(&graph), [50u8; MAX_GTP_NODES]);
+    }
+
+    #[test]
+    fn prune_decision_follows_threshold() {
+        let mut graph = GtpTreeGraph::new();
+        let idx = graph.add_node(GtpNode {
+            depth: 3,
+            eval_margin: -400,
+            history_score: -2000,
+            ..GtpNode::default()
+        });
+        let score = GtpModel::message_passing(&graph)[idx];
+        assert!(GtpModel::should_prune_subtree(
+            &graph,
+            idx,
+            score.saturating_add(1)
+        ));
+        assert!(!GtpModel::should_prune_subtree(&graph, idx, score));
+        assert!(!GtpModel::should_prune_subtree(&graph, idx, 0));
+    }
+
+    #[test]
+    fn gnn_loss_rejects_bad_shapes() {
+        assert_eq!(GtpModel::gnn_loss(&[], &[]), 0.0);
+        assert_eq!(GtpModel::gnn_loss(&[1.0], &[1.0, 2.0]), 0.0);
+        assert_eq!(GtpModel::gnn_loss(&[1.0, 2.0], &[1.0]), 0.0);
+        assert_eq!(GtpModel::gnn_loss(&[2.0], &[2.0]), 0.0);
+    }
+
+    #[test]
+    fn message_passing_covers_flags_and_clamps() {
+        let mut graph = GtpTreeGraph::new();
+        let a = graph.add_node(GtpNode {
+            depth: 200,
+            eval_margin: 30_000,
+            is_capture: true,
+            in_check: true,
+            history_score: 100_000,
+            parent_idx: None,
+        });
+        let b = graph.add_node(GtpNode {
+            depth: 0,
+            eval_margin: -30_000,
+            is_capture: false,
+            in_check: false,
+            history_score: -100_000,
+            parent_idx: Some(a),
+        });
+        let importance = GtpModel::message_passing(&graph);
+        assert!(importance[a] <= 100);
+        assert!(importance[b] <= 100);
+        assert_eq!(importance[MAX_GTP_NODES - 1], 50);
+    }
 }

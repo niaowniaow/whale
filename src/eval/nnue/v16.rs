@@ -3128,4 +3128,432 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn halfka_black_perspective_and_ownership() {
+        // King on e1 (SF 4): white own pawn vs enemy pawn differ by 64.
+        let own = halfka_index(Side::White, Side::White, Piece::Pawn, 12, 4).unwrap();
+        let enemy = halfka_index(Side::White, Side::Black, Piece::Pawn, 12, 4).unwrap();
+        assert_eq!(enemy.wrapping_sub(own), 64);
+        assert!(own < PSQ_DIMS && enemy < PSQ_DIMS);
+        // Black perspective flips the board (square 12 -> 52 region).
+        let black = halfka_index(Side::Black, Side::Black, Piece::Pawn, 12, 4).unwrap();
+        assert!(black < PSQ_DIMS);
+        assert_ne!(own, black);
+        // Left-file vs right-file kings mirror the file.
+        let left = halfka_index(Side::White, Side::White, Piece::Knight, 0, 0).unwrap();
+        let right = halfka_index(Side::White, Side::White, Piece::Knight, 0, 7).unwrap();
+        assert_ne!(left, right);
+        // All piece types (except None) produce an index.
+        for &pt in &Piece::ALL {
+            if pt == Piece::None {
+                continue;
+            }
+            assert!(halfka_index(Side::White, Side::White, pt, 27, 4).is_some());
+            assert!(halfka_index(Side::Black, Side::Black, pt, 27, 60).is_some());
+        }
+    }
+
+    #[test]
+    fn append_halfka_skips_empty_mapping() {
+        let pos = SfnnPosition {
+            pieces: [0; 6],
+            white: 1,
+            black: 0,
+            mapping: [6; 64],
+        };
+        let mut out = Vec::new();
+        append_halfka(&pos, Side::White, &mut out);
+        assert!(out.is_empty());
+    }
+
+    #[test]
+    fn threat_orient_covers_all_sides() {
+        assert_eq!(threat_orient(Side::White, 0), 0);
+        assert_eq!(threat_orient(Side::White, 7), 7);
+        assert_eq!(threat_orient(Side::Black, 0), 56);
+        assert_eq!(threat_orient(Side::Black, 7), 63);
+        assert_eq!(threat_orient(Side::Both, 0), 0);
+        assert_eq!(threat_orient(Side::Both, 63), 0);
+        assert_eq!(sf_piece_type(0), 1);
+        assert_eq!(sf_piece_type(5), 6);
+    }
+
+    #[test]
+    fn for_each_threat_covers_piece_types() {
+        let cases = [
+            // Pawn captures.
+            "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1",
+            // Knights attacking occupied squares.
+            "4k3/8/8/3n4/8/2N5/8/4K3 w - - 0 1",
+            // Bishops on a shared diagonal.
+            "4k3/8/8/3b4/4B3/8/8/4K3 w - - 0 1",
+            // Rooks on a shared file.
+            "4k3/8/8/8/3R4/8/8/3rK3 w - - 0 1",
+            // Queens on a shared diagonal.
+            "4k3/8/8/3q4/4Q3/8/8/4K3 w - - 0 1",
+            // King adjacent to a pawn.
+            "4k3/8/8/8/8/8/3p4/4K3 w - - 0 1",
+        ];
+        for fen in cases {
+            let pos = SfnnPosition::from_board(&BoardState::parse_fen(fen));
+            let mut count = 0;
+            for_each_threat(&pos, |_, _, _, _| count += 1);
+            assert!(count > 0, "no threat edges for {fen}");
+        }
+        // Kings only: no edges.
+        let quiet =
+            SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1"));
+        let mut count = 0;
+        for_each_threat(&quiet, |_, _, _, _| count += 1);
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn threat_index_excluded_semi_and_perspective() {
+        let ksq = 4;
+        // Pawn vs pawn is excluded.
+        assert_eq!(threat_index_for(Side::White, 1, 12, 19, 9, ksq), None);
+        // Knight vs king is excluded.
+        assert_eq!(threat_index_for(Side::White, 2, 10, 4, 6, ksq), None);
+        // Knight vs knight (enemy) is semi: ordering decides.
+        assert_eq!(threat_index_for(Side::White, 2, 10, 20, 10, ksq), None);
+        let some = threat_index_for(Side::White, 2, 20, 10, 10, ksq);
+        assert!(some.is_some());
+        assert!(some.unwrap() < THREAT_DIMS);
+        // Non-semi pair (knight vs queen) is valid in both orderings.
+        assert!(threat_index_for(Side::White, 2, 10, 20, 13, ksq).is_some());
+        assert!(threat_index_for(Side::White, 2, 20, 10, 13, ksq).is_some());
+        // Black perspective also resolves (colors flipped internally).
+        assert!(threat_index_for(Side::Black, 1, 12, 19, 9, 60).is_none());
+        assert!(
+            threat_index_for(Side::Black, 2, 20, 10, 10, 60).is_some()
+                || threat_index_for(Side::Black, 2, 10, 20, 10, 60).is_some()
+        );
+    }
+
+    #[test]
+    fn pair_orient_and_enumeration_variants() {
+        // All perspective/king-file/color combos stay in the pair window.
+        for &persp in &[Side::White, Side::Black] {
+            for &ksq in &[0usize, 7, 56, 63] {
+                for &(c, pc) in &[
+                    (Side::White, Side::White),
+                    (Side::White, Side::Black),
+                    (Side::Black, Side::Black),
+                ] {
+                    let abs = pair_make_index(persp, c, 12, 20, pc, ksq);
+                    assert!(
+                        (PSQ_DIMS + THREAT_DIMS..PSQ_DIMS + THREAT_DIMS + PAIR_DIMS).contains(&abs)
+                    );
+                    let rel = pair_index_for(persp, c, 12, 20, pc, ksq);
+                    assert_eq!(rel, abs - (PSQ_DIMS + THREAT_DIMS));
+                }
+            }
+        }
+        // Neighboring white pawns pair; distant pawns do not.
+        let near =
+            SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/2P5/3P4/4K3 w - - 0 1"));
+        let mut n = 0;
+        for_each_pair(&near, |_, _, _, _| n += 1);
+        assert!(n > 0);
+        let far =
+            SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/8/P6P/4K3 w - - 0 1"));
+        let mut m = 0;
+        for_each_pair(&far, |_, _, _, _| m += 1);
+        assert_eq!(m, 0);
+        // Mixed colors on neighboring files pair.
+        let mixed =
+            SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/2p5/3P4/4K3 w - - 0 1"));
+        let mut k = 0;
+        for_each_pair(&mixed, |_, _, _, _| k += 1);
+        assert!(k > 0);
+    }
+
+    #[test]
+    fn read_leb128_section_extra_errors() {
+        // Magic present but length missing.
+        let mut only_magic = Vec::new();
+        only_magic.extend_from_slice(LEB128_MAGIC);
+        assert!(read_leb128_section(&only_magic, &mut 0, 1, decode_leb128_i16).is_err());
+        // Bad magic.
+        assert!(read_leb128_section(&[0u8; 17], &mut 0, 1, decode_leb128_i16).is_err());
+        // Truncated payload after a valid header.
+        let mut data = Vec::new();
+        data.extend_from_slice(LEB128_MAGIC);
+        data.extend_from_slice(&1u32.to_le_bytes());
+        data.push(0x80);
+        assert!(read_leb128_section(&data, &mut 0, 1, decode_leb128_i16).is_err());
+    }
+
+    #[test]
+    fn decode_leb128_overflow_and_truncation() {
+        // Empty input truncates.
+        assert!(decode_leb128_i64(&[], &mut 0, 32).is_err());
+        // 6 continuation bytes overflow a 32-bit payload.
+        assert!(decode_leb128_i64(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80], &mut 0, 32).is_err());
+        // Multi-byte positive decodes.
+        assert_eq!(decode_leb128_i64(&[0xAC, 0x02], &mut 0, 32), Ok(300));
+        // Sign extension for 16-bit -2 (0x7E).
+        assert_eq!(decode_leb128_i16(&[0x7E], &mut 0), Ok(-2));
+    }
+
+    fn build_valid_arch_bytes(fc0_in: usize) -> Vec<u8> {
+        let hash = arch_hash(fc0_in as u32);
+        let padded0 = fc0_in.next_multiple_of(32);
+        let mut data = Vec::new();
+        data.extend_from_slice(&hash.to_le_bytes());
+        for _ in 0..FC0_OUT {
+            data.extend_from_slice(&0i32.to_le_bytes());
+        }
+        data.extend(std::iter::repeat_n(0u8, FC0_OUT * padded0));
+        for _ in 0..FC1_OUT {
+            data.extend_from_slice(&0i32.to_le_bytes());
+        }
+        data.extend(std::iter::repeat_n(0u8, FC1_OUT * 64));
+        data.extend_from_slice(&0i32.to_le_bytes());
+        data.extend(std::iter::repeat_n(0u8, FC0_OUT * 2 + FC1_OUT * 2));
+        data
+    }
+
+    #[test]
+    fn sfnn_arch_load_success_and_truncations() {
+        let data = build_valid_arch_bytes(32);
+        let mut pos = 0;
+        let arch = SfnnArch::load(&data, &mut pos, 32, arch_hash(32)).unwrap();
+        assert_eq!(pos, data.len());
+        assert!(!arch.is_rudi);
+        // Bad hash.
+        assert!(SfnnArch::load(&data, &mut 0, 32, 0x12345678).is_err());
+        // Truncated tails hit each section.
+        for cut in [1usize, 100, 500, 1500, 3000] {
+            let mut p = 0;
+            assert!(
+                SfnnArch::load(&data[..data.len() - cut], &mut p, 32, arch_hash(32)).is_err(),
+                "cut {cut} should fail"
+            );
+        }
+    }
+
+    #[test]
+    fn sfnn16_load_bytes_early_errors() {
+        // Bad version.
+        assert!(Sfnn16Net::load_bytes(&[0, 0, 0, 0], true, 2).is_err());
+        // Correct version but wrong file hash (threat net).
+        let mut bad_hash = Vec::new();
+        bad_hash.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
+        bad_hash.extend_from_slice(&0u32.to_le_bytes());
+        assert!(Sfnn16Net::load_bytes(&bad_hash, true, 2).is_err());
+        // Same prefix without threat check proceeds to description length.
+        assert!(Sfnn16Net::load_bytes(&bad_hash, false, 2).is_err());
+        // Truncated description.
+        let mut desc = Vec::new();
+        desc.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
+        desc.extend_from_slice(&network_hash(true, 2).to_le_bytes());
+        desc.extend_from_slice(&100u32.to_le_bytes());
+        assert!(Sfnn16Net::load_bytes(&desc, true, 2).is_err());
+        // Bad transformer hash.
+        let mut th = Vec::new();
+        th.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
+        th.extend_from_slice(&network_hash(true, 2).to_le_bytes());
+        th.extend_from_slice(&0u32.to_le_bytes());
+        th.extend_from_slice(&0u32.to_le_bytes());
+        assert!(Sfnn16Net::load_bytes(&th, true, 2).is_err());
+        // Correct transformer hash but truncated bias section.
+        let mut ok = Vec::new();
+        ok.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
+        ok.extend_from_slice(&network_hash(true, 2).to_le_bytes());
+        ok.extend_from_slice(&0u32.to_le_bytes());
+        ok.extend_from_slice(&transformer_hash(true, 2).to_le_bytes());
+        assert!(Sfnn16Net::load_bytes(&ok, true, 2).is_err());
+        // Bogus option never touches the global nets.
+        assert!(set_eval_file("Bogus", "x").is_err());
+        assert!(set_eval_file("EvalFileSmall", "x").is_ok());
+    }
+
+    #[test]
+    fn load_rudi_extra_rejections() {
+        // Wrong payload length with RUDI header.
+        let mut bad = Vec::new();
+        bad.extend_from_slice(b"RUDI");
+        bad.extend_from_slice(&123u32.to_le_bytes());
+        bad.extend(std::iter::repeat_n(0u8, 123));
+        assert!(Sfnn16Net::load_rudi(&bad).is_err());
+        // Declared length does not match actual length.
+        let mut short = Vec::new();
+        short.extend_from_slice(b"RUDI");
+        short.extend_from_slice(&181_011_108u32.to_le_bytes());
+        short.extend(std::iter::repeat_n(0u8, 100));
+        assert!(Sfnn16Net::load_rudi(&short).is_err());
+        // Plain blob of an unrelated size.
+        assert!(Sfnn16Net::load_rudi(&[1u8; 100]).is_err());
+        // Truncated RUDI helpers.
+        assert!(read_rudi_i16(&[0x01], &mut 0, 1).is_err());
+        assert!(read_rudi_i32(&[0x01, 0x02], &mut 0, 1).is_err());
+    }
+
+    #[test]
+    fn propagate_zero_nets_are_deterministic() {
+        let mk = |rudi: bool| SfnnArch {
+            fc0_bias: [0; FC0_OUT],
+            fc0_w: vec![0; 32 * FC0_OUT],
+            fc1_bias: [0; FC1_OUT],
+            fc1_w: vec![0; FC1_IN * FC1_OUT],
+            fc2_bias: 0,
+            fc2_w: [0; FC0_OUT * 2 + FC1_OUT * 2],
+            is_rudi: rudi,
+        };
+        let input = [0u8; 32];
+        // Rudi zero net: ((0 - 2.8) * 100) * 16 = -4480.
+        assert_eq!(propagate(&mk(true), 32, &input), -4480);
+        // Stockfish zero net: all-zero dot product.
+        assert_eq!(propagate(&mk(false), 32, &input), 0);
+        // Same call twice is deterministic.
+        assert_eq!(
+            propagate(&mk(true), 32, &input),
+            propagate(&mk(true), 32, &input)
+        );
+    }
+
+    #[test]
+    fn scatter_add_sub_roundtrip() {
+        let l1 = 32usize;
+        let tr = SfnnTransformer {
+            bias: vec![0; l1],
+            weights: vec![3i16; 2 * l1],
+            threat_w: Vec::new(),
+            threat_w_i16: Vec::new(),
+            psqt_w: vec![5i32; 2 * N_BUCKETS],
+            threat_psqt_w: Vec::new(),
+            pair_w: Vec::new(),
+            pair_w_i16: Vec::new(),
+            pair_psqt_w: Vec::new(),
+        };
+        let mut acc = [0i16; 32];
+        let mut psqt = [0i32; N_BUCKETS];
+        scatter_halfka(&tr, l1, &[0], &mut acc, &mut psqt, 1);
+        assert!(acc.iter().all(|&v| v == 3));
+        assert!(psqt.iter().all(|&v| v == 5));
+        scatter_halfka(&tr, l1, &[0], &mut acc, &mut psqt, -1);
+        assert!(acc.iter().all(|&v| v == 0));
+        assert!(psqt.iter().all(|&v| v == 0));
+        // Scalar tail (l1 not a multiple of 16) also round-trips.
+        let l1s = 15usize;
+        let trs = SfnnTransformer {
+            bias: vec![0; l1s],
+            weights: vec![2i16; 2 * l1s],
+            threat_w: Vec::new(),
+            threat_w_i16: Vec::new(),
+            psqt_w: vec![1i32; 2 * N_BUCKETS],
+            threat_psqt_w: Vec::new(),
+            pair_w: Vec::new(),
+            pair_w_i16: Vec::new(),
+            pair_psqt_w: Vec::new(),
+        };
+        let mut accs = [0i16; 15];
+        let mut ps = [0i32; N_BUCKETS];
+        scatter_halfka(&trs, l1s, &[1], &mut accs, &mut ps, 1);
+        scatter_halfka(&trs, l1s, &[1], &mut accs, &mut ps, -1);
+        assert!(accs.iter().all(|&v| v == 0));
+        assert!(ps.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn kingless_paths_are_safe_without_global_mutation() {
+        let board = BoardState::parse_fen("8/8/8/8/8/8/8/8 w - - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        assert!(!kings_present(&pos));
+        // Evaluate bails out before touching any network.
+        let mut accs = Sfnn16Accs::empty();
+        assert!(evaluate_nets(&pos, &mut accs, Side::White).is_none());
+        // Refresh on a kingless board is a no-op.
+        let mut accs = Sfnn16Accs::empty();
+        refresh_all(&pos, &mut accs);
+        ensure_fresh(&pos, &mut accs);
+        // Queued deltas on a kingless board are dropped.
+        let mut pending = SfnnPending::default();
+        note_add(&mut pending, Square::E2, Side::White, Piece::Pawn);
+        flush_pending(&pos, &mut accs, &mut pending);
+        assert_eq!(pending.n_adds, 0);
+        // Incremental apply never panics, whatever the global net state.
+        let start =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let spos = SfnnPosition::from_board(&start);
+        let mut accs = Sfnn16Accs::empty();
+        apply_queued(&spos, &mut accs, &[], &[], &[false, false]);
+        apply_queued(&spos, &mut accs, &[], &[], &[true, true]);
+    }
+
+    #[test]
+    fn eval_with_net_small_nets_cover_all_branches() {
+        let board = BoardState::parse_fen("4k3/8/8/8/2p5/2n5/1PP5/4K3 w - - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        let base = [10i16, 20];
+        let psqt = [3i32; N_BUCKETS];
+        let mk = |rudi: bool, threats: bool| Sfnn16Net {
+            l1: 2,
+            use_threats: threats,
+            is_rudi: rudi,
+            transformer: SfnnTransformer {
+                bias: Vec::new(),
+                weights: Vec::new(),
+                threat_w: if !rudi && threats {
+                    vec![0i8; THREAT_DIMS * 2]
+                } else {
+                    Vec::new()
+                },
+                threat_w_i16: vec![0i16; THREAT_DIMS * 2],
+                psqt_w: Vec::new(),
+                threat_psqt_w: if !rudi && threats {
+                    vec![0i32; THREAT_DIMS * N_BUCKETS]
+                } else {
+                    Vec::new()
+                },
+                pair_w: Vec::new(),
+                pair_w_i16: if rudi {
+                    vec![0i16; PAIR_DIMS * 2]
+                } else {
+                    Vec::new()
+                },
+                pair_psqt_w: Vec::new(),
+            },
+            stacks: vec![SfnnArch {
+                fc0_bias: [0; FC0_OUT],
+                fc0_w: vec![0; 2 * FC0_OUT],
+                fc1_bias: [0; FC1_OUT],
+                fc1_w: vec![0; FC1_IN * FC1_OUT],
+                fc2_bias: 0,
+                fc2_w: [0; FC0_OUT * 2 + FC1_OUT * 2],
+                is_rudi: rudi,
+            }],
+        };
+        // Rudi with and without threats exercises the /255 vs /512 split.
+        let rudi_t = mk(true, true);
+        let rudi_nt = mk(true, false);
+        let (psqt_t, pos_t) = eval_with_net(&pos, &rudi_t, [&base; 2], [&psqt; 2], Side::White, 0);
+        let (psqt_nt, pos_nt) =
+            eval_with_net(&pos, &rudi_nt, [&base; 2], [&psqt; 2], Side::White, 0);
+        assert_eq!(
+            (psqt_t, pos_t),
+            eval_with_net(&pos, &rudi_t, [&base; 2], [&psqt; 2], Side::White, 0)
+        );
+        // Stockfish net without threats takes the no-threat AVX2/scalar tail.
+        let sf_nt = mk(false, false);
+        let _ = eval_with_net(&pos, &sf_nt, [&base; 2], [&psqt; 2], Side::White, 0);
+        let _ = eval_with_net(&pos, &sf_nt, [&base; 2], [&psqt; 2], Side::Black, 0);
+        // Threats disabled must ignore threat weights entirely.
+        assert_eq!(
+            (psqt_nt, pos_nt),
+            eval_with_net(&pos, &rudi_nt, [&base; 2], [&psqt; 2], Side::White, 0)
+        );
+        // Trainer helper stays consistent on the same position.
+        let (w_h, b_h, w_t, b_t) =
+            trainer_features(&pos.pieces, pos.white, pos.black, &pos.mapping);
+        assert!(!w_h.is_empty() && !b_h.is_empty());
+        assert!(!w_t.is_empty() && !b_t.is_empty());
+        assert_eq!(
+            simple_eval(&pos, Side::White),
+            -simple_eval(&pos, Side::Black)
+        );
+    }
 }

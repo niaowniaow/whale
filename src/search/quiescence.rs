@@ -421,4 +421,133 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn cancelled_search_returns_zero_immediately() {
+        let mut board = BoardState::parse_fen(QUIET_ONLY);
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(true);
+        assert_eq!(
+            search(
+                &mut board,
+                -MAX_CENTIPAWN_EVAL,
+                MAX_CENTIPAWN_EVAL,
+                0,
+                &cancel,
+                &mut state
+            ),
+            0
+        );
+        let mut draw = BoardState::parse_fen("7k/8/5K2/8/8/8/8/8 b - - 100 150");
+        let live = AtomicBool::new(false);
+        assert_eq!(
+            search(
+                &mut draw,
+                -MAX_CENTIPAWN_EVAL,
+                MAX_CENTIPAWN_EVAL,
+                4,
+                &live,
+                &mut state
+            ),
+            0
+        );
+    }
+
+    #[test]
+    fn non_pv_tt_bounds_cut() {
+        let mut board = BoardState::parse_fen(QUIET_ONLY);
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        state.tt.clear();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(500, 4, board.half_move_clock),
+            0,
+            Move::NO_MOVE,
+            TranspositionEntryType::Beta,
+        );
+        assert_eq!(search(&mut board, 0, 1, 4, &cancel, &mut state), 500);
+        state.tt.clear();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(-500, 4, board.half_move_clock),
+            0,
+            Move::NO_MOVE,
+            TranspositionEntryType::Alpha,
+        );
+        assert_eq!(search(&mut board, 0, 1, 4, &cancel, &mut state), -500);
+        state.tt.clear();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(500, 4, board.half_move_clock),
+            0,
+            Move::NO_MOVE,
+            TranspositionEntryType::Beta,
+        );
+        let eval = evaluate_with_optimism(&mut board, 0);
+        assert_eq!(
+            search(
+                &mut board,
+                -MAX_CENTIPAWN_EVAL,
+                MAX_CENTIPAWN_EVAL,
+                4,
+                &cancel,
+                &mut state
+            ),
+            eval
+        );
+    }
+
+    #[test]
+    fn capture_search_covers_see_and_futility() {
+        let mut board = BoardState::parse_fen("7k/8/8/8/3p4/8/3R4/K7 w - - 0 1");
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        let score = search(
+            &mut board,
+            -MAX_CENTIPAWN_EVAL,
+            MAX_CENTIPAWN_EVAL,
+            2,
+            &cancel,
+            &mut state,
+        );
+        assert!(score.abs() < MAX_CENTIPAWN_EVAL);
+        let tight = search(&mut board, 900, 901, 2, &cancel, &mut state);
+        assert!(tight.abs() < MAX_CENTIPAWN_EVAL);
+    }
+
+    #[test]
+    fn quiet_promotions_are_rescued() {
+        let mut board = BoardState::parse_fen("7k/5P2/5K2/8/8/8/8/8 w - - 0 1");
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        let eval = evaluate_with_optimism(&mut board, 0);
+        let score = search(
+            &mut board,
+            -MAX_CENTIPAWN_EVAL,
+            MAX_CENTIPAWN_EVAL,
+            2,
+            &cancel,
+            &mut state,
+        );
+        assert!(score >= eval);
+    }
+
+    #[test]
+    fn check_evasion_searches_all_moves() {
+        let mut board = BoardState::parse_fen("4k3/8/8/8/8/8/4Q3/4K3 b - - 0 1");
+        assert!(board.is_in_check(board.side_to_move));
+        assert!(has_legal_move(&board));
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        let score = search(
+            &mut board,
+            -MAX_CENTIPAWN_EVAL,
+            MAX_CENTIPAWN_EVAL,
+            2,
+            &cancel,
+            &mut state,
+        );
+        assert!(score.abs() < MAX_CENTIPAWN_EVAL);
+    }
 }

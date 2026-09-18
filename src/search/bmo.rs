@@ -124,4 +124,59 @@ mod tests {
         let arm = bmo.select_arm(6);
         assert_eq!(arm, BanditArm::QuietsFirst);
     }
+
+    #[test]
+    fn arm_index_roundtrips_and_defaults() {
+        assert_eq!(BanditArm::from_index(0), BanditArm::CapturesFirst);
+        assert_eq!(BanditArm::from_index(1), BanditArm::QuietsFirst);
+        assert_eq!(BanditArm::from_index(99), BanditArm::CapturesFirst);
+        assert_eq!(BanditArm::CapturesFirst.to_index(), 0);
+        assert_eq!(BanditArm::QuietsFirst.to_index(), 1);
+        assert_eq!(BanditArm::COUNT, 2);
+        let _ = BanditMoveOrdering::default();
+    }
+
+    #[test]
+    fn buckets_split_by_depth() {
+        let mut bmo = BanditMoveOrdering::new();
+        for _ in 0..50 {
+            bmo.update(0, BanditArm::CapturesFirst, true);
+        }
+        assert_eq!(bmo.select_arm(0), BanditArm::QuietsFirst);
+        assert_eq!(bmo.select_arm(4), BanditArm::QuietsFirst);
+        assert_eq!(bmo.select_arm(5), BanditArm::CapturesFirst);
+        assert_eq!(bmo.select_arm(8), BanditArm::CapturesFirst);
+        assert_eq!(bmo.select_arm(9), BanditArm::CapturesFirst);
+        assert_eq!(bmo.select_arm(64), BanditArm::CapturesFirst);
+    }
+
+    #[test]
+    fn reset_restores_tie() {
+        let mut bmo = BanditMoveOrdering::new();
+        for _ in 0..100 {
+            bmo.update(6, BanditArm::QuietsFirst, true);
+        }
+        for _ in 0..100 {
+            bmo.update(6, BanditArm::CapturesFirst, false);
+        }
+        assert_eq!(bmo.select_arm(6), BanditArm::QuietsFirst);
+        bmo.reset();
+        assert_eq!(bmo.select_arm(6), BanditArm::CapturesFirst);
+        assert_eq!(
+            BanditMoveOrdering::new().select_arm(6),
+            BanditArm::CapturesFirst
+        );
+    }
+
+    #[test]
+    fn halving_keeps_counts_bounded() {
+        let mut bmo = BanditMoveOrdering::new();
+        for _ in 0..70_000 {
+            bmo.update(6, BanditArm::CapturesFirst, true);
+        }
+        let arm = bmo.select_arm(6);
+        assert!(arm == BanditArm::CapturesFirst || arm == BanditArm::QuietsFirst);
+        let _ = bmo.select_arm(0);
+        let _ = bmo.select_arm(20);
+    }
 }

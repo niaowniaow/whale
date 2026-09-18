@@ -275,4 +275,85 @@ mod tests {
         let ext = compute_extension(&board, m, 1, true, 0, None);
         assert_eq!(ext, 0);
     }
+
+    #[test]
+    fn extension_is_zero_past_max_ply() {
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let m = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+        let ply = (MAX_PLY.saturating_sub(4)) as u8;
+        assert_eq!(compute_extension(&board, m, 8, true, ply, None), 0);
+    }
+
+    #[test]
+    fn extract_covers_check_capture_and_pawn_push() {
+        // Pawn-advance follows the raw target-rank rule (white target rank >= 6).
+        let board = BoardState::parse_fen("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1");
+        let back = Move::new(Square::E3, Square::E2, MoveType::Quiet);
+        let f = extract_threat_features(&board, back, 6, false, None);
+        assert!(f.is_pawn_advance);
+        assert!(!f.is_capture);
+
+        let recapture_board = BoardState::parse_fen("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1");
+        let prev = Move::new(Square::D5, Square::E4, MoveType::Capture);
+        let cur = Move::new(Square::D5, Square::E4, MoveType::Capture);
+        let g = extract_threat_features(&recapture_board, cur, 6, false, Some(prev));
+        assert!(g.is_recapture);
+        let other = Move::new(Square::E4, Square::D5, MoveType::Capture);
+        let h = extract_threat_features(&recapture_board, other, 6, false, Some(prev));
+        assert!(!h.is_recapture);
+
+        let check_board = BoardState::parse_fen("4k3/8/8/8/8/8/4Q3/4K3 b - - 0 1");
+        assert!(check_board.is_in_check(check_board.side_to_move));
+        let any = Move::new(Square::E8, Square::D8, MoveType::Quiet);
+        let c = extract_threat_features(&check_board, any, 6, true, None);
+        assert!(c.is_check);
+        assert!(c.num_checkers >= 1);
+    }
+
+    #[test]
+    fn forward_clamps_and_stays_in_range() {
+        let features = ThreatFeatures {
+            num_pins: 99,
+            num_threatened_pieces: 99,
+            is_check: true,
+            num_checkers: 9,
+            is_capture: true,
+            material_imbalance: 1_000,
+            king_danger: 99,
+            depth_remaining: 1_000,
+            is_recapture: true,
+            is_pawn_advance: true,
+        };
+        let out = TceModel::forward(&features);
+        assert_eq!(out.len(), 3);
+        let cat = TceModel::predict_extension(&features);
+        assert!(cat <= 2);
+    }
+
+    #[test]
+    fn double_extension_needs_depth_and_threat() {
+        let hot = ThreatFeatures {
+            num_pins: 3,
+            num_threatened_pieces: 3,
+            is_check: true,
+            num_checkers: 2,
+            is_capture: true,
+            material_imbalance: 0,
+            king_danger: 3,
+            depth_remaining: 8,
+            is_recapture: true,
+            is_pawn_advance: true,
+        };
+        let cat = TceModel::predict_extension(&hot);
+        assert!(cat >= 1);
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let m = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+        for depth in [0u8, 1] {
+            assert_eq!(compute_extension(&board, m, depth, true, 0, None), 0);
+        }
+        let board2 = BoardState::parse_fen("4k3/8/8/8/8/8/4Q3/4K3 b - - 0 1");
+        let mv = Move::new(Square::E8, Square::D8, MoveType::Quiet);
+        let ext = compute_extension(&board2, mv, 6, true, 0, None);
+        assert!((0..=2).contains(&ext));
+    }
 }

@@ -454,4 +454,89 @@ mod tests {
 
         assert_eq!(3, occupancy_mapping.0.count_ones());
     }
+
+    #[test]
+    fn magic_index_is_deterministic_and_bounded() {
+        let occ = Bitboard(0x1234_5678_9ABC_DEF0);
+        let magic = BISHOP_MAGICS[Square::E5 as usize];
+        let bits = get_bishop_mask(Square::E5).0.count_ones();
+        let first = get_magic_index(occ, magic, bits);
+        assert_eq!(first, get_magic_index(occ, magic, bits));
+        assert!(first < (1usize << bits));
+        assert!(get_magic_index(Bitboard(0), magic, bits) < (1usize << bits));
+    }
+
+    #[test]
+    fn masks_for_edge_squares_exclude_rims() {
+        let bishop_h1 = get_bishop_mask(Square::H1);
+        assert_eq!(6, bishop_h1.0.count_ones());
+        assert_eq!(1, bishop_h1.get_bit(Square::B7 as usize));
+        assert_eq!(0, bishop_h1.get_bit(Square::A8 as usize));
+
+        let rook_h8 = get_rook_mask(Square::H8);
+        assert_eq!(12, rook_h8.0.count_ones());
+        assert_eq!(1, rook_h8.get_bit(Square::H2 as usize));
+        assert_eq!(1, rook_h8.get_bit(Square::B8 as usize));
+        assert_eq!(0, rook_h8.get_bit(Square::A8 as usize));
+        assert_eq!(0, rook_h8.get_bit(Square::H1 as usize));
+    }
+
+    #[test]
+    fn occupancy_mapping_extremes_cover_empty_and_full_mask() {
+        let mask = get_bishop_mask(Square::E5);
+        let bits = mask.0.count_ones() as i32;
+        assert!(get_occupancy_mapping(0, bits, mask).is_empty());
+        let full_index = (1usize << bits) - 1;
+        assert_eq!(get_occupancy_mapping(full_index, bits, mask), mask);
+    }
+
+    #[test]
+    fn stored_bishop_magic_is_collision_free_on_a1() {
+        use crate::bitboard::attacks::get_bishop_attacks;
+
+        let sq = Square::A1;
+        let mask = get_bishop_mask(sq);
+        let bits = mask.0.count_ones();
+        let magic = BISHOP_MAGICS[sq as usize];
+        let max_index = 1usize << bits;
+        let mut seen: Vec<Option<Bitboard>> = vec![None; max_index];
+        for index in 0..max_index {
+            let occ = get_occupancy_mapping(index, bits as i32, mask);
+            let attacks = get_bishop_attacks(sq, occ);
+            let magic_index = get_magic_index(occ, magic, bits);
+            assert!(magic_index < max_index);
+            match seen[magic_index] {
+                None => seen[magic_index] = Some(attacks),
+                Some(prev) => assert_eq!(
+                    prev, attacks,
+                    "bishop magic collision on A1 at occupancy {index}"
+                ),
+            }
+        }
+    }
+
+    #[test]
+    fn stored_rook_magic_is_collision_free_on_a1() {
+        use crate::bitboard::attacks::get_rook_attacks;
+
+        let sq = Square::A1;
+        let mask = get_rook_mask(sq);
+        let bits = mask.0.count_ones();
+        let magic = ROOK_MAGICS[sq as usize];
+        let max_index = 1usize << bits;
+        let mut seen: Vec<Option<Bitboard>> = vec![None; max_index];
+        for index in 0..max_index {
+            let occ = get_occupancy_mapping(index, bits as i32, mask);
+            let attacks = get_rook_attacks(sq, occ);
+            let magic_index = get_magic_index(occ, magic, bits);
+            assert!(magic_index < max_index);
+            match seen[magic_index] {
+                None => seen[magic_index] = Some(attacks),
+                Some(prev) => assert_eq!(
+                    prev, attacks,
+                    "rook magic collision on A1 at occupancy {index}"
+                ),
+            }
+        }
+    }
 }

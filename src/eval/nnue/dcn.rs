@@ -195,4 +195,58 @@ mod tests {
         let diff = (eval20 as i32 - eval19 as i32).abs();
         assert!(diff <= 60);
     }
+
+    #[test]
+    fn test_dcn_config_defaults() {
+        let cfg = DcnConfig::default();
+        assert!(cfg.enabled);
+        assert_eq!(cfg.tactical_threshold, 5);
+        assert_eq!(cfg.strategic_threshold, 15);
+    }
+
+    #[test]
+    fn test_film_params_clamp_beyond_max_depth() {
+        let (g63, b63) = DcnModel::compute_film_params(63);
+        for d in [64u8, 100, 200, 255] {
+            assert_eq!(DcnModel::compute_film_params(d), (g63, b63));
+        }
+    }
+
+    #[test]
+    fn test_dcn_tactical_and_strategic_branches() {
+        let config = DcnConfig::default();
+        let start = BoardState::parse_fen(STARTING_FEN);
+        // Tactical (depth 0) and strategic (depth 30) both stay in range.
+        let tac = DcnModel::condition_evaluation(100, 0, &start, config);
+        let strat = DcnModel::condition_evaluation(100, 30, &start, config);
+        assert!(tac.abs() <= 29000);
+        assert!(strat.abs() <= 29000);
+        // Blended middle depth interpolates without explosion.
+        let mid = DcnModel::condition_evaluation(100, 10, &start, config);
+        assert!((mid as i32 - tac as i32).abs() <= 500);
+    }
+
+    #[test]
+    fn test_dcn_strategic_bishop_pair_bonus() {
+        let config = DcnConfig::default();
+        // White keeps the pair, Black is missing one bishop.
+        let fen = "rnbqk1nr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
+        let board = BoardState::parse_fen(fen);
+        let with_bonus = DcnModel::condition_evaluation(0, 30, &board, config);
+        let start = BoardState::parse_fen(STARTING_FEN);
+        let without_bonus = DcnModel::condition_evaluation(0, 30, &start, config);
+        assert_ne!(with_bonus, without_bonus);
+    }
+
+    #[test]
+    fn test_dcn_output_clamps_to_mate_range() {
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let config = DcnConfig::default();
+        for depth in [0u8, 10, 30, 64] {
+            let hi = DcnModel::condition_evaluation(32000, depth, &board, config);
+            let lo = DcnModel::condition_evaluation(-32000, depth, &board, config);
+            assert!(hi <= 29000);
+            assert!(lo >= -29000);
+        }
+    }
 }

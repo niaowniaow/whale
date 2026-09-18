@@ -432,4 +432,88 @@ mod tests {
         let score = evaluate_with_depth(&mut board, 0, 1);
         assert!(score.abs() <= 29000);
     }
+
+    #[test]
+    fn test_evaluate_internal_black_to_move_swaps_sides() {
+        let mut network = Network::new_boxed();
+        network.output_bias = 0;
+        network.output_weights[..ACC_SIZE].fill(1);
+        network.output_weights[ACC_SIZE..2 * ACC_SIZE].fill(10);
+
+        let mut board = BoardState::new();
+        let idx = board.history.index;
+        board.history.accumulators[idx].white.state.fill(30);
+        board.history.accumulators[idx].black.state.fill(5);
+
+        board.side_to_move = Side::White;
+        let white_stm = evaluate_internal(&board, &network);
+        board.side_to_move = Side::Black;
+        let black_stm = evaluate_internal(&board, &network);
+        // Swapped weights must change the score.
+        assert_ne!(white_stm, black_stm);
+    }
+
+    #[test]
+    fn test_evaluate_fast_optimism_shifts_score() {
+        use crate::common::helpers::STARTING_FEN;
+        use crate::common::piece::Piece;
+        use crate::common::square::Square;
+
+        clear_eval_cache();
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        board.add_piece(Square::E4, Side::White, Piece::Queen, true);
+        board.flush_pending_updates(board.history.index);
+        board.ensure_accumulators_fresh();
+        let base = evaluate_fast(&mut board, 0);
+        let optimistic = evaluate_fast(&mut board, 1000);
+        assert_ne!(base, optimistic);
+        assert!(optimistic > base);
+    }
+
+    #[test]
+    fn test_evaluate_with_optimism_keys_cache_separately() {
+        use crate::common::helpers::STARTING_FEN;
+
+        clear_eval_cache();
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let hash = board.board_hash;
+        let halfmove = board.half_move_clock;
+        let a = evaluate_with_optimism(&mut board, 0);
+        // Cached under (hash, 0, halfmove).
+        assert_eq!(probe_eval_cache(hash, 0, halfmove), Some(a));
+        assert_eq!(probe_eval_cache(hash, 7, halfmove), None);
+        let b = evaluate_with_optimism(&mut board, 7);
+        assert_eq!(probe_eval_cache(hash, 7, halfmove), Some(b));
+        // Halfmove clock is part of the key.
+        board.half_move_clock = halfmove.wrapping_add(1);
+        assert_eq!(
+            probe_eval_cache(hash, 0, board.half_move_clock),
+            if halfmove.wrapping_add(1) == halfmove {
+                Some(a)
+            } else {
+                None
+            }
+        );
+    }
+
+    #[test]
+    fn test_evaluate_stays_within_mate_range() {
+        use crate::common::helpers::STARTING_FEN;
+        use crate::common::piece::Piece;
+        use crate::common::square::Square;
+
+        clear_eval_cache();
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        for sq in [Square::E4, Square::D5] {
+            board.add_piece(sq, Side::White, Piece::Queen, true);
+            board.flush_pending_updates(board.history.index);
+        }
+        for optimism in [0, 500, -500] {
+            let s = evaluate_with_optimism(&mut board, optimism);
+            assert!(s.abs() <= 29000);
+        }
+        board.half_move_clock = 100;
+        let damped = evaluate(&mut board);
+        assert!(damped.abs() <= 29000);
+    }
 }

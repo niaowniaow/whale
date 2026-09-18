@@ -482,4 +482,177 @@ mod tests {
             "AdvancedMove FEN should have exactly 1 en passant"
         );
     }
+
+    #[test]
+    fn captures_and_quiets_partition_all_moves() {
+        for fen in [STARTING_FEN, KIWI_PETE_FEN, ADVANCED_MOVE_FEN] {
+            let board = BoardState::parse_fen(fen);
+            let mut all = MoveList::new();
+            board.generate_moves(&mut all);
+            let mut captures = MoveList::new();
+            board.generate_captures(&mut captures);
+            let mut quiets = MoveList::new();
+            board.generate_quiets(&mut quiets);
+            assert_eq!(
+                captures.len() + quiets.len(),
+                all.len(),
+                "staged generation must partition {fen}"
+            );
+            assert!(
+                captures
+                    .iter()
+                    .all(|m| m.mv.is_capture() || m.mv.move_type == MoveType::QueenPromotion)
+            );
+            assert!(quiets.iter().all(|m| !m.mv.is_capture()));
+        }
+        let start = BoardState::parse_fen(STARTING_FEN);
+        let mut captures = MoveList::new();
+        start.generate_captures(&mut captures);
+        assert!(captures.is_empty());
+        let mut quiets = MoveList::new();
+        start.generate_quiets(&mut quiets);
+        assert_eq!(quiets.len(), 20);
+    }
+
+    #[test]
+    fn blocked_pawn_pushes_generate_no_moves() {
+        // White pawn on E2 is stopped by the black pawn on E3.
+        let board = BoardState::parse_fen("4k3/8/8/8/8/4p3/4P3/4K3 w - - 0 1");
+        let mut moves = MoveList::new();
+        board.generate_moves(&mut moves);
+        assert!(
+            moves.iter().all(|m| m.mv.source != Square::E2),
+            "blocked E2 pawn must not move"
+        );
+        // Black pawn on E2 is stopped by the white king on E1.
+        let black = BoardState::parse_fen("4k3/8/8/8/8/8/4p3/4K3 b - - 0 1");
+        let mut black_moves = MoveList::new();
+        black.generate_moves(&mut black_moves);
+        assert!(
+            black_moves.iter().all(|m| m.mv.source != Square::E2),
+            "blocked black E2 pawn must not move"
+        );
+    }
+
+    #[test]
+    fn kingless_board_generates_pawn_moves_but_no_castles() {
+        let board = BoardState::parse_fen("8/8/8/8/8/8/PP6/8 w - - 0 1");
+        let mut moves = MoveList::new();
+        board.generate_moves(&mut moves);
+        assert!(!moves.is_empty());
+        assert!(
+            moves.iter().all(|m| !m.mv.is_castle()),
+            "no king means no castling"
+        );
+    }
+
+    #[test]
+    fn short_castle_blocked_by_attack_but_long_available() {
+        // Black bishop on C4 attacks F1 through the empty D3/E2 squares.
+        let board = BoardState::parse_fen("r3k2r/pppppppp/8/8/2b5/8/PPPP1PPP/R3K2R w KQkq - 0 1");
+        let mut moves = MoveList::new();
+        board.generate_moves(&mut moves);
+        let castles: Vec<Move> = moves
+            .iter()
+            .filter(|m| m.mv.is_castle())
+            .map(|m| m.mv)
+            .collect();
+        assert!(
+            castles.iter().all(|m| m.target != Square::G1),
+            "short castle through attacked F1 must be absent"
+        );
+        assert!(
+            castles.iter().any(|m| m.target == Square::C1),
+            "long castle must still be generated"
+        );
+    }
+
+    #[test]
+    fn en_passant_and_double_push_staging() {
+        let board = BoardState::parse_fen(ADVANCED_MOVE_FEN);
+        let mut captures = MoveList::new();
+        board.generate_captures(&mut captures);
+        assert_eq!(
+            captures
+                .iter()
+                .filter(|m| m.mv.move_type == MoveType::EnPassant)
+                .count(),
+            1
+        );
+        let mut quiets = MoveList::new();
+        board.generate_quiets(&mut quiets);
+        assert_eq!(
+            quiets
+                .iter()
+                .filter(|m| m.mv.move_type == MoveType::EnPassant)
+                .count(),
+            0
+        );
+
+        let start = BoardState::parse_fen(STARTING_FEN);
+        let mut start_captures = MoveList::new();
+        start.generate_captures(&mut start_captures);
+        assert_eq!(
+            start_captures
+                .iter()
+                .filter(|m| m.mv.move_type == MoveType::DoublePush)
+                .count(),
+            0
+        );
+        let mut start_quiets = MoveList::new();
+        start.generate_quiets(&mut start_quiets);
+        assert_eq!(
+            start_quiets
+                .iter()
+                .filter(|m| m.mv.move_type == MoveType::DoublePush)
+                .count(),
+            8
+        );
+    }
+
+    #[test]
+    fn slider_capture_quiet_filtering() {
+        let board = BoardState::parse_fen("4k3/8/8/8/8/p7/8/R3K3 w - - 0 1");
+        let mut captures = MoveList::new();
+        board.generate_captures(&mut captures);
+        assert!(
+            captures
+                .iter()
+                .any(|m| m.mv.source == Square::A1 && m.mv.target == Square::A3)
+        );
+        assert!(
+            captures
+                .iter()
+                .all(|m| !(m.mv.source == Square::A1 && m.mv.target == Square::A2))
+        );
+        let mut quiets = MoveList::new();
+        board.generate_quiets(&mut quiets);
+        assert!(
+            quiets
+                .iter()
+                .any(|m| m.mv.source == Square::A1 && m.mv.target == Square::A2)
+        );
+        assert!(
+            quiets
+                .iter()
+                .all(|m| !(m.mv.source == Square::A1 && m.mv.target == Square::A3))
+        );
+    }
+
+    #[test]
+    fn black_pawn_single_and_double_push() {
+        let board = BoardState::parse_fen("4k3/4p3/8/8/8/8/8/4K3 b - - 0 1");
+        let mut quiets = MoveList::new();
+        board.generate_quiets(&mut quiets);
+        assert!(
+            quiets
+                .iter()
+                .any(|m| m.mv.source == Square::E7 && m.mv.target == Square::E6)
+        );
+        assert!(
+            quiets
+                .iter()
+                .any(|m| m.mv.source == Square::E7 && m.mv.target == Square::E5)
+        );
+    }
 }

@@ -575,4 +575,115 @@ mod tests {
             0
         );
     }
+
+    #[test]
+    fn killer_duplicate_is_ignored_and_second_killer_scores() {
+        let mut ordering = MoveOrdering::new();
+        let first = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        let second = Move::new(Square::D2, Square::D4, MoveType::Quiet);
+        ordering.add_killer_move(first, 0);
+        ordering.add_killer_move(first, 0);
+        assert_eq!(ordering.killer_moves[0][0], first);
+        assert_eq!(ordering.killer_moves[1][0], Move::NO_MOVE);
+        ordering.add_killer_move(second, 0);
+        assert_eq!(ordering.killer_moves[0][0], second);
+        assert_eq!(ordering.killer_moves[1][0], first);
+
+        let board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let mut moves = vec![
+            ScoredMove {
+                mv: first,
+                score: 0,
+            },
+            ScoredMove {
+                mv: second,
+                score: 0,
+            },
+        ];
+        ordering.populate_quiet_scores(&mut moves, &board, 0, None);
+        assert_eq!(moves[0].score, 21000);
+        assert_eq!(moves[1].score, 22000);
+        let _ = MoveOrdering::default();
+    }
+
+    #[test]
+    fn history_reset_decay_and_empty_probe() {
+        let mut ordering = MoveOrdering::new();
+        assert!(ordering.is_move_heuristic_empty());
+        let mv = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        ordering.update_history(0, mv, 1000);
+        ordering.update_quiet_history(Side::White, mv, 1000);
+        assert!(!ordering.is_move_heuristic_empty());
+        let before = ordering.history_moves[0][Square::E4 as usize];
+        ordering.decay_history();
+        assert_eq!(ordering.history_moves[0][Square::E4 as usize], before / 2);
+        ordering.reset();
+        assert!(ordering.is_move_heuristic_empty());
+    }
+
+    #[test]
+    fn quiet_score_handles_empty_and_continuation() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let ordering = MoveOrdering::new();
+        let empty = Move::new(Square::E3, Square::E4, MoveType::Quiet);
+        assert_eq!(ordering.get_quiet_history_score(&board, empty, None), 0);
+        let prev_empty = Move::new(Square::A3, Square::A4, MoveType::Quiet);
+        let mv = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        assert_eq!(
+            ordering.get_quiet_history_score(&board, mv, Some(prev_empty)),
+            0
+        );
+
+        // Play 1.e4 so the previous target holds a white pawn, then the
+        // registered counter-move scores 20000 for Black to move.
+        let e4 = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+        board.make_move(e4);
+        let mut ordering2 = MoveOrdering::new();
+        let reply = Move::new(Square::D7, Square::D5, MoveType::DoublePush);
+        ordering2.add_counter_move(Side::White, Piece::Pawn, Square::E4, reply);
+        let mut scored = vec![ScoredMove {
+            mv: reply,
+            score: 0,
+        }];
+        ordering2.populate_quiet_scores(&mut scored, &board, 0, Some(e4));
+        assert_eq!(scored[0].score, 20000);
+    }
+
+    #[test]
+    fn capture_history_guards_and_en_passant() {
+        let mut ordering = MoveOrdering::new();
+        ordering.update_capture_history(999, Square::D5, Piece::Queen, 1000);
+        ordering.update_capture_history(0, Square::D5, Piece::None, 1000);
+        assert!(ordering.is_move_heuristic_empty());
+        ordering.update_continuation_history(
+            Piece::None,
+            Square::E5,
+            Move::new(Square::E2, Square::E4, MoveType::Quiet),
+            1000,
+        );
+        assert!(ordering.is_move_heuristic_empty());
+        ordering.add_counter_move(
+            Side::White,
+            Piece::Pawn,
+            Square::E4,
+            Move::new(Square::E2, Square::E4, MoveType::Quiet),
+        );
+        assert!(!ordering.is_move_heuristic_empty());
+
+        let board =
+            BoardState::parse_fen("rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 3");
+        let mut moves = vec![ScoredMove {
+            mv: Move::new(Square::E5, Square::D6, MoveType::EnPassant),
+            score: 0,
+        }];
+        populate_capture_scores(&mut moves, &board, &ordering);
+        assert!(moves[0].score > 0);
+        let start = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let mut quiets = vec![ScoredMove {
+            mv: Move::new(Square::E2, Square::E3, MoveType::Quiet),
+            score: 77,
+        }];
+        populate_capture_scores(&mut quiets, &start, &ordering);
+        assert_eq!(quiets[0].score, 0);
+    }
 }

@@ -210,4 +210,92 @@ mod tests {
         assert_eq!(board_state.side_to_move, original_state_side);
         assert_eq!(board_state.board_hash, original_board_hash);
     }
+
+    #[test]
+    fn board_history_default_values() {
+        let entry = BoardHistory::default();
+        assert_eq!(entry.captured_piece, Piece::None);
+        assert_eq!(entry.en_passant_square, Square::NoSquare);
+        assert_eq!(entry.castling_rights, Castle::NONE);
+        assert_eq!(entry.board_hash, 0);
+        assert_eq!(entry.half_move_clock, 0);
+    }
+
+    #[test]
+    fn dirty_update_default_is_zeroed() {
+        assert_eq!(
+            DirtyUpdate::default(),
+            DirtyUpdate {
+                adds_w: [0; 2],
+                dels_w: [0; 2],
+                adds_b: [0; 2],
+                dels_b: [0; 2],
+                n_adds: 0,
+                n_dels: 0,
+            }
+        );
+    }
+
+    #[test]
+    fn history_default_starts_empty() {
+        let history = History::default();
+        assert!(history.is_empty());
+        assert_eq!(history.index, 0);
+        assert_eq!(history.plies_from_null, 0);
+    }
+
+    #[test]
+    fn has_hash_appeared_twice_edge_ranges() {
+        let history = History::new();
+        assert!(!history.has_hash_appeared_twice(0x123, 0));
+
+        let mut history = History::new();
+        history.save(Piece::None, Square::NoSquare, Castle::NONE, 0xABC, 0);
+        assert!(!history.has_hash_appeared_twice(0xABC, 0));
+        // Empty range: start == len.
+        assert!(!history.has_hash_appeared_twice(0xABC, 1));
+        // Start beyond len is an empty range, not a panic.
+        assert!(!history.has_hash_appeared_twice(0xABC, 99));
+    }
+
+    #[test]
+    fn clear_resets_plies_and_stays_reusable() {
+        let mut history = History::new();
+        history.plies_from_null = 7;
+        history.save(Piece::Pawn, Square::E3, Castle::WHITE_SHORT, 1, 1);
+        history.save(Piece::Knight, Square::E4, Castle::BLACK_SHORT, 2, 2);
+        history.clear();
+        assert!(history.is_empty());
+        assert_eq!(history.index, 0);
+        assert_eq!(history.plies_from_null, 0);
+        assert!(history.computed[0]);
+        history.save(Piece::None, Square::NoSquare, Castle::NONE, 3, 0);
+        assert_eq!(history.index, 1);
+        assert_eq!(history.restore().board_hash, 3);
+    }
+
+    #[test]
+    fn save_restore_roundtrips_plies_from_null() {
+        let mut history = History::new();
+        history.plies_from_null = 3;
+        history.save(Piece::None, Square::NoSquare, Castle::NONE, 10, 0);
+        history.plies_from_null = 9;
+        let restored = history.restore();
+        assert_eq!(restored.board_hash, 10);
+        assert_eq!(history.plies_from_null, 3);
+    }
+
+    #[test]
+    #[should_panic(expected = "History stack overflow")]
+    fn save_panics_on_overflow() {
+        let mut history = History::new();
+        history.index = HISTORY_SIZE;
+        history.save(Piece::None, Square::NoSquare, Castle::NONE, 0, 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "History stack underflow")]
+    fn restore_panics_on_underflow() {
+        History::new().restore();
+    }
 }

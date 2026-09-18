@@ -211,4 +211,98 @@ mod tests {
         assert!(!PsmEngine::should_prune_sibling(&parent, 3, 3, 5));
         assert!(!PsmEngine::should_prune_sibling(&parent, 9, 8, 5));
     }
+
+    #[test]
+    fn hidden_state_reset_and_defaults() {
+        let mut state = PsmHiddenState {
+            hidden: [7; PSM_HIDDEN_DIM],
+            consecutive_fail_lows: 9,
+        };
+        state.reset();
+        assert_eq!(state.hidden, [0; PSM_HIDDEN_DIM]);
+        assert_eq!(state.consecutive_fail_lows, 0);
+        assert_eq!(PsmHiddenState::default().hidden, [0; PSM_HIDDEN_DIM]);
+        let mut stack = PsmStack::new();
+        stack.stack[0].hidden[0] = 5;
+        stack.reset();
+        assert_eq!(stack.stack[0].hidden[0], 0);
+        let _ = PsmStack::default();
+    }
+
+    #[test]
+    fn step_tracks_fail_lows_with_saturation() {
+        let parent = PsmHiddenState {
+            hidden: [0; PSM_HIDDEN_DIM],
+            consecutive_fail_lows: 31,
+        };
+        let base = PsmFeatures {
+            static_eval: 0,
+            depth: 3,
+            alpha: 0,
+            beta: 50,
+            move_history: 0,
+            is_capture: false,
+            sibling_index: 0,
+            failed_low: true,
+        };
+        assert_eq!(PsmEngine::step(&parent, &base).consecutive_fail_lows, 32);
+        let saturated = PsmHiddenState {
+            hidden: [0; PSM_HIDDEN_DIM],
+            consecutive_fail_lows: 32,
+        };
+        assert_eq!(PsmEngine::step(&saturated, &base).consecutive_fail_lows, 32);
+        let ok = PsmFeatures {
+            failed_low: false,
+            ..base
+        };
+        assert_eq!(PsmEngine::step(&parent, &ok).consecutive_fail_lows, 0);
+    }
+
+    #[test]
+    fn prune_second_branch_needs_negative_readout() {
+        let negative = PsmHiddenState {
+            hidden: [-256; PSM_HIDDEN_DIM],
+            consecutive_fail_lows: 2,
+        };
+        assert!(PsmEngine::readout(&negative) < -15);
+        assert!(PsmEngine::should_prune_sibling(&negative, 12, 3, 0));
+        let neutral = PsmHiddenState::new();
+        assert_eq!(PsmEngine::readout(&neutral), 0);
+        assert!(!PsmEngine::should_prune_sibling(&neutral, 12, 3, 2));
+        assert!(!PsmEngine::should_prune_sibling(&negative, 11, 3, 2));
+        let cold = PsmHiddenState {
+            hidden: [-256; PSM_HIDDEN_DIM],
+            consecutive_fail_lows: 0,
+        };
+        assert!(!PsmEngine::should_prune_sibling(&cold, 12, 3, 1));
+    }
+
+    #[test]
+    fn readout_stays_bounded_on_extremes() {
+        let parent = PsmHiddenState::new();
+        let lo = PsmFeatures {
+            static_eval: -30_000,
+            depth: 64,
+            alpha: -30_000,
+            beta: 30_000,
+            move_history: -1_000_000,
+            is_capture: true,
+            sibling_index: 500,
+            failed_low: false,
+        };
+        let hi = PsmFeatures {
+            static_eval: 30_000,
+            depth: 64,
+            alpha: -30_000,
+            beta: 30_000,
+            move_history: 1_000_000,
+            is_capture: true,
+            sibling_index: 500,
+            failed_low: true,
+        };
+        for next in [PsmEngine::step(&parent, &lo), PsmEngine::step(&parent, &hi)] {
+            assert!(PsmEngine::readout(&next).abs() <= 60);
+            assert!(next.hidden.iter().all(|&v| (-256..=256).contains(&v)));
+        }
+    }
 }

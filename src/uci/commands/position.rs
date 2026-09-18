@@ -167,4 +167,73 @@ mod tests {
 
         assert_eq!(expected_state, *uci_client.board.lock().unwrap());
     }
+
+    #[test]
+    fn empty_and_unknown_position_keeps_board() {
+        let mut uci_client = UciClient::new();
+        let original = uci_client.board.lock().unwrap().clone();
+        let ready_before = uci_client.is_ready;
+
+        uci_client.run_position(&[]);
+        assert!(*uci_client.board.lock().unwrap() == original);
+        assert_eq!(uci_client.is_ready, ready_before);
+
+        uci_client.run_position(&["unknown"]);
+        assert!(*uci_client.board.lock().unwrap() == original);
+
+        // Truncated fen form is ignored.
+        uci_client.run_position(&["fen"]);
+        assert!(*uci_client.board.lock().unwrap() == original);
+    }
+
+    #[test]
+    fn fen_with_moves_applies_legal_prefix_only() {
+        let mut uci_client = UciClient::new();
+        uci_client.run_position(&[
+            "fen",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR",
+            "w",
+            "KQkq",
+            "-",
+            "0",
+            "1",
+            "moves",
+            "e2e4",
+            "e7e5",
+        ]);
+        let mut expected = BoardState::default();
+        let w =
+            find_move_from_move_list(&mut expected, Move::parse_long_algebraic("e2e4").unwrap());
+        expected.make_move(w);
+        let b =
+            find_move_from_move_list(&mut expected, Move::parse_long_algebraic("e7e5").unwrap());
+        expected.make_move(b);
+        assert_eq!(expected, *uci_client.board.lock().unwrap());
+        assert!(uci_client.is_ready);
+    }
+
+    #[test]
+    fn illegal_first_move_leaves_startpos_unchanged() {
+        let mut uci_client = UciClient::new();
+        // e2e5 is not a legal pawn move from the start position.
+        uci_client.run_position(&["startpos", "moves", "e2e5", "e7e5"]);
+        assert_eq!(BoardState::default(), *uci_client.board.lock().unwrap());
+
+        // Unparseable tokens stop move application as well.
+        let mut uci_client = UciClient::new();
+        uci_client.run_position(&["startpos", "moves", "xxxx"]);
+        assert_eq!(BoardState::default(), *uci_client.board.lock().unwrap());
+    }
+
+    #[test]
+    fn legal_prefix_survives_trailing_illegal_move() {
+        let mut uci_client = UciClient::new();
+        uci_client.run_position(&["startpos", "moves", "e2e4", "xxxx", "e7e5"]);
+
+        let mut expected = BoardState::default();
+        let w =
+            find_move_from_move_list(&mut expected, Move::parse_long_algebraic("e2e4").unwrap());
+        expected.make_move(w);
+        assert_eq!(expected, *uci_client.board.lock().unwrap());
+    }
 }

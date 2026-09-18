@@ -72,4 +72,58 @@ mod tests {
         let adj_deep = ras.rfp_margin_adjustment(20, 8);
         assert!(adj_root > adj_deep);
     }
+
+    #[test]
+    fn temperature_clamps_past_table() {
+        let ras = RuntimeAnnealer::new();
+        assert!(ras.temperature_q8(63) < ras.temperature_q8(0));
+        assert_eq!(ras.temperature_q8(64), 0);
+        assert_eq!(ras.temperature_q8(100), 0);
+        assert_eq!(
+            RuntimeAnnealer::default().temperature_q8(0),
+            ras.temperature_q8(0)
+        );
+    }
+
+    #[test]
+    fn rfp_margin_requires_depth() {
+        let ras = RuntimeAnnealer::new();
+        assert_eq!(ras.rfp_margin_adjustment(0, 3), 0);
+        assert_eq!(ras.rfp_margin_adjustment(0, 0), 0);
+        let t = ras.temperature_q8(0) as i16;
+        assert_eq!(
+            ras.rfp_margin_adjustment(0, 4),
+            (t as i32 * 36 / 256) as i16
+        );
+        assert_eq!(ras.rfp_margin_adjustment(100, 8), 0);
+    }
+
+    #[test]
+    fn lmr_perturbation_guards() {
+        let ras = RuntimeAnnealer::new();
+        assert_eq!(ras.lmr_perturbation(0, 4, 0), 0);
+        assert_eq!(ras.lmr_perturbation(7, 8, 0), 0);
+        assert!(ras.temperature_q8(20) <= 100);
+        assert_eq!(ras.lmr_perturbation(20, 8, 0), 0);
+    }
+
+    #[test]
+    fn lmr_perturbation_uses_hash_threshold() {
+        let ras = RuntimeAnnealer::new();
+        assert!(ras.temperature_q8(0) > 100);
+        assert_eq!(ras.lmr_perturbation(0, 5, 0), -1);
+        assert_eq!(ras.lmr_perturbation(0, 5, u64::MAX), 0);
+        assert!(ras.temperature_q8(6) > 100);
+        let mut saw_neg = false;
+        let mut saw_zero = false;
+        for top in 0..256u64 {
+            let hash = top << 56;
+            match ras.lmr_perturbation(6, 5, hash) {
+                -1 => saw_neg = true,
+                0 => saw_zero = true,
+                _ => {}
+            }
+        }
+        assert!(saw_neg && saw_zero);
+    }
 }

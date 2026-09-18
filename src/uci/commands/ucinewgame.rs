@@ -120,4 +120,52 @@ mod tests {
 
         assert!(uci_client.is_ready);
     }
+
+    #[test]
+    fn ucinewgame_cancels_search_and_precompute() {
+        use std::sync::atomic::Ordering;
+
+        let mut uci_client = UciClient::new();
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        uci_client.current_search = Some(std::sync::Arc::clone(&cancel));
+        uci_client.precompute_cancel.store(false, Ordering::Relaxed);
+
+        uci_client.run_ucinewgame(&[]);
+
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(uci_client.precompute_cancel.load(Ordering::Relaxed));
+        assert!(uci_client.is_ready);
+    }
+
+    #[test]
+    fn ucinewgame_without_search_still_clears_heuristics() {
+        let mut uci_client = UciClient::new();
+        assert!(uci_client.current_search.is_none());
+        uci_client
+            .search_state
+            .lock()
+            .unwrap()
+            .move_ordering
+            .add_killer_move(Move::new(Square::E2, Square::E3, MoveType::Quiet), 0);
+        assert!(
+            !uci_client
+                .search_state
+                .lock()
+                .unwrap()
+                .move_ordering
+                .is_move_heuristic_empty()
+        );
+
+        uci_client.run_ucinewgame(&[]);
+
+        assert!(
+            uci_client
+                .search_state
+                .lock()
+                .unwrap()
+                .move_ordering
+                .is_move_heuristic_empty()
+        );
+        assert!(uci_client.is_ready);
+    }
 }

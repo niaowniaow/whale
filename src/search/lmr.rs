@@ -339,4 +339,104 @@ mod tests {
         let r_dis = compute_reduction(&dis_query, &table, &divisors);
         assert!(r_dis <= r_normal);
     }
+
+    #[test]
+    fn needs_reduction_gates() {
+        assert!(!needs_reduction(2, 10, false, false));
+        assert!(!needs_reduction(5, 2, false, false));
+        assert!(!needs_reduction(5, 10, true, false));
+        assert!(!needs_reduction(5, 10, false, true));
+        assert!(needs_reduction(3, 3, false, false));
+        assert!(needs_reduction(8, 12, false, false));
+    }
+
+    #[test]
+    fn needs_tactical_reduction_gates() {
+        assert!(!needs_tactical_reduction(3, 10, false, -500));
+        assert!(!needs_tactical_reduction(5, 3, false, -500));
+        assert!(!needs_tactical_reduction(5, 10, true, -500));
+        assert!(!needs_tactical_reduction(5, 10, false, -199));
+        assert!(!needs_tactical_reduction(5, 10, false, -200));
+        assert!(needs_tactical_reduction(4, 4, false, -201));
+    }
+
+    #[test]
+    fn tactical_moves_use_fixed_reduction() {
+        let table = LmrTable::default();
+        let divisors = [3000; 16];
+        let base = LmrQuery {
+            depth: 8,
+            move_count: 10,
+            is_pv_node: false,
+            is_improving: false,
+            gives_check: false,
+            is_tactical: true,
+            has_non_pawn_material: true,
+            history_score: 9000,
+            alpha: 0,
+            static_eval: 0,
+            momentum: 500,
+            found_pv: false,
+            structural_disagreement: 0,
+        };
+        assert_eq!(compute_reduction(&base, &table, &divisors), 1);
+        let shallow = LmrQuery { depth: 1, ..base };
+        assert_eq!(compute_reduction(&shallow, &table, &divisors), 0);
+    }
+
+    #[test]
+    fn alpha_and_material_branches() {
+        let table = LmrTable::default();
+        let divisors = [3000; 16];
+        let base = LmrQuery {
+            depth: 8,
+            move_count: 8,
+            is_pv_node: false,
+            is_improving: false,
+            gives_check: false,
+            is_tactical: false,
+            has_non_pawn_material: true,
+            history_score: 0,
+            alpha: 0,
+            static_eval: -100,
+            momentum: 0,
+            found_pv: true,
+            structural_disagreement: 0,
+        };
+        let hi = compute_reduction(&base, &table, &divisors);
+        let lo_query = LmrQuery {
+            static_eval: 100,
+            ..base
+        };
+        let lo = compute_reduction(&lo_query, &table, &divisors);
+        assert!(hi >= lo);
+        let mate_query = LmrQuery {
+            alpha: 26_000,
+            ..base
+        };
+        let _ = compute_reduction(&mate_query, &table, &divisors);
+        let bare_query = LmrQuery {
+            has_non_pawn_material: false,
+            ..base
+        };
+        assert!(compute_reduction(&bare_query, &table, &divisors) <= hi);
+        let wild = LmrQuery {
+            history_score: 1_000_000,
+            momentum: 500,
+            move_count: 30,
+            found_pv: false,
+            ..base
+        };
+        assert!(compute_reduction(&wild, &table, &divisors) < 8);
+    }
+
+    #[test]
+    fn legacy_get_reduction_matches_bounds() {
+        let params = crate::search::search_state::SearchParameters::default();
+        let pv = get_reduction(6, 10, true, &params);
+        let non_pv = get_reduction(6, 10, false, &params);
+        assert!(pv <= non_pv);
+        assert!(non_pv <= 3);
+        assert_eq!(get_reduction(1, 10, false, &params), 0);
+    }
 }

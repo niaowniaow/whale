@@ -381,4 +381,67 @@ mod tests {
             Move::parse_long_algebraic("e2e4").unwrap(),
         );
     }
+
+    #[test]
+    fn get_u64_parses_unsigned_only() {
+        assert_eq!(get_u64("wtime", &["wtime", "1000"]), Some(1000));
+        assert_eq!(get_u64("wtime", &[]), None);
+        assert_eq!(get_u64("wtime", &["wtime"]), None);
+        assert_eq!(get_u64("wtime", &["wtime", "xx"]), None);
+        // Negative tokens are not valid u64: keep the default.
+        assert_eq!(get_u64("wtime", &["wtime", "-5"]), None);
+        assert_eq!(get_u64("wtime", &["btime", "5"]), None);
+        assert_eq!(get_u64("nodes", &["nodes", "0"]), Some(0));
+    }
+
+    #[test]
+    fn get_parameter_handles_negative_and_duplicates() {
+        assert_eq!(get_parameter("movestogo", &["movestogo", "-1"], 0), -1);
+        assert_eq!(get_parameter("depth", &["depth", "-3"], 8), -3);
+        // First occurrence wins.
+        assert_eq!(get_parameter("depth", &["depth", "3", "depth", "9"], 8), 3);
+    }
+
+    #[test]
+    fn has_flag_handles_empty_and_missing() {
+        assert!(!has_flag("ponder", &[]));
+        assert!(!has_flag("infinite", &["depth", "1"]));
+        assert!(has_flag("infinite", &["infinite"]));
+    }
+
+    #[test]
+    fn output_best_move_promotion_shapes() {
+        use crate::common::moves::Move;
+
+        // Promotion without ponder.
+        output_best_move(Move::parse_long_algebraic("a7a8n").unwrap(), Move::NO_MOVE);
+        // Plain move with promotion ponder.
+        output_best_move(
+            Move::parse_long_algebraic("e2e4").unwrap(),
+            Move::parse_long_algebraic("a7a8r").unwrap(),
+        );
+        // Both sides promote.
+        output_best_move(
+            Move::parse_long_algebraic("e7e8q").unwrap(),
+            Move::parse_long_algebraic("a2a1n").unwrap(),
+        );
+    }
+
+    #[test]
+    fn perft_depth_zero_and_one_are_stable() {
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let original = board.clone();
+        assert_eq!(perft_count(&mut board, 0), 1);
+        assert_eq!(perft_count(&mut board, 1), 20);
+        assert!(board == original);
+    }
+
+    #[test]
+    fn run_perft_small_depths_preserve_position() {
+        let mut client = UciClient::new();
+        let original = client.board.lock().unwrap().clone();
+        client.run_perft(&["0"]);
+        client.run_perft(&["1"]);
+        assert!(*client.board.lock().unwrap() == original);
+    }
 }

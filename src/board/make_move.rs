@@ -844,4 +844,234 @@ mod tests {
         // If the search root is at index 1 (ply = 4), the first occurrence (index 1) is at the root, not after it.
         assert!(!board.is_draw_in_search(4));
     }
+
+    #[test]
+    fn insufficient_material_edge_cases() {
+        // KBvKB on the same square colour is a draw (both dark: A1 and H2).
+        let same = BoardState::parse_fen("4k3/8/8/8/8/8/7b/B3K3 w - - 0 1");
+        assert!(same.is_draw());
+        // Opposite colours (A1 dark, A2 light) can still mate.
+        let opposite = BoardState::parse_fen("4k3/8/8/8/8/8/b7/B3K3 w - - 0 1");
+        assert!(!opposite.is_draw());
+        // KNvKN is a draw.
+        let knights = BoardState::parse_fen("4k3/8/8/8/8/8/7n/4KN2 w - - 0 1");
+        assert!(knights.is_draw());
+        // KBvKN can still mate.
+        let mixed = BoardState::parse_fen("4k3/8/8/8/8/8/7n/B3K3 w - - 0 1");
+        assert!(!mixed.is_draw());
+        // KNNvK can still mate (two minors on one side).
+        let two_knights = BoardState::parse_fen("4k3/8/8/8/8/8/8/4KNN1 w - - 0 1");
+        assert!(!two_knights.is_draw());
+        // Five minor pieces: above the four-piece limit.
+        let five = BoardState::parse_fen("4k3/8/8/8/8/8/7n/4KNN1 w - - 0 1");
+        assert!(!five.is_draw());
+    }
+
+    #[test]
+    fn fifty_move_draw_yields_to_checkmate() {
+        // Scholar's mate: 1.e4 e5 2.Qh5 Nc6 3.Bc4 Nf6 4.Qxf7#.
+        let mut board = BoardState::default();
+        for (from, to, kind) in [
+            (Square::E2, Square::E4, MoveType::DoublePush),
+            (Square::E7, Square::E5, MoveType::DoublePush),
+            (Square::D1, Square::H5, MoveType::Quiet),
+            (Square::B8, Square::C6, MoveType::Quiet),
+            (Square::F1, Square::C4, MoveType::Quiet),
+            (Square::G8, Square::F6, MoveType::Quiet),
+            (Square::H5, Square::F7, MoveType::Capture),
+        ] {
+            board.make_move(Move::new(from, to, kind));
+        }
+        assert!(board.is_in_check(crate::common::side::Side::Black));
+        board.half_move_clock = 100;
+        assert!(!board.is_draw());
+        assert!(!board.is_draw_in_search(0));
+        // A fifty-move stalemate is still a draw.
+        let mut stale = BoardState::parse_fen("7k/5Q2/8/8/8/8/8/6K1 b - - 0 1");
+        stale.half_move_clock = 100;
+        assert!(stale.is_draw());
+    }
+
+    #[test]
+    fn null_move_resets_repetition_window_and_restores() {
+        let mut board = BoardState::default();
+        let nf3 = Move::new(Square::G1, Square::F3, MoveType::Quiet);
+        let nf6 = Move::new(Square::G8, Square::F6, MoveType::Quiet);
+        let ng1 = Move::new(Square::F3, Square::G1, MoveType::Quiet);
+        let ng8 = Move::new(Square::F6, Square::G8, MoveType::Quiet);
+        for _ in 0..2 {
+            board.make_move(nf3);
+            board.make_move(nf6);
+            board.make_move(ng1);
+            board.make_move(ng8);
+        }
+        assert!(board.is_draw());
+        board.make_null_move();
+        assert_eq!(board.en_passant_square, Square::NoSquare);
+        assert!(!board.is_draw());
+        board.undo_null_move();
+        assert!(board.is_draw());
+    }
+
+    #[test]
+    fn double_push_sets_ep_only_with_adjacent_pawn() {
+        let mut board = BoardState::default();
+        board.make_move(Move::new(Square::E2, Square::E4, MoveType::DoublePush));
+        assert_eq!(board.en_passant_square, Square::NoSquare);
+    }
+
+    #[test]
+    fn black_double_push_sets_ep_with_adjacent_pawn() {
+        let mut board =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/4P3/8/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+        board.make_move(Move::new(Square::D7, Square::D5, MoveType::DoublePush));
+        assert_eq!(board.en_passant_square, Square::D6);
+    }
+
+    #[test]
+    fn phantom_ep_cleared_when_rook_would_check() {
+        // After ...e7-e5, dxe6 would uncover the A5 rook on the white king.
+        let mut board = BoardState::parse_fen("7k/4p3/8/r2P3K/8/8/8/8 b - - 0 1");
+        board.make_move(Move::new(Square::E7, Square::E5, MoveType::DoublePush));
+        assert_eq!(board.en_passant_square, Square::NoSquare);
+    }
+
+    #[test]
+    fn phantom_ep_cleared_when_bishop_would_check() {
+        // After ...e7-e5, dxe6 would uncover the B7 bishop on the white king.
+        let mut board = BoardState::parse_fen("4k3/1b2p3/8/3P4/4K3/8/8/8 b - - 0 1");
+        board.make_move(Move::new(Square::E7, Square::E5, MoveType::DoublePush));
+        assert_eq!(board.en_passant_square, Square::NoSquare);
+    }
+
+    #[test]
+    fn phantom_ep_cleared_when_knight_checks_king() {
+        // The D6 knight already checks the king, so no EP capture is legal.
+        let mut board = BoardState::parse_fen("4k3/4p3/3n4/3P4/4K3/8/8/8 b - - 0 1");
+        board.make_move(Move::new(Square::E7, Square::E5, MoveType::DoublePush));
+        assert_eq!(board.en_passant_square, Square::NoSquare);
+    }
+
+    #[test]
+    fn phantom_ep_cleared_when_pawn_checks_king() {
+        // The D5 pawn already checks the king; ...f7-f5 helps nothing.
+        let mut board = BoardState::parse_fen("4k3/5p2/8/3Pp3/4K3/8/8/8 b - - 0 1");
+        board.make_move(Move::new(Square::F7, Square::F5, MoveType::DoublePush));
+        assert_eq!(board.en_passant_square, Square::NoSquare);
+    }
+
+    #[test]
+    fn kingless_double_push_keeps_ep() {
+        let mut board = BoardState::parse_fen("8/4p3/8/3P4/8/8/8/8 b - - 0 1");
+        board.make_move(Move::new(Square::E7, Square::E5, MoveType::DoublePush));
+        assert_eq!(board.en_passant_square, Square::E6);
+    }
+
+    #[test]
+    fn moving_rook_clears_only_its_castling_right() {
+        let mut board = BoardState::parse_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        board.make_move(Move::new(Square::A1, Square::A2, MoveType::Quiet));
+        assert!(!board.castle.contains(Castle::WHITE_LONG));
+        assert!(board.castle.contains(Castle::WHITE_SHORT));
+        assert!(board.castle.contains(Castle::BLACK_SHORT));
+    }
+
+    #[test]
+    fn capturing_rook_clears_opponent_right() {
+        let mut board = BoardState::parse_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        board.make_move(Move::new(Square::A1, Square::A8, MoveType::Capture));
+        assert!(!board.castle.contains(Castle::WHITE_LONG));
+        assert!(!board.castle.contains(Castle::BLACK_LONG));
+        assert!(board.castle.contains(Castle::WHITE_SHORT));
+    }
+
+    #[test]
+    fn king_move_clears_both_rights() {
+        let mut board = BoardState::parse_fen("r3k2r/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
+        board.make_move(Move::new(Square::E1, Square::E2, MoveType::Quiet));
+        assert!(!board.castle.contains(Castle::WHITE_SHORT));
+        assert!(!board.castle.contains(Castle::WHITE_LONG));
+        assert!(board.castle.contains(Castle::BLACK_SHORT));
+    }
+
+    #[test]
+    fn en_passant_capture_removes_pawn_and_unmakes() {
+        let mut board =
+            BoardState::parse_fen("rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1");
+        let hash_before = board.board_hash;
+        let mv = Move::new(Square::E5, Square::D6, MoveType::EnPassant);
+        board.make_move(mv);
+        assert_eq!(
+            board
+                .get_pieces(Side::White, Piece::Pawn)
+                .get_bit(Square::D6 as usize),
+            1
+        );
+        assert_eq!(
+            board
+                .get_pieces(Side::Black, Piece::Pawn)
+                .get_bit(Square::D5 as usize),
+            0
+        );
+        assert_eq!(board.half_move_clock, 0);
+        board.unmake_move(mv);
+        assert_eq!(board.board_hash, hash_before);
+        assert_eq!(
+            board
+                .get_pieces(Side::Black, Piece::Pawn)
+                .get_bit(Square::D5 as usize),
+            1
+        );
+        assert_eq!(board.en_passant_square, Square::D6);
+    }
+
+    #[test]
+    fn promotion_capture_replaces_piece_and_unmakes() {
+        let mut board = BoardState::parse_fen("5r1k/6P1/8/8/8/8/8/4K3 w - - 0 1");
+        let mv = Move::new(Square::G7, Square::F8, MoveType::QueenPromotionCapture);
+        board.make_move(mv);
+        assert_eq!(board.piece_mapping[Square::F8 as usize], Piece::Queen);
+        assert!(board.get_pieces(Side::Black, Piece::Rook).is_empty());
+        board.unmake_move(mv);
+        assert_eq!(board.piece_mapping[Square::G7 as usize], Piece::Pawn);
+        assert_eq!(
+            board
+                .get_pieces(Side::Black, Piece::Rook)
+                .get_bit(Square::F8 as usize),
+            1
+        );
+    }
+
+    #[test]
+    fn capture_on_empty_square_and_odd_castle_type_do_not_panic() {
+        let mut board = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1");
+        let hash_before = board.board_hash;
+        // Capture flag on an empty target: no victim to remove.
+        let phantom = Move::new(Square::E2, Square::E4, MoveType::Capture);
+        board.make_move(phantom);
+        assert_eq!(board.piece_mapping[Square::E4 as usize], Piece::Pawn);
+        board.unmake_move(phantom);
+        assert_eq!(board.board_hash, hash_before);
+        // Castle type with a non-castle target hits the no-op rook branch.
+        let odd = Move::new(Square::E2, Square::E3, MoveType::Castle);
+        board.make_move(odd);
+        board.unmake_move(odd);
+        assert_eq!(board.board_hash, hash_before);
+    }
+
+    #[test]
+    fn is_draw_in_search_early_exits() {
+        // Bare kings: insufficient material at any ply.
+        let bare = BoardState::parse_fen("8/8/8/8/8/8/8/4K2k w - - 0 1");
+        assert!(bare.is_draw_in_search(0));
+        // Fresh position: nothing to repeat yet.
+        let fresh = BoardState::starting_position();
+        assert!(!fresh.is_draw());
+        assert!(!fresh.is_draw_in_search(0));
+        // Fifty quiet moves without mate is a draw.
+        let mut fifty = BoardState::starting_position();
+        fifty.half_move_clock = 100;
+        assert!(fifty.is_draw());
+        assert!(fifty.is_draw_in_search(0));
+    }
 }

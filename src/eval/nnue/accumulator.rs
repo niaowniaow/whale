@@ -332,4 +332,73 @@ mod tests {
 
         assert_eq!(acc_expected.state, acc_actual.state);
     }
+
+    #[test]
+    fn test_accumulator_add_1_sub_1_matches_sequential() {
+        let mut network = Network::new_boxed();
+        network.transformer_biases.fill(7);
+        for i in 0..ACC_SIZE {
+            network.transformer_weights[3 * ACC_SIZE + i] = 9;
+            network.transformer_weights[4 * ACC_SIZE + i] = -4;
+        }
+
+        let mut expected = Accumulator::new();
+        expected.init_with_biases(&network);
+        expected.add_feature(3, &network);
+        expected.remove_feature(4, &network);
+
+        let mut actual = Accumulator::new();
+        actual.init_with_biases(&network);
+        actual.add_1_sub_1(3, 4, &network);
+
+        assert_eq!(expected.state, actual.state);
+    }
+
+    #[test]
+    fn test_accumulator_add_1_sub_2_matches_sequential() {
+        let mut network = Network::new_boxed();
+        network.transformer_biases.fill(-3);
+        for i in 0..ACC_SIZE {
+            network.transformer_weights[ACC_SIZE + i] = 6;
+            network.transformer_weights[2 * ACC_SIZE + i] = 2;
+            network.transformer_weights[3 * ACC_SIZE + i] = 1;
+        }
+
+        let mut expected = Accumulator::new();
+        expected.init_with_biases(&network);
+        expected.add_feature(1, &network);
+        expected.remove_feature(2, &network);
+        expected.remove_feature(3, &network);
+
+        let mut actual = Accumulator::new();
+        actual.init_with_biases(&network);
+        actual.add_1_sub_2(1, 2, 3, &network);
+
+        assert_eq!(expected.state, actual.state);
+    }
+
+    #[test]
+    fn test_accumulator_default_and_copy() {
+        let acc = Accumulator::default();
+        assert_eq!(acc, Accumulator::new());
+        let copied = acc;
+        assert_eq!(copied.state, [0i16; ACC_SIZE]);
+        let accs = Accumulators::default();
+        assert_eq!(accs.white.state, [0i16; ACC_SIZE]);
+        assert_eq!(accs.black.state, [0i16; ACC_SIZE]);
+    }
+
+    #[test]
+    fn test_accumulator_refresh_black_perspective() {
+        let mut network = Network::new_boxed();
+        network.transformer_biases.fill(5);
+        network.transformer_weights.fill(1);
+
+        let mut board = BoardState::default();
+        board.refresh_accumulator(Side::Black, &network);
+
+        let idx = board.history.index;
+        assert_ne!(board.history.accumulators[idx].black.state[0], 5);
+        assert!(board.history.computed[idx]);
+    }
 }

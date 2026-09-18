@@ -291,4 +291,174 @@ mod tests {
     fn serializes_starting_fen_without_loss() {
         assert_eq!(BoardState::starting_position().to_fen(), STARTING_FEN);
     }
+
+    #[test]
+    fn rejects_fen_with_too_few_sections() {
+        let board = BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR");
+        assert!(board.occupancy().is_empty());
+        assert_eq!(board.side_to_move, Side::White);
+        assert_eq!(board.castle, Castle::NONE);
+        assert_eq!(board.en_passant_square, Square::NoSquare);
+    }
+
+    #[test]
+    fn parses_black_side_to_move_and_fallback() {
+        let black =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+        assert_eq!(black.side_to_move, Side::Black);
+        let fallback = BoardState::parse_fen("8/8/8/8/8/8/8/4K2k x - - 0 1");
+        assert_eq!(fallback.side_to_move, Side::Black);
+    }
+
+    #[test]
+    fn parses_castling_rights_variants() {
+        let none = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w - - 0 1");
+        assert_eq!(none.castle, Castle::NONE);
+        assert!(none.to_fen().contains(" - "));
+
+        let all = BoardState::parse_fen(STARTING_FEN);
+        assert!(all.castle.contains(Castle::WHITE_SHORT));
+        assert!(all.castle.contains(Castle::WHITE_LONG));
+        assert!(all.castle.contains(Castle::BLACK_SHORT));
+        assert!(all.castle.contains(Castle::BLACK_LONG));
+
+        let kingside = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w K - - 0 1");
+        assert_eq!(kingside.castle, Castle::WHITE_SHORT);
+        assert!(kingside.to_fen().contains(" K "));
+
+        let junk = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w XYZ - 0 1");
+        assert_eq!(junk.castle, Castle::NONE);
+
+        // to_fen always orders rights as KQkq regardless of input order.
+        let mixed = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w qQkK - 0 1");
+        assert_eq!(mixed.to_fen().split(' ').nth(2).unwrap(), "KQkq");
+    }
+
+    #[test]
+    fn accepts_valid_en_passant_squares() {
+        let white =
+            BoardState::parse_fen("rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1");
+        assert_eq!(white.en_passant_square, Square::D6);
+        let black =
+            BoardState::parse_fen("rnbqkbnr/pppp1ppp/8/8/3pP3/8/PPP2PPP/RNBQKBNR b KQkq e3 0 1");
+        assert_eq!(black.en_passant_square, Square::E3);
+    }
+
+    #[test]
+    fn rejects_invalid_en_passant_squares() {
+        let cases = [
+            // No marker.
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1",
+            // Too short.
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e 0 1",
+            // File out of range.
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq i3 0 1",
+            // Rank out of range.
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e9 0 1",
+            // Wrong rank for the side to move (white needs rank 6, black rank 3).
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e3 0 1",
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq e6 0 1",
+            // No adjacent own pawn.
+            "8/8/8/8/8/8/8/4K2k w - e3 0 1",
+            // Adjacent own pawn but the pushed enemy pawn is missing.
+            "rnbqkbnr/ppp1pppp/8/4P3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1",
+            // The square behind the EP square is occupied.
+            "rnbqkbnr/pppppppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1",
+            // The EP square itself is occupied.
+            "rnbqkbnr/ppp1pppp/3p4/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1",
+        ];
+        for fen in cases {
+            assert_eq!(
+                BoardState::parse_fen(fen).en_passant_square,
+                Square::NoSquare,
+                "EP should be rejected for {fen}"
+            );
+        }
+    }
+
+    #[test]
+    fn parses_clocks_and_move_numbers() {
+        let invalid =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - x y");
+        assert_eq!(invalid.half_move_clock, 0);
+        assert_eq!(invalid.move_count, 0);
+
+        let clocks =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 5 1");
+        assert_eq!(clocks.half_move_clock, 5);
+
+        let white =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 3");
+        assert_eq!(white.move_count, 4);
+        let black =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 3");
+        assert_eq!(black.move_count, 5);
+
+        // Fullmove clamps to a minimum of 1.
+        let zero =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0");
+        assert_eq!(zero.move_count, 0);
+
+        // Four sections only: clocks stay at zero.
+        let short = BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq");
+        assert_eq!(short.half_move_clock, 0);
+        assert_eq!(short.move_count, 0);
+    }
+
+    #[test]
+    fn roundtrips_fen_with_side_and_counters() {
+        for fen in [
+            "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/8/8/8/8/8/8/4K2k w - - 0 1",
+            "8/8/8/8/8/8/8/4K2k b - - 5 10",
+            "rnbqkbnr/ppp1pppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1",
+            "rnbqkbnr/pppp1ppp/8/8/3pP3/8/PPP2PPP/RNBQKBNR b KQkq e3 0 1",
+        ] {
+            assert_eq!(
+                BoardState::parse_fen(fen).to_fen(),
+                fen,
+                "roundtrip failed for {fen}"
+            );
+        }
+    }
+
+    #[test]
+    fn symbol_helpers_cover_all_pieces() {
+        for (symbol, piece) in [
+            ('p', Piece::Pawn),
+            ('n', Piece::Knight),
+            ('b', Piece::Bishop),
+            ('r', Piece::Rook),
+            ('q', Piece::Queen),
+            ('k', Piece::King),
+        ] {
+            assert_eq!(symbol_to_piece(symbol), piece);
+            assert_eq!(symbol_to_piece(symbol.to_ascii_uppercase()), piece);
+        }
+        assert_eq!(symbol_to_piece('x'), Piece::None);
+        assert_eq!(symbol_to_side('P'), Side::White);
+        assert_eq!(symbol_to_side('k'), Side::Black);
+    }
+
+    #[test]
+    fn parse_pieces_ignores_extra_ranks_and_non_piece_symbols() {
+        let board =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR/8 w KQkq - 0 1");
+        assert_eq!(
+            board.to_fen().split(' ').next().unwrap(),
+            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
+        );
+        // '!' is neither a piece nor a digit, so it is skipped.
+        let noisy =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR! w KQkq - 0 1");
+        assert_eq!(
+            noisy.get_pieces(Side::White, Piece::Pawn).0,
+            71776119061217280
+        );
+        // An oversized digit empties the first rank without panicking.
+        let gappy = BoardState::parse_fen("9/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        assert!(gappy.get_pieces(Side::Black, Piece::Rook).is_empty());
+        assert_eq!(gappy.get_pieces(Side::Black, Piece::Pawn).0, 65280);
+    }
 }
