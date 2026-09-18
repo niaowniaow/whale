@@ -1,4 +1,5 @@
 use crate::common::constants;
+use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
 use crate::common::side::Side;
 use crate::uci::{SEARCH_STATE, UciClient, cli, get_parameter, get_u64, output_best_move};
@@ -56,15 +57,41 @@ impl UciClient {
         let infinite = parameters.contains(&"infinite");
         let ponder_option = self.ponder_enabled;
 
-        // `searchmoves` must be the last token group on the line (SF uci.cpp);
-        // unparseable entries are skipped, an empty/wholly-invalid list means all.
+        // `searchmoves` must be the last token group on the line (SF uci.cpp).
+        // Parsed moves resolve against the generated list by squares
+        // (Stockfish UCI::to_move): a bare `e2e4` parses as Quiet but must
+        // match the generated DoublePush, otherwise the root filter would
+        // silently drop every move. Exact-type matches win so `e7e8q` keeps
+        // only the queen promotion. Unparseable/illegal entries are skipped;
+        // an empty/wholly-invalid list means all.
         let searchmoves: Vec<Move> = parameters
             .iter()
             .position(|&t| t == "searchmoves")
             .map(|idx| {
-                parameters[idx + 1..]
+                let wanted: Vec<Move> = parameters[idx + 1..]
                     .iter()
                     .filter_map(|s| Move::parse_long_algebraic(s))
+                    .collect();
+                if wanted.is_empty() {
+                    return Vec::new();
+                }
+                let board = self.board.lock().unwrap();
+                let mut generated = MoveList::new();
+                board.generate_moves(&mut generated);
+                wanted
+                    .into_iter()
+                    .filter_map(|w| {
+                        generated
+                            .iter()
+                            .map(|e| e.mv)
+                            .find(|m| *m == w)
+                            .or_else(|| {
+                                generated
+                                    .iter()
+                                    .map(|e| e.mv)
+                                    .find(|m| m.source == w.source && m.target == w.target)
+                            })
+                    })
                     .collect()
             })
             .unwrap_or_default();
@@ -214,5 +241,85 @@ impl UciClient {
                 );
             }
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    // The go tests below share the global SEARCH_STATE (reset on every
+    // run_go, set on every search completion), so they must not run
+    // concurrently or they reset/observe each other's state.
+    static GO_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn wait_for_best_move(timeout: Duration) -> bool {
+        let start = Instant::now();
+        while start.elapsed() < timeout {
+            if SEARCH_STATE.lock().unwrap().best_move != Move::NO_MOVE {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        false
+    }
+
+    #[test]
+    fn go_reports_busy_while_search_state_locked() {
+        let mut client = UciClient::new();
+        let search_state = std::sync::Arc::clone(&client.search_state);
+        let _guard = search_state.lock().unwrap();
+        client.run_go(&["depth", "1"]);
+        assert!(client.current_search.is_none());
+    }
+
+    #[test]
+    fn go_depth_one_finds_best_move() {
+        let _serial = GO_TEST_LOCK.lock().unwrap();
+        let mut client = UciClient::new();
+        client.run_go(&["depth", "1"]);
+        assert!(client.current_search.is_some());
+        assert!(wait_for_best_move(Duration::from_secs(60)));
+        client.run_stop(&[]);
+    }
+
+    #[test]
+    fn go_searchmoves_resolves_to_generated_moves() {
+        use crate::common::square::Square;
+
+        let _serial = GO_TEST_LOCK.lock().unwrap();
+        let mut client = UciClient::new();
+        // `e2e4` parses as Quiet but must resolve to the generated
+        // DoublePush; `xxxx` is unparseable and `e7e5` is not a white move.
+        client.run_go(&["depth", "1", "searchmoves", "e2e4", "xxxx", "e7e5"]);
+        {
+            let guard = client.search_state.lock().unwrap();
+            assert_eq!(guard.searchmoves.len(), 1);
+            assert_eq!(guard.searchmoves[0].source, Square::E2);
+            assert_eq!(guard.searchmoves[0].target, Square::E4);
+        }
+        assert!(wait_for_best_move(Duration::from_secs(60)));
+        let best = SEARCH_STATE.lock().unwrap().best_move;
+        assert_eq!(best.source, Square::E2);
+        assert_eq!(best.target, Square::E4);
+        client.run_stop(&[]);
+    }
+
+    #[test]
+    fn go_movetime_timer_cancels_search() {
+        let _serial = GO_TEST_LOCK.lock().unwrap();
+        let mut client = UciClient::new();
+        client.run_go(&["movetime", "50"]);
+        let cancel = client.current_search.clone().expect("search token");
+        let start = Instant::now();
+        while !cancel.load(Ordering::Relaxed) {
+            assert!(
+                start.elapsed() < Duration::from_secs(10),
+                "movetime timer did not fire"
+            );
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        client.run_stop(&[]);
     }
 }

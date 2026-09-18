@@ -2804,6 +2804,283 @@ mod tests {
     }
 
     #[test]
+    fn square_helpers_use_sf_numbering() {
+        // Whale E2 = 52 flips to SF E2 = 12 (A1 = 0).
+        assert_eq!(to_sf(52), 12);
+        assert_eq!(to_sf(to_sf(36)), 36);
+        // Kings on a-d files mirror, e-h files do not.
+        assert_eq!(halfka_orient(0), 7);
+        assert_eq!(halfka_orient(4), 0);
+        assert_eq!(sf_piece_code(Side::White, Piece::Pawn), 1);
+        assert_eq!(sf_piece_code(Side::White, Piece::King), 6);
+        assert_eq!(sf_piece_code(Side::Black, Piece::Pawn), 9);
+        assert_eq!(sf_piece_code(Side::Black, Piece::King), 14);
+    }
+
+    #[test]
+    fn material_bucket_boundaries() {
+        assert_eq!(material_bucket(0), 0);
+        assert_eq!(material_bucket(1), 0);
+        assert_eq!(material_bucket(4), 0);
+        assert_eq!(material_bucket(5), 1);
+        assert_eq!(material_bucket(32), 7);
+        assert_eq!(material_bucket(1000), N_BUCKETS - 1);
+    }
+
+    #[test]
+    fn simple_eval_symmetry_and_material() {
+        use crate::common::helpers::STARTING_FEN;
+
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let pos = SfnnPosition::from_board(&board);
+        assert_eq!(pos.piece_count(), 32);
+        assert_eq!(pos.occupied(), pos.white | pos.black);
+        assert_eq!(pos.king_square(Side::White), 4);
+        assert_eq!(simple_eval(&pos, Side::White), 0);
+        assert_eq!(simple_eval(&pos, Side::Black), 0);
+
+        let mut up = BoardState::parse_fen(STARTING_FEN);
+        up.add_piece(Square::E4, Side::White, Piece::Queen, false);
+        let up_pos = SfnnPosition::from_board(&up);
+        assert_eq!(simple_eval(&up_pos, Side::White), QUEEN_VALUE);
+        assert_eq!(simple_eval(&up_pos, Side::Black), -QUEEN_VALUE);
+    }
+
+    #[test]
+    fn hash_utils_are_deterministic() {
+        assert_eq!(combine_hash(&[]), 0);
+        assert_eq!(rotl1(1), 2);
+        assert_eq!(rotl1(u32::MAX), u32::MAX);
+        assert_ne!(affine_hash(32, 0), affine_hash(31, 0));
+        assert_ne!(affine_hash(32, 0), affine_hash(32, 1));
+        assert_ne!(relu_hash(0), relu_hash(1));
+        assert_eq!(arch_hash(1024), arch_hash(1024));
+        assert_ne!(transformer_hash(true, 1024), transformer_hash(false, 1024));
+        assert_eq!(
+            network_hash(true, 1024),
+            transformer_hash(true, 1024) ^ arch_hash(1024)
+        );
+    }
+
+    #[test]
+    fn div_trunc_matches_rust_division() {
+        assert_eq!(div_trunc(7, 2), 3);
+        assert_eq!(div_trunc(-7, 2), -3);
+        assert_eq!(div_trunc(7, -2), -3);
+        assert_eq!(div_trunc(0, 5), 0);
+    }
+
+    #[test]
+    fn read_le_primitives() {
+        let mut pos = 0;
+        assert_eq!(read_u32_le(&[1, 0, 0, 0, 9], &mut pos), Ok(1));
+        assert_eq!(pos, 4);
+        assert_eq!(read_u32_le(&[9], &mut pos), Err("truncated u32"));
+        let mut neg = 0;
+        assert_eq!(read_i32_le(&[0xFF, 0xFF, 0xFF, 0xFF], &mut neg), Ok(-1));
+
+        // LEB128 section: magic + length + two i16 payloads (1, -1).
+        let mut data = Vec::new();
+        data.extend_from_slice(LEB128_MAGIC);
+        data.extend_from_slice(&2u32.to_le_bytes());
+        data.extend_from_slice(&[0x01, 0x7F]);
+        let mut spos = 0;
+        assert_eq!(
+            read_leb128_section(&data, &mut spos, 2, decode_leb128_i16),
+            Ok(vec![1, -1])
+        );
+        assert!(read_leb128_section(&[], &mut 0, 1, decode_leb128_i16).is_err());
+        assert!(read_leb128_section(&[0u8; 17], &mut 0, 1, decode_leb128_i16).is_err());
+    }
+
+    #[test]
+    fn decode_leb128_values_and_errors() {
+        let mut pos = 0;
+        assert_eq!(decode_leb128_i64(&[0x05], &mut pos, 64), Ok(5));
+        let mut pos = 0;
+        assert_eq!(decode_leb128_i64(&[0xAC, 0x02], &mut pos, 64), Ok(300));
+        let mut pos = 0;
+        assert_eq!(decode_leb128_i64(&[0x7F], &mut pos, 64), Ok(-1));
+        let mut pos = 0;
+        assert_eq!(decode_leb128_i32(&[0xFF, 0x7F], &mut pos), Ok(-1));
+        let mut pos = 0;
+        assert!(decode_leb128_i64(&[0x80], &mut pos, 64).is_err());
+        let mut pos = 0;
+        assert!(decode_leb128_i16(&[0x80, 0x80, 0x80, 0x80], &mut pos).is_err());
+    }
+
+    #[test]
+    fn read_rudi_primitives() {
+        let mut off = 0;
+        assert_eq!(read_rudi_i8(&[0x01, 0xFF], &mut off, 2), Ok(vec![1, -1]));
+        assert_eq!(off, 2);
+        assert!(read_rudi_i8(&[0x01], &mut 0, 2).is_err());
+
+        let mut off = 0;
+        assert_eq!(
+            read_rudi_i16(&[0x01, 0x00, 0xFF, 0xFF], &mut off, 2),
+            Ok(vec![1, -1])
+        );
+        assert!(read_rudi_i16(&[0x01], &mut 0, 1).is_err());
+
+        let mut off = 0;
+        assert_eq!(
+            read_rudi_i32(&[0x01, 0, 0, 0, 0xFF, 0xFF, 0xFF, 0xFF], &mut off, 2),
+            Ok(vec![1, -1])
+        );
+        assert!(read_rudi_i32(&[], &mut 0, 1).is_err());
+
+        let mut off = 0;
+        assert_eq!(read_rudi_i8(&[0x01], &mut off, 0), Ok(vec![]));
+    }
+
+    #[test]
+    fn unscramble_table_is_permutation() {
+        let mut inv = unscramble_table(2, 8);
+        inv.sort_unstable();
+        assert_eq!(inv, (0..16).collect::<Vec<_>>());
+        assert_eq!(unscramble_table(1, 4), vec![0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn sfnn_pending_queue_and_overflow() {
+        let ev = (12usize, Side::White, Piece::Pawn);
+        let mut pending = SfnnPending::default();
+        for _ in 0..8 {
+            pending.push_add(ev);
+        }
+        assert_eq!(pending.n_adds, 8);
+        assert!(!pending.overflowed);
+        pending.push_add(ev);
+        assert!(pending.overflowed);
+
+        let mut pending = SfnnPending::default();
+        for _ in 0..8 {
+            pending.push_del(ev);
+        }
+        pending.push_del(ev);
+        assert!(pending.overflowed);
+        pending.clear();
+        assert_eq!(pending.n_adds, 0);
+        assert_eq!(pending.n_dels, 0);
+        assert!(!pending.overflowed);
+
+        let mut pending = SfnnPending::default();
+        note_add(&mut pending, Square::E2, Side::White, Piece::King);
+        assert!(pending.king_moved[Side::White as usize]);
+        assert_eq!(pending.adds[0], Some((12, Side::White, Piece::King)));
+        note_remove(&mut pending, Square::E7, Side::Black, Piece::Pawn);
+        assert!(!pending.king_moved[Side::Black as usize]);
+        assert_eq!(
+            pending.dels[0],
+            Some((to_sf(Square::E7 as usize), Side::Black, Piece::Pawn))
+        );
+    }
+
+    #[test]
+    fn load_paths_reject_garbage() {
+        assert!(Sfnn16Net::load_bytes(&[], true, L1).is_err());
+        assert!(Sfnn16Net::load_bytes(&[0, 0, 0, 0], true, L1).is_err());
+        assert!(Sfnn16Net::load_rudi(&[]).is_err());
+        assert!(Sfnn16Net::load_file("definitely/missing.nnue", true, L1).is_err());
+        assert!(Sfnn16Net::load_file("definitely/missing.nnue", false, L1).is_err());
+        assert!(set_eval_file("Bogus", "x").is_err());
+        assert!(set_eval_file("EvalFileSmall", "x").is_ok());
+    }
+
+    #[test]
+    fn halfka_features_cover_all_pieces() {
+        use crate::common::helpers::STARTING_FEN;
+
+        assert_eq!(
+            halfka_index(Side::White, Side::White, Piece::None, 0, 4),
+            None
+        );
+
+        // King lives on the dedicated 640 plane.
+        let king_idx = halfka_index(Side::White, Side::White, Piece::King, 4, 4).unwrap();
+        assert!(king_idx >= 640);
+
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let pos = SfnnPosition::from_board(&board);
+        for perspective in [Side::White, Side::Black] {
+            let mut out = Vec::new();
+            append_halfka(&pos, perspective, &mut out);
+            assert_eq!(out.len(), 32);
+            let mut again = Vec::new();
+            append_halfka(&pos, perspective, &mut again);
+            assert_eq!(out, again);
+        }
+
+        // No king: no features.
+        assert!({
+            let mut out = Vec::new();
+            append_halfka(
+                &SfnnPosition {
+                    pieces: [0; 6],
+                    white: 0,
+                    black: 0,
+                    mapping: [6; 64],
+                },
+                Side::White,
+                &mut out,
+            );
+            out.is_empty()
+        });
+    }
+
+    #[test]
+    fn threat_and_pair_collectors_agree() {
+        // Kings only: no threats, no pairs, both collectors agree.
+        let quiet =
+            SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1"));
+        let mut counted = 0;
+        for_each_pair(&quiet, |_, _, _, _| counted += 1);
+        assert_eq!(counted, 0);
+
+        let board = BoardState::parse_fen(
+            "r1bqk2r/pppp1ppp/2n2n2/2b1p3/2B1P3/2N2N2/PPPP1PPP/R1BQK2R w KQkq - 6 5",
+        );
+        let pos = SfnnPosition::from_board(&board);
+        for perspective in [Side::White, Side::Black] {
+            let mut listed = Vec::new();
+            append_threats(&pos, perspective, &mut listed);
+            let mut buf = [0usize; MAX_THREAT_ACTIVE];
+            let n = collect_threats(&pos, perspective, &mut buf);
+            assert_eq!(&listed, &buf[..n]);
+            assert!(!listed.is_empty());
+            for &idx in &listed {
+                assert!((PSQ_DIMS..PSQ_DIMS + THREAT_DIMS).contains(&idx));
+            }
+
+            let mut plist = Vec::new();
+            append_pairs(&pos, perspective, &mut plist);
+            let mut pbuf = [0usize; MAX_PAIR_ACTIVE];
+            let pn = collect_pairs(&pos, perspective, &mut pbuf);
+            assert_eq!(&plist, &pbuf[..pn]);
+            for &idx in &plist {
+                assert!(
+                    (PSQ_DIMS + THREAT_DIMS..PSQ_DIMS + THREAT_DIMS + PAIR_DIMS).contains(&idx)
+                );
+            }
+        }
+
+        // pair_index_for is the relative form of pair_make_index.
+        let rel = pair_index_for(Side::White, Side::White, 12, 20, Side::White, 4);
+        let abs = pair_make_index(Side::White, Side::White, 12, 20, Side::White, 4);
+        assert_eq!(rel, abs - (PSQ_DIMS + THREAT_DIMS));
+        assert!(rel < PAIR_DIMS);
+
+        // Trainer packs (halfka_w, halfka_b, threats+pairs_w, threats+pairs_b).
+        let (w_h, b_h, w_t, b_t) =
+            trainer_features(&pos.pieces, pos.white, pos.black, &pos.mapping);
+        assert_eq!(w_h.len(), 32);
+        assert_eq!(b_h.len(), 32);
+        assert!(!w_t.is_empty());
+        assert!(!b_t.is_empty());
+    }
+
+    #[test]
     fn test_finny_cache_consistency() {
         if !try_load_default() {
             return;

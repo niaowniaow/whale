@@ -1122,4 +1122,194 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn has_non_pawn_material_detects_major_pieces() {
+        use crate::common::helpers::STARTING_FEN;
+
+        let board = BoardState::parse_fen(STARTING_FEN);
+        assert!(board.has_non_pawn_material(Side::White));
+        assert!(board.has_non_pawn_material(Side::Black));
+
+        let mut bare = BoardState::new();
+        bare.add_piece(Square::E1, Side::White, Piece::King, false);
+        bare.add_piece(Square::E8, Side::Black, Piece::King, false);
+        assert!(!bare.has_non_pawn_material(Side::White));
+        assert!(!bare.has_non_pawn_material(Side::Black));
+
+        bare.add_piece(Square::E2, Side::White, Piece::Pawn, false);
+        assert!(!bare.has_non_pawn_material(Side::White));
+
+        bare.add_piece(Square::D1, Side::White, Piece::Queen, false);
+        assert!(bare.has_non_pawn_material(Side::White));
+    }
+
+    #[test]
+    fn passed_pawn_detection() {
+        let mut board = BoardState::new();
+        board.add_piece(Square::E4, Side::White, Piece::Pawn, false);
+        assert!(board.is_passed_pawn(Square::E4 as usize, Side::White));
+        assert_eq!(
+            board
+                .get_passed_pawns(Side::White)
+                .get_bit(Square::E4 as usize),
+            1
+        );
+
+        // Black pawn on D5 attacks E4, so it is no longer passed.
+        board.add_piece(Square::D5, Side::Black, Piece::Pawn, false);
+        assert!(!board.is_passed_pawn(Square::E4 as usize, Side::White));
+        assert!(board.get_passed_pawns(Side::White).is_empty());
+    }
+
+    #[test]
+    fn is_aligned_covers_ranks_files_diagonals() {
+        assert!(BoardState::is_aligned(Square::A1, Square::H1));
+        assert!(BoardState::is_aligned(Square::E1, Square::E8));
+        assert!(BoardState::is_aligned(Square::A1, Square::H8));
+        assert!(BoardState::is_aligned(Square::E4, Square::E4));
+        assert!(!BoardState::is_aligned(Square::A1, Square::H7));
+        assert!(!BoardState::is_aligned(Square::E2, Square::F4));
+    }
+
+    #[test]
+    fn square_attack_queries() {
+        use crate::common::helpers::STARTING_FEN;
+
+        let board = BoardState::parse_fen(STARTING_FEN);
+        // White pawn on D2 attacks C3 and E3.
+        assert!(board.is_square_attacked(Square::E3, Side::White));
+        assert!(board.is_square_attacked(Square::C3, Side::White));
+        assert!(!board.is_square_attacked(Square::E4, Side::White));
+        assert!(!board.is_square_attacked(Square::E4, Side::Black));
+
+        let occ = board.occupancy();
+        assert!(board.is_square_attacked_with_occ(Square::E3, Side::White, occ));
+        assert!(!board.is_square_attacked_with_occ(Square::E4, Side::White, occ));
+
+        // Knight, king and slider branches with a custom occupancy.
+        let mut custom = BoardState::new();
+        custom.add_piece(Square::E1, Side::White, Piece::King, false);
+        custom.add_piece(Square::D3, Side::Black, Piece::Knight, false);
+        custom.add_piece(Square::D2, Side::Black, Piece::King, false);
+        let custom_occ = custom.occupancy();
+        assert!(custom.is_square_attacked_with_occ(Square::E1, Side::Black, custom_occ));
+
+        let mut slider = BoardState::new();
+        slider.add_piece(Square::E1, Side::White, Piece::King, false);
+        slider.add_piece(Square::H4, Side::Black, Piece::Bishop, false);
+        slider.add_piece(Square::E8, Side::Black, Piece::Rook, false);
+        let slider_occ = slider.occupancy();
+        assert!(slider.is_square_attacked_with_occ(Square::E1, Side::Black, slider_occ));
+    }
+
+    #[test]
+    fn pinned_pieces_and_checkers() {
+        use crate::common::helpers::STARTING_FEN;
+
+        let start = BoardState::parse_fen(STARTING_FEN);
+        assert!(start.pinned_pieces(Side::White).is_empty());
+        assert!(start.checkers(Side::White).is_empty());
+        assert!(BoardState::new().pinned_pieces(Side::White).is_empty());
+        assert!(BoardState::new().checkers(Side::White).is_empty());
+
+        // White queen on E2 is pinned to the king by a black rook on E8.
+        let mut board = BoardState::new();
+        board.add_piece(Square::E1, Side::White, Piece::King, false);
+        board.add_piece(Square::E2, Side::White, Piece::Queen, false);
+        board.add_piece(Square::E8, Side::Black, Piece::Rook, false);
+        assert_eq!(
+            board.pinned_pieces(Side::White).0,
+            1u64 << Square::E2 as usize
+        );
+        assert!(board.pinned_pieces(Side::Black).is_empty());
+
+        // Open E file: the same rook gives check.
+        let mut check = BoardState::new();
+        check.add_piece(Square::E1, Side::White, Piece::King, false);
+        check.add_piece(Square::E8, Side::Black, Piece::Rook, false);
+        assert!(check.is_in_check(Side::White));
+        assert_eq!(check.checkers(Side::White).0, 1u64 << Square::E8 as usize);
+    }
+
+    #[test]
+    fn check_squares_and_threat_by_lesser() {
+        use crate::common::helpers::STARTING_FEN;
+
+        assert_eq!(BoardState::new().check_squares(Side::White), [0; 6]);
+
+        let start = BoardState::parse_fen(STARTING_FEN);
+        let squares = start.check_squares(Side::White);
+        assert_ne!(squares[Piece::Knight as usize], 0);
+        assert_eq!(squares[Piece::King as usize], 0);
+        assert_eq!(
+            squares[Piece::Queen as usize],
+            squares[Piece::Bishop as usize] | squares[Piece::Rook as usize]
+        );
+
+        let threats = start.threat_by_lesser(Side::White);
+        assert_eq!(threats[Piece::Pawn as usize], 0);
+        assert_eq!(threats[Piece::King as usize], 0);
+        assert_ne!(threats[Piece::Knight as usize], 0);
+        assert_eq!(
+            threats[Piece::Queen as usize] & threats[Piece::Rook as usize],
+            threats[Piece::Rook as usize]
+        );
+        assert_eq!(
+            threats[Piece::Rook as usize] & threats[Piece::Knight as usize],
+            threats[Piece::Knight as usize]
+        );
+    }
+
+    #[test]
+    fn clipped_phase_tracks_material() {
+        use crate::common::helpers::STARTING_FEN;
+
+        assert_eq!(BoardState::new().clipped_phase(), 0);
+        let start = BoardState::parse_fen(STARTING_FEN);
+        assert!(start.clipped_phase() > 0);
+    }
+
+    #[test]
+    fn pseudo_legal_accepts_generated_moves_and_rejects_obvious_illegal() {
+        use crate::common::helpers::STARTING_FEN;
+        use crate::common::move_list::MoveList;
+        use crate::common::move_type::MoveType;
+
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let mut moves = MoveList::new();
+        board.generate_moves(&mut moves);
+        assert!(!moves.is_empty());
+        for entry in moves.iter() {
+            assert!(board.is_pseudo_legal(entry.mv), "{:?}", entry.mv);
+        }
+
+        assert!(!board.is_pseudo_legal(Move::NO_MOVE));
+        // Source == target.
+        assert!(!board.is_pseudo_legal(Move::new(Square::E2, Square::E2, MoveType::Quiet)));
+        // From an empty square.
+        assert!(!board.is_pseudo_legal(Move::new(Square::E4, Square::E5, MoveType::Quiet)));
+        // Opponent piece (black pawn on A7, white to move).
+        assert!(!board.is_pseudo_legal(Move::new(Square::A7, Square::A6, MoveType::Quiet)));
+        // Capturing our own piece (queen takes own pawn).
+        assert!(!board.is_pseudo_legal(Move::new(Square::D1, Square::D2, MoveType::Capture)));
+        // Pawn flagged as castle.
+        assert!(!board.is_pseudo_legal(Move::new(Square::E2, Square::E4, MoveType::Castle)));
+        // B1-B3 is not a knight move.
+        assert!(!board.is_pseudo_legal(Move::new(Square::B1, Square::B3, MoveType::Quiet)));
+        // B1-C3 lands on an empty square, so the capture flag mismatches.
+        assert!(!board.is_pseudo_legal(Move::new(Square::B1, Square::C3, MoveType::Capture)));
+        // Double push without the flag.
+        assert!(!board.is_pseudo_legal(Move::new(Square::E2, Square::E4, MoveType::Quiet)));
+        // Double push with the flag from the starting square.
+        assert!(board.is_pseudo_legal(Move::new(Square::E2, Square::E4, MoveType::DoublePush)));
+        // Single push.
+        assert!(board.is_pseudo_legal(Move::new(Square::E2, Square::E3, MoveType::Quiet)));
+        // Promotion flag away from the promotion rank.
+        assert!(!board.is_pseudo_legal(Move::new(
+            Square::E2,
+            Square::E3,
+            MoveType::QueenPromotion
+        )));
+    }
 }
