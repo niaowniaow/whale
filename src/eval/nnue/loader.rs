@@ -135,4 +135,51 @@ mod tests {
         assert!(metadata.bytes > 0);
         assert_ne!(metadata.checksum, 0);
     }
+
+    #[test]
+    fn boxed_network_starts_zeroed() {
+        let net = Network::new_boxed();
+        assert!(net.transformer_weights.iter().all(|&w| w == 0));
+        assert!(net.transformer_biases.iter().all(|&b| b == 0));
+        assert!(net.output_weights.iter().all(|&w| w == 0));
+        assert_eq!(net.output_bias, 0);
+    }
+
+    #[test]
+    fn randomize_stays_in_range() {
+        let mut net = Network::new_boxed();
+        net.randomize();
+        for &w in net
+            .transformer_weights
+            .iter()
+            .chain(net.transformer_biases.iter())
+            .chain(net.output_weights.iter())
+        {
+            assert!((-10..=10).contains(&w));
+        }
+        assert!((-10..=10).contains(&net.output_bias));
+        assert!(net.metadata().bytes > 0);
+    }
+
+    #[test]
+    fn save_and_snapshot_roundtrip_in_tempdir() {
+        let dir = std::env::temp_dir().join(format!("whale-nnue-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+
+        let network = Network::get_embedded();
+        let path = dir.join("net.bin");
+        let path_str = path.to_str().unwrap();
+        network.save_to_file(path_str).unwrap();
+        let saved = std::fs::read(&path).unwrap();
+        assert_eq!(saved.len(), std::mem::size_of::<Network>());
+
+        let snap = dir.join("sub").join("snap.bin");
+        network.snapshot_baseline(snap.to_str().unwrap()).unwrap();
+        let meta = std::fs::read_to_string(format!("{}.meta", snap.to_str().unwrap())).unwrap();
+        assert!(meta.contains("\"input_size\""));
+        assert!(meta.contains("\"checksum\""));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

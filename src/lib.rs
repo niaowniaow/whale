@@ -53,3 +53,11 @@ pub mod train {
 }
 
 pub fn init() {}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn init_is_callable() {
+        super::init();
+    }
+}
