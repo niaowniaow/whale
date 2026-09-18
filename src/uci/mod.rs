@@ -345,4 +345,40 @@ mod tests {
         assert!(!client.is_pondering.load(Ordering::Relaxed));
         assert!(!cancel.load(Ordering::Relaxed));
     }
+
+    #[test]
+    fn write_id_lists_options_without_changing_position() {
+        let client = UciClient::new();
+        let original = client.board.lock().unwrap().clone();
+        client.write_id();
+        assert!(*client.board.lock().unwrap() == original);
+    }
+
+    #[test]
+    fn get_parameter_parses_and_falls_back() {
+        assert_eq!(get_parameter("depth", &["depth", "5"], 8), 5);
+        assert_eq!(get_parameter("depth", &[], 8), 8);
+        assert_eq!(get_parameter("depth", &["depth"], 8), 8);
+        assert_eq!(get_parameter("depth", &["depth", "xx"], 8), 8);
+        assert_eq!(get_parameter("depth", &["movetime", "5"], 8), 8);
+        assert_eq!(get_parameter("depth", &["depth", "5", "depth", "7"], 8), 5);
+    }
+
+    #[test]
+    fn has_flag_checks_presence() {
+        assert!(has_flag("ponder", &["go", "ponder"]));
+        assert!(!has_flag("ponder", &["go", "depth", "1"]));
+    }
+
+    #[test]
+    fn output_best_move_handles_all_shapes() {
+        use crate::common::moves::Move;
+
+        output_best_move(Move::NO_MOVE, Move::NO_MOVE);
+        output_best_move(Move::parse_long_algebraic("e2e4").unwrap(), Move::NO_MOVE);
+        output_best_move(
+            Move::parse_long_algebraic("e7e8q").unwrap(),
+            Move::parse_long_algebraic("e2e4").unwrap(),
+        );
+    }
 }

@@ -376,4 +376,60 @@ mod tests {
 
         assert_eq!(score, scalar_score);
     }
+
+    #[test]
+    fn test_eval_cache_hit_miss() {
+        clear_eval_cache();
+        assert_eq!(probe_eval_cache(123, 0, 0), None);
+        store_eval_cache(123, 0, 0, 77);
+        assert_eq!(probe_eval_cache(123, 0, 0), Some(77));
+        assert_eq!(probe_eval_cache(123, 5, 0), None);
+        assert_eq!(probe_eval_cache(123, 0, 1), None);
+        assert_eq!(probe_eval_cache(124, 0, 0), None);
+        clear_eval_cache();
+        assert_eq!(probe_eval_cache(123, 0, 0), None);
+    }
+
+    #[test]
+    fn test_evaluate_is_cached_and_deterministic() {
+        use crate::common::helpers::STARTING_FEN;
+
+        clear_eval_cache();
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let first = evaluate(&mut board);
+        let second = evaluate(&mut board);
+        assert_eq!(first, second);
+        assert!(first.abs() < 5000);
+        // A different optimism key computes (and caches) separately.
+        let _ = evaluate_with_optimism(&mut board, 5);
+    }
+
+    #[test]
+    fn test_evaluate_fast_halfmove_damping() {
+        use crate::common::helpers::STARTING_FEN;
+        use crate::common::piece::Piece;
+        use crate::common::square::Square;
+
+        clear_eval_cache();
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        board.add_piece(Square::E4, Side::White, Piece::Queen, true);
+        board.flush_pending_updates(board.history.index);
+        board.ensure_accumulators_fresh();
+        let fresh = evaluate_fast(&mut board, 0);
+        assert_ne!(fresh, 0);
+        board.half_move_clock = 60;
+        let damped = evaluate_fast(&mut board, 0);
+        assert_ne!(fresh, damped);
+        assert!(damped.abs() < fresh.abs());
+    }
+
+    #[test]
+    fn test_evaluate_with_depth_runs() {
+        use crate::common::helpers::STARTING_FEN;
+
+        clear_eval_cache();
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let score = evaluate_with_depth(&mut board, 0, 1);
+        assert!(score.abs() <= 29000);
+    }
 }

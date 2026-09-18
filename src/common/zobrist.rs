@@ -125,4 +125,51 @@ mod tests {
         }
         assert_eq!(get_pawn_hash(&board), expected);
     }
+
+    #[test]
+    fn test_init_is_callable() {
+        init();
+    }
+
+    #[test]
+    fn test_flip_side_to_move_is_involution() {
+        let white = BoardState::parse_fen(STARTING_FEN);
+        let black =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 1");
+        let white_hash = get_board_hash(&white);
+        let black_hash = get_board_hash(&black);
+        assert_ne!(white_hash, black_hash);
+        // Same pieces, only the side differs: flipping reproduces it.
+        assert_eq!(flip_side_to_move_hashes(&white, white_hash), black_hash);
+        assert_eq!(
+            flip_side_to_move_hashes(&white, flip_side_to_move_hashes(&white, white_hash)),
+            white_hash
+        );
+    }
+
+    #[test]
+    fn test_en_passant_and_castling_enter_hash() {
+        // Legal EP claim: white just pushed e2e4 and a black pawn on d4
+        // can capture (otherwise the parser rightly drops the square).
+        let no_ep =
+            BoardState::parse_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
+        let with_ep =
+            BoardState::parse_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq e3 0 1");
+        assert_eq!(with_ep.en_passant_square, Square::E3);
+        assert_ne!(get_board_hash(&no_ep), get_board_hash(&with_ep));
+        assert_eq!(
+            hash_en_passant(&with_ep, 0),
+            zobrist_table()[12][Square::E3 as usize]
+        );
+        assert_eq!(hash_en_passant(&no_ep, 42), 42);
+
+        let full = BoardState::parse_fen(STARTING_FEN);
+        let bare_castle =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w - - 0 1");
+        assert_ne!(get_board_hash(&full), get_board_hash(&bare_castle));
+        assert_eq!(
+            hash_castling_rights(&full, 0),
+            zobrist_table()[13][2 + full.castle.bits() as usize]
+        );
+    }
 }
