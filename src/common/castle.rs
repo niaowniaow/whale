@@ -85,4 +85,72 @@ mod tests {
         assert!(!castle.contains(Castle::WHITE_SHORT));
         assert!(castle.contains(Castle::BLACK_LONG));
     }
+
+    #[test]
+    fn test_castle_from_bits_retain_roundtrip() {
+        assert_eq!(Castle::from_bits_retain(0), Castle::NONE);
+        assert_eq!(Castle::from_bits_retain(1), Castle::WHITE_SHORT);
+        assert_eq!(Castle::from_bits_retain(2), Castle::WHITE_LONG);
+        assert_eq!(Castle::from_bits_retain(4), Castle::BLACK_SHORT);
+        assert_eq!(Castle::from_bits_retain(8), Castle::BLACK_LONG);
+        let all = Castle::from_bits_retain(0b1111);
+        assert_eq!(all.bits(), 0b1111);
+        assert!(all.contains(Castle::WHITE_SHORT));
+        assert!(all.contains(Castle::WHITE_LONG));
+        assert!(all.contains(Castle::BLACK_SHORT));
+        assert!(all.contains(Castle::BLACK_LONG));
+        // Retains unknown bits verbatim.
+        assert_eq!(Castle::from_bits_retain(0b1111_0000).bits(), 0b1111_0000);
+    }
+
+    #[test]
+    fn test_castle_bitor_creates_new_value() {
+        let combined = Castle::WHITE_SHORT | Castle::WHITE_LONG;
+        assert_eq!(combined.bits(), 1 | 2);
+        assert!(combined.contains(Castle::WHITE_SHORT));
+        assert!(combined.contains(Castle::WHITE_LONG));
+        assert!(!combined.contains(Castle::BLACK_SHORT));
+        // Originals unchanged (Copy semantics).
+        assert_eq!(Castle::WHITE_SHORT.bits(), 1);
+    }
+
+    #[test]
+    fn test_castle_bitand_filters_bits() {
+        let all = Castle::WHITE_SHORT | Castle::WHITE_LONG | Castle::BLACK_SHORT;
+        let masked = all & Castle::WHITE_LONG;
+        assert_eq!(masked, Castle::WHITE_LONG);
+        assert_eq!((all & Castle::BLACK_LONG).bits(), 0);
+        assert_eq!((Castle::NONE & Castle::WHITE_SHORT).bits(), 0);
+    }
+
+    #[test]
+    fn test_castle_bitand_assign_narrows_value() {
+        let mut castle =
+            Castle::WHITE_SHORT | Castle::WHITE_LONG | Castle::BLACK_SHORT | Castle::BLACK_LONG;
+        castle &= Castle::WHITE_SHORT | Castle::BLACK_SHORT;
+        assert_eq!(castle.bits(), 1 | 4);
+        assert!(castle.contains(Castle::WHITE_SHORT));
+        assert!(!castle.contains(Castle::WHITE_LONG));
+    }
+
+    #[test]
+    fn test_castle_default_is_none_and_contains_none() {
+        assert_eq!(Castle::default(), Castle::NONE);
+        assert_eq!(Castle::default().bits(), 0);
+        // `contains(NONE)` is vacuously true for any value.
+        assert!(Castle::NONE.contains(Castle::NONE));
+        assert!(Castle::WHITE_SHORT.contains(Castle::NONE));
+    }
+
+    #[test]
+    fn test_castle_remove_absent_flag_is_noop() {
+        let mut castle = Castle::WHITE_SHORT;
+        castle.remove(Castle::BLACK_SHORT);
+        assert_eq!(castle, Castle::WHITE_SHORT);
+        castle.remove(Castle::WHITE_SHORT | Castle::WHITE_LONG);
+        assert_eq!(castle, Castle::NONE);
+        // Removing from empty stays empty.
+        castle.remove(Castle::BLACK_LONG);
+        assert_eq!(castle, Castle::NONE);
+    }
 }

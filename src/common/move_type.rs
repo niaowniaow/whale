@@ -205,4 +205,103 @@ mod tests {
     fn test_invalid_move_type_from_usize() {
         let _ = MoveType::from(99_usize);
     }
+
+    #[test]
+    fn test_is_en_passant_only_true_for_en_passant() {
+        assert!(MoveType::EnPassant.is_en_passant());
+        for mt in [
+            MoveType::Quiet,
+            MoveType::Capture,
+            MoveType::DoublePush,
+            MoveType::KnightPromotion,
+            MoveType::BishopPromotion,
+            MoveType::RookPromotion,
+            MoveType::QueenPromotion,
+            MoveType::KnightPromotionCapture,
+            MoveType::BishopPromotionCapture,
+            MoveType::RookPromotionCapture,
+            MoveType::QueenPromotionCapture,
+            MoveType::Castle,
+        ] {
+            assert!(!mt.is_en_passant(), "{mt:?} should not be en passant");
+        }
+    }
+
+    #[test]
+    fn test_is_double_push_only_true_for_double_push() {
+        assert!(MoveType::DoublePush.is_double_push());
+        for mt in [
+            MoveType::Quiet,
+            MoveType::Capture,
+            MoveType::EnPassant,
+            MoveType::KnightPromotion,
+            MoveType::BishopPromotion,
+            MoveType::RookPromotion,
+            MoveType::QueenPromotion,
+            MoveType::KnightPromotionCapture,
+            MoveType::BishopPromotionCapture,
+            MoveType::RookPromotionCapture,
+            MoveType::QueenPromotionCapture,
+            MoveType::Castle,
+        ] {
+            assert!(!mt.is_double_push(), "{mt:?} should not be double push");
+        }
+    }
+
+    #[test]
+    fn test_from_usize_roundtrip_all_valid_variants() {
+        let cases = [
+            (0_usize, MoveType::Quiet),
+            (1_usize, MoveType::Capture),
+            (2_usize, MoveType::EnPassant),
+            (3_usize, MoveType::DoublePush),
+            (4_usize, MoveType::KnightPromotion),
+            (5_usize, MoveType::BishopPromotion),
+            (6_usize, MoveType::RookPromotion),
+            (7_usize, MoveType::QueenPromotion),
+            (12_usize, MoveType::KnightPromotionCapture),
+            (13_usize, MoveType::BishopPromotionCapture),
+            (14_usize, MoveType::RookPromotionCapture),
+            (15_usize, MoveType::QueenPromotionCapture),
+            (16_usize, MoveType::Castle),
+        ];
+        for (n, expected) in cases {
+            assert_eq!(MoveType::from(n), expected);
+            assert_eq!(usize::from(expected), n);
+            assert_eq!(u8::from(expected), n as u8);
+            assert_eq!(MoveType::from(n as u8), expected);
+        }
+    }
+
+    #[test]
+    fn test_into_u8_usize_roundtrip_all_variants() {
+        for mt in [
+            MoveType::Quiet,
+            MoveType::Capture,
+            MoveType::EnPassant,
+            MoveType::DoublePush,
+            MoveType::KnightPromotion,
+            MoveType::BishopPromotion,
+            MoveType::RookPromotion,
+            MoveType::QueenPromotion,
+            MoveType::KnightPromotionCapture,
+            MoveType::BishopPromotionCapture,
+            MoveType::RookPromotionCapture,
+            MoveType::QueenPromotionCapture,
+            MoveType::Castle,
+        ] {
+            let as_u8 = u8::from(mt);
+            let as_usize = usize::from(mt);
+            assert_eq!(as_u8 as usize, as_usize);
+            assert_eq!(mt.value(), as_u8);
+            assert_eq!(MoveType::from(as_u8), mt);
+            assert_eq!(MoveType::from(as_usize), mt);
+        }
+    }
+
+    #[test]
+    #[should_panic(expected = "Invalid move type value: 8")]
+    fn test_invalid_move_type_gap_value_panics() {
+        let _ = MoveType::from(8_u8);
+    }
 }

@@ -567,4 +567,368 @@ mod tests {
         tt.resize(128);
         assert_eq!(tt.capacity, 4194304);
     }
+
+    #[test]
+    fn test_entry_type_default_is_none() {
+        assert_eq!(
+            TranspositionEntryType::default(),
+            TranspositionEntryType::None
+        );
+    }
+
+    #[test]
+    fn test_entry_default_fields() {
+        let e = TranspositionTableEntry::default();
+        assert_eq!(e.hash, 0);
+        assert_eq!(e.score, 0);
+        assert_eq!(e.best_move, Move::NO_MOVE);
+        assert_eq!(e.depth, 0);
+        assert_eq!(e.entry_type, TranspositionEntryType::None);
+        assert_eq!(e.generation, 0);
+    }
+
+    #[test]
+    fn test_atomic_entry_default_is_zero() {
+        let e = AtomicEntry::default();
+        assert_eq!(e.key.load(std::sync::atomic::Ordering::Relaxed), 0);
+        assert_eq!(e.data.load(std::sync::atomic::Ordering::Relaxed), 0);
+    }
+
+    #[test]
+    fn test_tt_new_small_capacity_still_usable() {
+        let tt = TranspositionTable::new(10);
+        assert_eq!(tt.capacity(), 10);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(999, 42, 3, m, TranspositionEntryType::Exact);
+        let (found, score, got) = tt.get_entry(999, -1000, 1000, 3, 0, 0);
+        assert!(found);
+        assert_eq!(score, 42);
+        assert_eq!(got, Some(m));
+    }
+
+    #[test]
+    fn test_tt_new_non_pow2_capacity_usable() {
+        let tt = TranspositionTable::new(1000);
+        assert_eq!(tt.capacity(), 1000);
+        let m = Move::new(Square::D2, Square::D4, MoveType::DoublePush);
+        tt.submit_entry(555, 77, 2, m, TranspositionEntryType::Exact);
+        assert_eq!(tt.probe(555).map(|e| e.score), Some(77));
+    }
+
+    #[test]
+    fn test_tt_new_mb_tiny_clamps_to_minimum() {
+        let tt = TranspositionTable::new_mb(0);
+        assert_eq!(tt.capacity(), 512);
+        assert_eq!(tt.capacity, 512);
+    }
+
+    #[test]
+    fn test_tt_default_capacity_constant() {
+        assert_eq!(TranspositionTable::DEFAULT_CAPACITY, 65536 * 32);
+    }
+
+    #[test]
+    fn test_tt_new_search_bumps_generation() {
+        let tt = TranspositionTable::new(1024);
+        assert_eq!(tt.generation.load(std::sync::atomic::Ordering::Relaxed), 0);
+        tt.new_search();
+        assert_eq!(tt.generation.load(std::sync::atomic::Ordering::Relaxed), 1);
+        tt.new_search();
+        assert_eq!(tt.generation.load(std::sync::atomic::Ordering::Relaxed), 2);
+    }
+
+    #[test]
+    fn test_tt_probe_miss_returns_none() {
+        let tt = TranspositionTable::new(1024);
+        assert_eq!(tt.probe(0xDEAD_BEEF), None);
+        assert_eq!(tt.probe(1), None);
+    }
+
+    #[test]
+    fn test_tt_prefetch_does_not_panic() {
+        let tt = TranspositionTable::new(1024);
+        tt.prefetch(123456789);
+        tt.prefetch(0);
+        tt.prefetch(u64::MAX);
+    }
+
+    #[test]
+    fn test_tt_clear_removes_entries() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(424242, 100, 5, m, TranspositionEntryType::Exact);
+        assert!(tt.probe(424242).is_some());
+        tt.clear();
+        assert_eq!(tt.probe(424242), None);
+        let (found, _, _) = tt.get_entry(424242, -1000, 1000, 1, 0, 0);
+        assert!(!found);
+    }
+
+    #[test]
+    fn test_tt_pack_unpack_roundtrip_all_move_types() {
+        let tt = TranspositionTable::new(1024);
+        let cases = [
+            Move::new(Square::E2, Square::E4, MoveType::Quiet),
+            Move::new(Square::E4, Square::D5, MoveType::Capture),
+            Move::new(Square::E5, Square::D6, MoveType::EnPassant),
+            Move::new(Square::D2, Square::D4, MoveType::DoublePush),
+            Move::new(Square::E7, Square::E8, MoveType::KnightPromotion),
+            Move::new(Square::E7, Square::E8, MoveType::BishopPromotion),
+            Move::new(Square::E7, Square::E8, MoveType::RookPromotion),
+            Move::new(Square::E7, Square::E8, MoveType::QueenPromotion),
+            Move::new(Square::E7, Square::D8, MoveType::KnightPromotionCapture),
+            Move::new(Square::E7, Square::D8, MoveType::BishopPromotionCapture),
+            Move::new(Square::E7, Square::D8, MoveType::RookPromotionCapture),
+            Move::new(Square::E7, Square::D8, MoveType::QueenPromotionCapture),
+            Move::new(Square::E1, Square::G1, MoveType::Castle),
+        ];
+        for (i, m) in cases.iter().enumerate() {
+            let hash = 1_000_000 + i as u64 * 1_000_003;
+            tt.submit_entry(hash, 123, 4, *m, TranspositionEntryType::Exact);
+            let entry = tt.probe(hash).expect("entry must be present");
+            assert_eq!(entry.hash, hash);
+            assert_eq!(entry.score, 123);
+            assert_eq!(entry.depth, 4);
+            assert_eq!(entry.entry_type, TranspositionEntryType::Exact);
+            assert_eq!(entry.best_move, *m);
+        }
+    }
+
+    #[test]
+    fn test_tt_pack_unpack_no_move_and_negative_score() {
+        let tt = TranspositionTable::new(1024);
+        tt.submit_entry(
+            777001,
+            -321,
+            0,
+            Move::NO_MOVE,
+            TranspositionEntryType::Exact,
+        );
+        let entry = tt.probe(777001).unwrap();
+        assert_eq!(entry.best_move, Move::NO_MOVE);
+        assert_eq!(entry.score, -321);
+        assert_eq!(entry.depth, 0);
+
+        tt.submit_entry(
+            777002,
+            i16::MAX,
+            u8::MAX,
+            Move::new(Square::A8, Square::H1, MoveType::Capture),
+            TranspositionEntryType::Beta,
+        );
+        let entry = tt.probe(777002).unwrap();
+        assert_eq!(entry.score, i16::MAX);
+        assert_eq!(entry.depth, u8::MAX);
+        assert_eq!(entry.entry_type, TranspositionEntryType::Beta);
+
+        tt.submit_entry(
+            777003,
+            i16::MIN,
+            1,
+            Move::new(Square::A1, Square::A2, MoveType::Quiet),
+            TranspositionEntryType::Alpha,
+        );
+        assert_eq!(tt.probe(777003).unwrap().score, i16::MIN);
+    }
+
+    #[test]
+    fn test_tt_submit_records_generation() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(31337, 10, 1, m, TranspositionEntryType::Exact);
+        assert_eq!(tt.probe(31337).unwrap().generation, 0);
+        tt.new_search();
+        tt.submit_entry(31338, 10, 1, m, TranspositionEntryType::Exact);
+        assert_eq!(tt.probe(31338).unwrap().generation, 1);
+    }
+
+    #[test]
+    fn test_tt_none_entries_are_ignored() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(600600, 50, 3, m, TranspositionEntryType::None);
+        assert_eq!(tt.probe(600600), None);
+        let (found, _, _) = tt.get_entry(600600, -1000, 1000, 1, 0, 0);
+        assert!(!found);
+    }
+
+    #[test]
+    fn test_tt_get_entry_miss() {
+        let tt = TranspositionTable::new(1024);
+        let (found, score, m) = tt.get_entry(0xABCD, -1000, 1000, 1, 0, 0);
+        assert!(!found);
+        assert_eq!(score, 0);
+        assert_eq!(m, None);
+    }
+
+    #[test]
+    fn test_tt_get_entry_shallow_depth_returns_move_without_cutoff() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(700700, 100, 5, m, TranspositionEntryType::Exact);
+        let (found, score, got) = tt.get_entry(700700, -1000, 1000, 6, 0, 0);
+        assert!(!found);
+        assert_eq!(score, 0);
+        assert_eq!(got, Some(m));
+    }
+
+    #[test]
+    fn test_tt_get_entry_alpha_cutoff_taken_and_not_taken() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(800801, 50, 5, m, TranspositionEntryType::Alpha);
+        let (found, score, got) = tt.get_entry(800801, 100, 200, 5, 0, 0);
+        assert!(found);
+        assert_eq!(score, 50);
+        assert_eq!(got, Some(m));
+
+        let tt2 = TranspositionTable::new(1024);
+        tt2.submit_entry(800802, 150, 5, m, TranspositionEntryType::Alpha);
+        let (found, score, got) = tt2.get_entry(800802, 100, 200, 5, 0, 0);
+        assert!(!found);
+        assert_eq!(score, 0);
+        assert_eq!(got, Some(m));
+    }
+
+    #[test]
+    fn test_tt_get_entry_beta_cutoff_taken_and_not_taken() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(900901, 250, 5, m, TranspositionEntryType::Beta);
+        let (found, score, got) = tt.get_entry(900901, 100, 200, 5, 0, 0);
+        assert!(found);
+        assert_eq!(score, 250);
+        assert_eq!(got, Some(m));
+
+        let tt2 = TranspositionTable::new(1024);
+        tt2.submit_entry(900902, 150, 5, m, TranspositionEntryType::Beta);
+        let (found, score, got) = tt2.get_entry(900902, 100, 200, 5, 0, 0);
+        assert!(!found);
+        assert_eq!(score, 0);
+        assert_eq!(got, Some(m));
+    }
+
+    #[test]
+    fn test_tt_adjust_score_loss_and_normal() {
+        // Loss path subtracts ply.
+        let loss = -(MAX_CENTIPAWN_EVAL - 5);
+        assert_eq!(TranspositionTable::adjust_score(loss, 10, 0), loss - 10);
+        // Normal scores pass through untouched.
+        assert_eq!(TranspositionTable::adjust_score(100, 10, 0), 100);
+        assert_eq!(TranspositionTable::adjust_score(-100, 10, 0), -100);
+        assert_eq!(TranspositionTable::adjust_score(0, 10, 0), 0);
+        // Just below the win threshold stays normal.
+        assert_eq!(TranspositionTable::adjust_score(30861, 10, 0), 30861);
+        assert_eq!(TranspositionTable::adjust_score(-30861, 10, 0), -30861);
+    }
+
+    #[test]
+    fn test_tt_retrieve_score_zero_and_normal() {
+        assert_eq!(TranspositionTable::retrieve_score(0, 5, 0), 0);
+        assert_eq!(TranspositionTable::retrieve_score(100, 7, 0), 100);
+        assert_eq!(TranspositionTable::retrieve_score(-100, 7, 50), -100);
+    }
+
+    #[test]
+    fn test_tt_retrieve_score_loss_roundtrip() {
+        let mate_against = -(MAX_CENTIPAWN_EVAL - 5);
+        let stored = TranspositionTable::adjust_score(mate_against, 10, 0);
+        assert_eq!(stored, mate_against - 10);
+        let retrieved = TranspositionTable::retrieve_score(stored, 10, 0);
+        assert_eq!(retrieved, mate_against);
+    }
+
+    #[test]
+    fn test_tt_retrieve_score_tb_win_downgrade() {
+        // 30870 is a TB win (>= 30862) but below mate-in-max (30936),
+        // so only the TB-downgrade branch can fire at high halfmove.
+        let tb = 30870_i16;
+        assert_eq!(TranspositionTable::retrieve_score(tb, 0, 0), tb);
+        let downgraded = TranspositionTable::retrieve_score(tb, 0, 96);
+        assert_eq!(downgraded, 30861);
+        let downgraded_loss = TranspositionTable::retrieve_score(-tb, 0, 96);
+        assert_eq!(downgraded_loss, -30861);
+        assert_eq!(TranspositionTable::retrieve_score(-tb, 0, 0), -tb);
+    }
+
+    #[test]
+    fn test_tt_retrieve_score_mate_loss_downgrade() {
+        let mate_against = -(MAX_CENTIPAWN_EVAL - 5);
+        let stored = TranspositionTable::adjust_score(mate_against, 0, 0);
+        assert_eq!(
+            TranspositionTable::retrieve_score(stored, 0, 0),
+            mate_against
+        );
+        let downgraded = TranspositionTable::retrieve_score(stored, 0, 96);
+        assert!(downgraded > mate_against);
+    }
+
+    #[test]
+    fn test_tt_submit_preserves_best_move_when_no_move_given() {
+        let tt = TranspositionTable::new(1024);
+        let m1 = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        let hash = 111222333;
+        tt.submit_entry(hash, 100, 5, m1, TranspositionEntryType::Exact);
+        tt.submit_entry(hash, 200, 6, Move::NO_MOVE, TranspositionEntryType::Exact);
+        let entry = tt.probe(hash).unwrap();
+        assert_eq!(entry.score, 200);
+        assert_eq!(entry.best_move, m1);
+    }
+
+    #[test]
+    fn test_tt_submit_exact_upgrades_shallower_non_exact() {
+        let tt = TranspositionTable::new(1024);
+        let m1 = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        let m2 = Move::new(Square::D2, Square::D4, MoveType::Quiet);
+        let hash = 444555666;
+        tt.submit_entry(hash, 100, 5, m1, TranspositionEntryType::Alpha);
+        tt.submit_entry(hash, 200, 3, m2, TranspositionEntryType::Exact);
+        let entry = tt.probe(hash).unwrap();
+        assert_eq!(entry.score, 200);
+        assert_eq!(entry.best_move, m2);
+        assert_eq!(entry.entry_type, TranspositionEntryType::Exact);
+    }
+
+    #[test]
+    fn test_tt_submit_evicts_lowest_depth_in_full_cluster() {
+        let tt = TranspositionTable::new(1024);
+        // Stride is a multiple of any small power-of-two cluster count,
+        // so all five hashes land in the same cluster.
+        const STRIDE: u64 = 4096;
+        let moves = [
+            Move::new(Square::A2, Square::A3, MoveType::Quiet),
+            Move::new(Square::B2, Square::B3, MoveType::Quiet),
+            Move::new(Square::C2, Square::C3, MoveType::Quiet),
+            Move::new(Square::D2, Square::D3, MoveType::Quiet),
+        ];
+        for (i, m) in moves.iter().enumerate() {
+            tt.submit_entry(
+                (i as u64 + 1) * STRIDE,
+                (i as i16 + 1) * 10,
+                i as u8 + 1,
+                *m,
+                TranspositionEntryType::Exact,
+            );
+        }
+        for (i, m) in moves.iter().enumerate() {
+            let entry = tt.probe((i as u64 + 1) * STRIDE).unwrap();
+            assert_eq!(entry.best_move, *m);
+        }
+        // Fifth colliding entry with highest depth evicts the depth-1 entry.
+        let newcomer = Move::new(Square::E2, Square::E3, MoveType::Quiet);
+        tt.submit_entry(5 * STRIDE, 999, 10, newcomer, TranspositionEntryType::Exact);
+        assert_eq!(tt.probe(5 * STRIDE).unwrap().best_move, newcomer);
+        assert_eq!(tt.probe(STRIDE), None);
+        assert!(tt.probe(2 * STRIDE).is_some());
+    }
+
+    #[test]
+    fn test_tt_resize_drops_old_entries() {
+        let mut tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(999888, 100, 5, m, TranspositionEntryType::Exact);
+        assert!(tt.probe(999888).is_some());
+        tt.resize(1);
+        assert_eq!(tt.probe(999888), None);
+    }
 }

@@ -181,4 +181,142 @@ mod tests {
         let m2 = Move::NO_MOVE;
         assert_eq!(m1, m2);
     }
+
+    #[test]
+    fn test_no_move_fields() {
+        assert_eq!(Move::NO_MOVE.source, Square::NoSquare);
+        assert_eq!(Move::NO_MOVE.target, Square::NoSquare);
+        assert_eq!(Move::NO_MOVE.move_type, MoveType::Quiet);
+        assert!(!Move::NO_MOVE.is_capture());
+        assert!(!Move::NO_MOVE.is_promotion());
+        assert!(!Move::NO_MOVE.is_castle());
+    }
+
+    #[test]
+    fn test_parse_rejects_bad_lengths() {
+        assert_eq!(Move::parse_long_algebraic(""), None);
+        assert_eq!(Move::parse_long_algebraic("e2"), None);
+        assert_eq!(Move::parse_long_algebraic("e2e"), None);
+        assert_eq!(Move::parse_long_algebraic("e2e44q"), None);
+        assert_eq!(Move::parse_long_algebraic("e2e4qr"), None);
+    }
+
+    #[test]
+    fn test_parse_rejects_bad_squares() {
+        assert_eq!(Move::parse_long_algebraic("i2e4"), None);
+        assert_eq!(Move::parse_long_algebraic("e9e4"), None);
+        assert_eq!(Move::parse_long_algebraic("e2i4"), None);
+        assert_eq!(Move::parse_long_algebraic("e2e9"), None);
+        assert_eq!(Move::parse_long_algebraic("11e4"), None);
+    }
+
+    #[test]
+    fn test_parse_all_promotion_chars() {
+        for (suffix, expected) in [
+            ('q', MoveType::QueenPromotion),
+            ('r', MoveType::RookPromotion),
+            ('b', MoveType::BishopPromotion),
+            ('n', MoveType::KnightPromotion),
+        ] {
+            let s = format!("e7e8{suffix}");
+            let m = Move::parse_long_algebraic(&s).unwrap();
+            assert_eq!(m.move_type, expected, "suffix {suffix}");
+            assert!(m.is_promotion());
+            assert!(!m.is_capture());
+        }
+    }
+
+    #[test]
+    fn test_parse_promotion_uppercase_suffix() {
+        let m = Move::parse_long_algebraic("e7e8Q").unwrap();
+        assert_eq!(m.move_type, MoveType::QueenPromotion);
+        let m = Move::parse_long_algebraic("e7e8N").unwrap();
+        assert_eq!(m.move_type, MoveType::KnightPromotion);
+    }
+
+    #[test]
+    fn test_parse_rejects_invalid_promotion_char() {
+        assert_eq!(Move::parse_long_algebraic("e7e8x"), None);
+        assert_eq!(Move::parse_long_algebraic("e7e8k"), None);
+    }
+
+    #[test]
+    fn test_parse_uppercase_squares() {
+        let m = Move::parse_long_algebraic("E2E4").unwrap();
+        assert_eq!(m.source, Square::E2);
+        assert_eq!(m.target, Square::E4);
+        assert_eq!(m.move_type, MoveType::Quiet);
+    }
+
+    #[test]
+    fn test_is_promotion_covers_all_promotion_types() {
+        for mt in [
+            MoveType::KnightPromotion,
+            MoveType::BishopPromotion,
+            MoveType::RookPromotion,
+            MoveType::QueenPromotion,
+            MoveType::KnightPromotionCapture,
+            MoveType::BishopPromotionCapture,
+            MoveType::RookPromotionCapture,
+            MoveType::QueenPromotionCapture,
+        ] {
+            let m = Move::new(Square::E7, Square::E8, mt);
+            assert!(m.is_promotion(), "{mt:?} should be promotion");
+        }
+        for mt in [
+            MoveType::Quiet,
+            MoveType::Capture,
+            MoveType::EnPassant,
+            MoveType::DoublePush,
+            MoveType::Castle,
+        ] {
+            let m = Move::new(Square::E2, Square::E4, mt);
+            assert!(!m.is_promotion(), "{mt:?} should not be promotion");
+        }
+    }
+
+    #[test]
+    fn test_promotion_char_delegates_to_move_type() {
+        assert_eq!(
+            Move::new(Square::E7, Square::E8, MoveType::QueenPromotion).promotion_char(),
+            Some('q')
+        );
+        assert_eq!(
+            Move::new(Square::E7, Square::E8, MoveType::RookPromotion).promotion_char(),
+            Some('r')
+        );
+        assert_eq!(
+            Move::new(Square::E7, Square::F8, MoveType::BishopPromotionCapture).promotion_char(),
+            Some('b')
+        );
+        assert_eq!(
+            Move::new(Square::E2, Square::E4, MoveType::Quiet).promotion_char(),
+            None
+        );
+    }
+
+    #[test]
+    fn test_move_hash_matches_fields() {
+        use std::collections::hash_map::DefaultHasher;
+        fn hash_of(m: &Move) -> u64 {
+            let mut h = DefaultHasher::new();
+            m.hash(&mut h);
+            h.finish()
+        }
+        let m1 = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        let m2 = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        assert_eq!(hash_of(&m1), hash_of(&m2));
+        let m3 = Move::new(Square::E2, Square::E4, MoveType::Capture);
+        assert_ne!(hash_of(&m1), hash_of(&m3));
+    }
+
+    #[test]
+    fn test_move_clone_copy_and_debug() {
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        let cloned = m;
+        assert_eq!(m, cloned);
+        let debug = format!("{m:?}");
+        assert!(debug.contains("E2"));
+        assert!(debug.contains("E4"));
+    }
 }

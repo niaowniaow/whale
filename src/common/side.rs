@@ -99,4 +99,37 @@ mod tests {
         assert_eq!(usize::from(Side::Black), 1);
         assert_eq!(usize::from(Side::Both), 2);
     }
+
+    #[test]
+    fn test_side_map_new_and_index() {
+        let map = SideMap::new(10_i32, 20_i32);
+        assert_eq!(map[Side::White], 10);
+        assert_eq!(map[Side::Black], 20);
+        let str_map = SideMap::new("w", "b");
+        assert_eq!(str_map[Side::White], "w");
+        assert_eq!(str_map[Side::Black], "b");
+    }
+
+    #[test]
+    fn test_side_map_index_mut() {
+        let mut map = SideMap::new(0_i32, 0_i32);
+        map[Side::White] = 1;
+        map[Side::Black] = 2;
+        assert_eq!(map[Side::White], 1);
+        assert_eq!(map[Side::Black], 2);
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot index SideMap with Side::Both")]
+    fn test_side_map_index_panics_on_both() {
+        let map = SideMap::new(0_i32, 0_i32);
+        let _ = map[Side::Both];
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot index SideMap with Side::Both")]
+    fn test_side_map_index_mut_panics_on_both() {
+        let mut map = SideMap::new(0_i32, 0_i32);
+        map[Side::Both] = 1;
+    }
 }

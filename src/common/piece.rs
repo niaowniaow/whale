@@ -104,4 +104,68 @@ mod tests {
         assert_eq!(usize::from(Piece::King), 5);
         assert_eq!(usize::from(Piece::None), 6);
     }
+
+    #[test]
+    fn test_piece_all_constants() {
+        assert_eq!(Piece::ALL_PIECES, 6);
+        assert_eq!(Piece::ALL.len(), 6);
+        assert_eq!(
+            Piece::ALL,
+            [
+                Piece::Pawn,
+                Piece::Knight,
+                Piece::Bishop,
+                Piece::Rook,
+                Piece::Queen,
+                Piece::King
+            ]
+        );
+        for (i, p) in Piece::ALL.iter().enumerate() {
+            assert_eq!(Piece::from(i), *p);
+            assert_eq!(usize::from(*p), i);
+        }
+    }
+
+    #[test]
+    fn test_piece_from_usize_all_valid() {
+        assert_eq!(Piece::from(1), Piece::Knight);
+        assert_eq!(Piece::from(2), Piece::Bishop);
+        assert_eq!(Piece::from(3), Piece::Rook);
+        assert_eq!(Piece::from(4), Piece::Queen);
+    }
+
+    #[test]
+    fn test_piece_map_new_and_index() {
+        let map = PieceMap::new(0_i32);
+        for p in Piece::ALL {
+            assert_eq!(map[p], 0);
+        }
+        let map = PieceMap::new(7_i32);
+        assert_eq!(map[Piece::Pawn], 7);
+        assert_eq!(map[Piece::King], 7);
+    }
+
+    #[test]
+    fn test_piece_map_index_mut() {
+        let mut map = PieceMap::new(0_i32);
+        map[Piece::Pawn] = 1;
+        map[Piece::Queen] = 9;
+        assert_eq!(map[Piece::Pawn], 1);
+        assert_eq!(map[Piece::Queen], 9);
+        assert_eq!(map[Piece::Knight], 0);
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot index PieceMap with Piece::None")]
+    fn test_piece_map_index_panics_on_none() {
+        let map = PieceMap::new(0_i32);
+        let _ = map[Piece::None];
+    }
+
+    #[test]
+    #[should_panic(expected = "Cannot index PieceMap with Piece::None")]
+    fn test_piece_map_index_mut_panics_on_none() {
+        let mut map = PieceMap::new(0_i32);
+        map[Piece::None] = 1;
+    }
 }

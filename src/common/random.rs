@@ -118,4 +118,66 @@ mod tests {
             assert!(items.contains(chosen.unwrap()));
         }
     }
+
+    #[test]
+    fn test_reset_seed_reproduces_u64_sequence() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        reset_seed();
+        let first: Vec<u64> = (0..20).map(|_| next_u64()).collect();
+        reset_seed();
+        let second: Vec<u64> = (0..20).map(|_| next_u64()).collect();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_reset_seed_reproduces_i32_sequence() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        reset_seed();
+        let first: Vec<i32> = (0..20).map(|_| next_i32()).collect();
+        reset_seed();
+        let second: Vec<i32> = (0..20).map(|_| next_i32()).collect();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_next_i16_range_single_value_always_returns_bound() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        reset_seed();
+        for _ in 0..50 {
+            assert_eq!(next_i16_range(5, 5), 5);
+            assert_eq!(next_i16_range(-3, -3), -3);
+            assert_eq!(next_i16_range(0, 0), 0);
+        }
+    }
+
+    #[test]
+    fn test_next_i16_range_deterministic_after_reset() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        reset_seed();
+        let first: Vec<i16> = (0..50).map(|_| next_i16_range(-10, 10)).collect();
+        reset_seed();
+        let second: Vec<i16> = (0..50).map(|_| next_i16_range(-10, 10)).collect();
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn test_choose_single_element_always_returns_it() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        reset_seed();
+        let items = [42];
+        for _ in 0..20 {
+            assert_eq!(choose(&items), Some(&42));
+        }
+    }
+
+    #[test]
+    fn test_choose_deterministic_after_reset() {
+        let _guard = TEST_MUTEX.lock().unwrap();
+        let items = [1, 2, 3, 4, 5];
+        reset_seed();
+        let first: Vec<i32> = (0..20).map(|_| *choose(&items).unwrap()).collect();
+        reset_seed();
+        let second: Vec<i32> = (0..20).map(|_| *choose(&items).unwrap()).collect();
+        assert_eq!(first, second);
+    }
 }
