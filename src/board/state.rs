@@ -1731,6 +1731,160 @@ mod tests {
     }
 
     #[test]
+    fn pseudo_legal_black_castle_edges() {
+        // Wrong source square for black.
+        let mut off = BoardState::new();
+        off.add_piece(Square::E7, Side::Black, Piece::King, false);
+        off.add_piece(Square::E1, Side::White, Piece::King, false);
+        off.side_to_move = Side::Black;
+        off.castle = Castle::BLACK_SHORT;
+        assert!(!off.is_pseudo_legal(Move::new(Square::E7, Square::G8, MoveType::Castle)));
+        // Wrong target square for black.
+        let black = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1");
+        assert!(!black.is_pseudo_legal(Move::new(Square::E8, Square::F8, MoveType::Castle)));
+        // Transit square F8 attacked by the C5 bishop blocks short castling,
+        // long castling stays pseudo-legal.
+        let transit = BoardState::parse_fen("r3k2r/8/8/2B5/8/8/8/4K3 b kq - 0 1");
+        assert!(!transit.is_pseudo_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
+        assert!(transit.is_pseudo_legal(Move::new(Square::E8, Square::C8, MoveType::Castle)));
+        // Destination G8 attacked by the A2 bishop while F8 stays quiet.
+        let dest = BoardState::parse_fen("4k3/8/8/8/8/8/B7/4K3 b k - 0 1");
+        assert!(!dest.is_pseudo_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
+    }
+
+    #[test]
+    fn is_legal_black_castling_attack_and_check_branches() {
+        // Transit square F8 attacked by the C5 bishop.
+        let transit = BoardState::parse_fen("r3k2r/8/8/2B5/8/8/8/4K3 b kq - 0 1");
+        assert!(!transit.is_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
+        assert!(transit.is_legal(Move::new(Square::E8, Square::C8, MoveType::Castle)));
+        // Destination G8 attacked by the A2 bishop while F8 stays quiet.
+        let dest = BoardState::parse_fen("4k3/8/8/8/8/8/B7/4K3 b k - 0 1");
+        assert!(!dest.is_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
+        // In check: no castling.
+        let in_check = BoardState::parse_fen("4k3/4Q3/8/8/8/8/8/4K3 b k - 0 1");
+        assert!(in_check.is_in_check(Side::Black));
+        assert!(!in_check.is_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
+        // Wrong home square and wrong target.
+        let mut off_home = BoardState::new();
+        off_home.add_piece(Square::E7, Side::Black, Piece::King, false);
+        off_home.add_piece(Square::E1, Side::White, Piece::King, false);
+        off_home.side_to_move = Side::Black;
+        off_home.castle = Castle::BLACK_SHORT;
+        assert!(!off_home.is_legal(Move::new(Square::E7, Square::G8, MoveType::Castle)));
+        let home = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1");
+        assert!(!home.is_legal(Move::new(Square::E8, Square::F8, MoveType::Castle)));
+        // Stricter than pseudo-legality: the A8 rook must still stand at home.
+        let mut rookless =
+            BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b kq - 0 1");
+        rookless.remove_piece(Square::A8, false);
+        let castle = Move::new(Square::E8, Square::C8, MoveType::Castle);
+        assert!(rookless.is_pseudo_legal(castle));
+        assert!(!rookless.is_legal(castle));
+    }
+
+    #[test]
+    fn pin_edge_cases_adjacent_pinner_and_enemy_blocker() {
+        // Adjacent rook gives check but pins nothing (empty between-squares).
+        let adj = BoardState::parse_fen("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1");
+        assert!(adj.pinned_pieces(Side::White).is_empty());
+        assert_eq!(adj.checkers(Side::White).0, 1u64 << Square::E2 as usize);
+        // A single enemy blocker on the ray is not a pin either.
+        let enemy = BoardState::parse_fen("k3r3/8/8/8/8/8/4p3/4K3 w - - 0 1");
+        assert!(!enemy.is_in_check(Side::White));
+        assert!(enemy.pinned_pieces(Side::White).is_empty());
+    }
+
+    #[test]
+    fn queen_attacks_and_checkers_on_files_and_diagonals() {
+        // Queen on the file exercises the rook branch of is_square_attacked.
+        let file = BoardState::parse_fen("k3q3/8/8/8/8/8/8/4K3 w - - 0 1");
+        assert!(file.is_square_attacked(Square::E1, Side::Black));
+        // Queen on the diagonal is reported as the checker.
+        let diag = BoardState::parse_fen("4k3/1q6/8/8/4K3/8/8/8 w - - 0 1");
+        assert_eq!(diag.checkers(Side::White).0, 1u64 << Square::B7 as usize);
+        assert!(diag.is_in_check(Side::White));
+    }
+
+    #[test]
+    fn passed_pawns_with_multiple_pawns_per_side() {
+        let mut board = BoardState::new();
+        board.add_piece(Square::E1, Side::White, Piece::King, false);
+        board.add_piece(Square::E8, Side::Black, Piece::King, false);
+        board.add_piece(Square::A4, Side::White, Piece::Pawn, false);
+        board.add_piece(Square::E4, Side::White, Piece::Pawn, false);
+        board.add_piece(Square::B5, Side::Black, Piece::Pawn, false);
+        board.add_piece(Square::H5, Side::Black, Piece::Pawn, false);
+
+        // B5 attacks A4, so only E4 is passed for White ...
+        assert!(!board.is_passed_pawn(Square::A4 as usize, Side::White));
+        assert!(board.is_passed_pawn(Square::E4 as usize, Side::White));
+        assert_eq!(
+            board.get_passed_pawns(Side::White).0,
+            1u64 << Square::E4 as usize
+        );
+        // ... and A4 blocks B5, so only H5 is passed for Black.
+        assert!(!board.is_passed_pawn(Square::B5 as usize, Side::Black));
+        assert!(board.is_passed_pawn(Square::H5 as usize, Side::Black));
+        assert_eq!(
+            board.get_passed_pawns(Side::Black).0,
+            1u64 << Square::H5 as usize
+        );
+    }
+
+    #[test]
+    fn is_legal_pinned_piece_in_single_knight_check() {
+        // Queen E2 is pinned to the king by the E8 rook; the D3 knight checks.
+        let board = BoardState::parse_fen("k3r3/8/8/8/8/3n4/2P1Q3/4K3 w - - 0 1");
+        assert!(board.is_in_check(Side::White));
+        // Capturing the checker leaves the pin ray, so it stays illegal.
+        assert!(!board.is_legal(Move::new(Square::E2, Square::D3, MoveType::Capture)));
+        // Sliding along the pin ray does not answer a knight check.
+        assert!(!board.is_legal(Move::new(Square::E2, Square::E3, MoveType::Quiet)));
+        // An unpinned pawn captures the checker ...
+        assert!(board.is_legal(Move::new(Square::C2, Square::D3, MoveType::Capture)));
+        // ... while a quiet pawn push answers nothing.
+        assert!(!board.is_legal(Move::new(Square::C2, Square::C3, MoveType::Quiet)));
+    }
+
+    #[test]
+    fn remove_piece_on_empty_square_returns_none() {
+        let mut board = BoardState::new();
+        assert_eq!(board.remove_piece(Square::E4, false), Piece::None);
+        board.add_piece(Square::E4, Side::White, Piece::Pawn, false);
+        assert_eq!(board.remove_piece(Square::E4, false), Piece::Pawn);
+        assert_eq!(board.remove_piece(Square::E4, false), Piece::None);
+    }
+
+    #[test]
+    fn get_piece_on_covers_pawn_values_and_minor_material() {
+        let mut board = BoardState::new();
+        board.add_piece(Square::E4, Side::White, Piece::Pawn, false);
+        board.add_piece(Square::E5, Side::Black, Piece::Pawn, false);
+        board.add_piece(Square::C3, Side::White, Piece::Knight, false);
+        assert_eq!(board.get_piece_on(Square::E4), Piece::Pawn as i32);
+        assert_eq!(board.get_piece_on(Square::E5), 6 + Piece::Pawn as i32);
+        assert!(board.has_non_pawn_material(Side::White));
+        assert!(!board.has_non_pawn_material(Side::Black));
+    }
+
+    #[test]
+    fn pawn_pseudo_legal_black_en_passant_and_blocked_double_push() {
+        // Black en passant must name the recorded square.
+        let ep = BoardState::parse_fen("4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1");
+        assert!(ep.is_pseudo_legal(Move::new(Square::D4, Square::E3, MoveType::EnPassant)));
+        assert!(!ep.is_pseudo_legal(Move::new(Square::D4, Square::C3, MoveType::EnPassant)));
+
+        // A blocked intermediate square stops the black double push.
+        let mut blocked = BoardState::new();
+        blocked.add_piece(Square::E7, Side::Black, Piece::Pawn, false);
+        blocked.add_piece(Square::E6, Side::White, Piece::Pawn, false);
+        blocked.side_to_move = Side::Black;
+        assert!(!blocked.is_pseudo_legal(Move::new(Square::E7, Square::E5, MoveType::DoublePush)));
+        assert!(!blocked.is_pseudo_legal(Move::new(Square::E7, Square::E6, MoveType::Quiet)));
+    }
+
+    #[test]
     fn threat_by_lesser_on_bare_and_queen_boards() {
         let bare = BoardState::parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
         assert_eq!(bare.threat_by_lesser(Side::White), [0; 6]);

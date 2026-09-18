@@ -3556,4 +3556,630 @@ mod tests {
             -simple_eval(&pos, Side::Black)
         );
     }
+
+    fn push_leb128_zeros_for_test(buf: &mut Vec<u8>, count: usize) {
+        buf.extend_from_slice(LEB128_MAGIC);
+        buf.extend_from_slice(&(count as u32).to_le_bytes());
+        buf.extend(std::iter::repeat_n(0u8, count));
+    }
+
+    fn build_tiny_no_threats_for_test(l1: usize, version: u32) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&version.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        push_leb128_zeros_for_test(&mut buf, l1);
+        push_leb128_zeros_for_test(&mut buf, PSQ_DIMS * l1);
+        push_leb128_zeros_for_test(&mut buf, PSQ_DIMS * N_BUCKETS);
+        let arch = build_valid_arch_bytes(l1);
+        for _ in 0..N_BUCKETS {
+            buf.extend_from_slice(&arch);
+        }
+        buf
+    }
+
+    fn build_tiny_combined_threats_for_test(l1: usize) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
+        buf.extend_from_slice(&network_hash(true, l1 as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&transformer_hash(true, l1 as u32).to_le_bytes());
+        push_leb128_zeros_for_test(&mut buf, l1);
+        push_leb128_zeros_for_test(&mut buf, (THREAT_DIMS + PSQ_DIMS) * l1);
+        push_leb128_zeros_for_test(&mut buf, (THREAT_DIMS + PSQ_DIMS) * N_BUCKETS);
+        let arch = build_valid_arch_bytes(l1);
+        for _ in 0..N_BUCKETS {
+            buf.extend_from_slice(&arch);
+        }
+        buf
+    }
+
+    fn build_tiny_sf17_for_test(l1: usize) -> Vec<u8> {
+        let mut buf = Vec::new();
+        buf.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
+        buf.extend_from_slice(&network_hash(true, l1 as u32).to_le_bytes());
+        buf.extend_from_slice(&0u32.to_le_bytes());
+        buf.extend_from_slice(&transformer_hash(true, l1 as u32).to_le_bytes());
+        push_leb128_zeros_for_test(&mut buf, l1);
+        buf.extend(std::iter::repeat_n(0u8, THREAT_DIMS * l1));
+        push_leb128_zeros_for_test(&mut buf, THREAT_DIMS * N_BUCKETS);
+        buf.extend(std::iter::repeat_n(0u8, PAIR_DIMS * l1));
+        push_leb128_zeros_for_test(&mut buf, PAIR_DIMS * N_BUCKETS);
+        push_leb128_zeros_for_test(&mut buf, PSQ_DIMS * l1);
+        push_leb128_zeros_for_test(&mut buf, PSQ_DIMS * N_BUCKETS);
+        let arch = build_valid_arch_bytes(l1);
+        for _ in 0..N_BUCKETS {
+            buf.extend_from_slice(&arch);
+        }
+        buf
+    }
+
+    fn dummy_full_loaded_nets_for_test() -> LoadedNets {
+        LoadedNets {
+            net: Sfnn16Net {
+                l1: L1,
+                use_threats: false,
+                is_rudi: false,
+                transformer: SfnnTransformer {
+                    bias: vec![7i16; L1],
+                    weights: vec![0i16; PSQ_DIMS * L1],
+                    threat_w: Vec::new(),
+                    threat_w_i16: Vec::new(),
+                    psqt_w: vec![0i32; PSQ_DIMS * N_BUCKETS],
+                    threat_psqt_w: Vec::new(),
+                    pair_w: Vec::new(),
+                    pair_w_i16: Vec::new(),
+                    pair_psqt_w: Vec::new(),
+                },
+                stacks: Vec::new(),
+            },
+        }
+    }
+
+    #[test]
+    fn propagate_rudi_scalar_clamp_determinism() {
+        let l1 = 15usize;
+        let mk = |bias: i32| SfnnArch {
+            fc0_bias: [bias; FC0_OUT],
+            fc0_w: vec![0i8; l1 * FC0_OUT],
+            fc1_bias: [0i32; FC1_OUT],
+            fc1_w: vec![1i8; FC1_IN * FC1_OUT],
+            fc2_bias: 0,
+            fc2_w: {
+                let mut w = [0i8; FC0_OUT * 2 + FC1_OUT * 2];
+                w[0] = 64;
+                w
+            },
+            is_rudi: true,
+        };
+        let input = vec![10u8; l1];
+        let low = propagate(&mk(-1_000_000), l1, &input);
+        let mid = propagate(&mk(8160), l1, &input);
+        let high = propagate(&mk(1_000_000), l1, &input);
+        assert_eq!(low, propagate(&mk(-1_000_000), l1, &input));
+        assert_eq!(mid, propagate(&mk(8160), l1, &input));
+        assert_eq!(high, propagate(&mk(1_000_000), l1, &input));
+        for v in [low, mid, high] {
+            assert!((-464_000..=464_000).contains(&v), "rudi {v} out of range");
+        }
+        assert!(low < mid, "low {low} should be < mid {mid}");
+        assert!(mid <= high, "mid {mid} should be <= high {high}");
+        let mut arch = mk(8160);
+        arch.fc0_w.iter_mut().for_each(|w| *w = 2);
+        let out = propagate(&arch, l1, &input);
+        assert!((-464_000..=464_000).contains(&out));
+        assert_eq!(out, propagate(&arch, l1, &input));
+    }
+
+    #[test]
+    fn propagate_nonrudi_scalar_skip_and_loops() {
+        let l1 = 15usize;
+        let mut arch = SfnnArch {
+            fc0_bias: [0i32; FC0_OUT],
+            fc0_w: vec![0i8; l1 * FC0_OUT],
+            fc1_bias: [0i32; FC1_OUT],
+            fc1_w: vec![0i8; FC1_IN * FC1_OUT],
+            fc2_bias: 0,
+            fc2_w: [0i8; FC0_OUT * 2 + FC1_OUT * 2],
+            is_rudi: false,
+        };
+        arch.fc0_bias[30] = 1000;
+        arch.fc0_bias[31] = 200;
+        let input = vec![0u8; l1];
+        let out = propagate(&arch, l1, &input);
+        assert_eq!(out, ((800i64 * 600 * 16) / (128 * 64 * 2)) as i32);
+        assert_eq!(out, propagate(&arch, l1, &input));
+        arch.fc0_bias[30] = 200;
+        arch.fc0_bias[31] = 1000;
+        let out2 = propagate(&arch, l1, &input);
+        assert_ne!(out, out2);
+        arch.fc0_bias = [50_000; FC0_OUT];
+        arch.fc1_w.iter_mut().for_each(|w| *w = 1);
+        arch.fc2_w.iter_mut().for_each(|w| *w = 1);
+        let big = propagate(&arch, l1, &input);
+        assert_eq!(big, propagate(&arch, l1, &input));
+        arch.fc0_bias = [-50_000; FC0_OUT];
+        let small = propagate(&arch, l1, &input);
+        assert_ne!(big, small);
+        arch.fc0_bias = [0; FC0_OUT];
+        arch.fc0_w.iter_mut().for_each(|w| *w = 3);
+        arch.fc1_w.iter_mut().for_each(|w| *w = 2);
+        arch.fc2_w.iter_mut().for_each(|w| *w = 1);
+        arch.fc2_bias = 5;
+        let input2 = vec![7u8; l1];
+        let full = propagate(&arch, l1, &input2);
+        assert_eq!(full, propagate(&arch, l1, &input2));
+    }
+
+    #[test]
+    fn propagate_l1_1024_large_determinism() {
+        let l1 = L1;
+        let mk = |rudi: bool| SfnnArch {
+            fc0_bias: [3i32; FC0_OUT],
+            fc0_w: {
+                let mut w = vec![0i8; l1 * FC0_OUT];
+                w[0] = 1;
+                w[1] = -1;
+                w[l1] = 2;
+                w
+            },
+            fc1_bias: [1i32; FC1_OUT],
+            fc1_w: {
+                let mut w = vec![0i8; FC1_IN * FC1_OUT];
+                w[0] = 1;
+                w[FC1_IN] = -2;
+                w
+            },
+            fc2_bias: 7,
+            fc2_w: {
+                let mut w = [0i8; FC0_OUT * 2 + FC1_OUT * 2];
+                w[0] = 1;
+                w[64] = -1;
+                w[127] = 2;
+                w
+            },
+            is_rudi: rudi,
+        };
+        let input = vec![11u8; l1];
+        for rudi in [true, false] {
+            let arch = mk(rudi);
+            let a = propagate(&arch, l1, &input);
+            let b = propagate(&arch, l1, &input);
+            assert_eq!(a, b);
+            let zero_input = vec![0u8; l1];
+            let c = propagate(&arch, l1, &zero_input);
+            assert_eq!(c, propagate(&arch, l1, &zero_input));
+        }
+    }
+
+    #[test]
+    fn sfnn16_load_bytes_tiny_no_threats_success() {
+        for version in [SF_FILE_VERSION, SF17_FILE_VERSION] {
+            let buf = build_tiny_no_threats_for_test(2, version);
+            let net = Sfnn16Net::load_bytes(&buf, false, 2).unwrap();
+            assert_eq!(net.l1, 2);
+            assert!(!net.use_threats);
+            assert!(!net.is_rudi);
+            assert_eq!(net.transformer.bias.len(), 2);
+            assert_eq!(net.transformer.weights.len(), PSQ_DIMS * 2);
+            assert_eq!(net.transformer.psqt_w.len(), PSQ_DIMS * N_BUCKETS);
+            assert_eq!(net.stacks.len(), N_BUCKETS);
+        }
+        let mut buf = build_tiny_no_threats_for_test(2, SF_FILE_VERSION);
+        buf.push(0);
+        assert_eq!(
+            Sfnn16Net::load_bytes(&buf, false, 2).unwrap_err(),
+            "trailing data after network"
+        );
+        let mut bad = build_tiny_no_threats_for_test(2, SF_FILE_VERSION);
+        let arch_len = build_valid_arch_bytes(2).len();
+        let arch_start = bad.len() - arch_len * N_BUCKETS;
+        bad[arch_start] ^= 0xFF;
+        assert!(Sfnn16Net::load_bytes(&bad, false, 2).is_err());
+        let mut bad_magic = build_tiny_no_threats_for_test(2, SF_FILE_VERSION);
+        bad_magic[16] ^= 0xFF;
+        assert!(Sfnn16Net::load_bytes(&bad_magic, false, 2).is_err());
+        let good = build_tiny_no_threats_for_test(2, SF_FILE_VERSION);
+        for cut in [20usize, 100, 1000, 50_000, 150_000] {
+            if cut < good.len() {
+                assert!(
+                    Sfnn16Net::load_bytes(&good[..good.len() - cut], false, 2).is_err(),
+                    "cut {cut} should fail"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn sfnn16_load_bytes_threat_combined_success() {
+        let buf = build_tiny_combined_threats_for_test(2);
+        let net = Sfnn16Net::load_bytes(&buf, true, 2).unwrap();
+        assert_eq!(net.l1, 2);
+        assert!(net.use_threats);
+        assert_eq!(net.transformer.weights.len(), PSQ_DIMS * 2);
+        assert_eq!(net.transformer.threat_w.len(), THREAT_DIMS * 2);
+        assert_eq!(net.transformer.threat_psqt_w.len(), THREAT_DIMS * N_BUCKETS);
+        assert_eq!(net.stacks.len(), N_BUCKETS);
+        let mut trailing = buf.clone();
+        trailing.push(0);
+        assert!(Sfnn16Net::load_bytes(&trailing, true, 2).is_err());
+        for cut in [20usize, 500, 50_000, 300_000] {
+            assert!(
+                Sfnn16Net::load_bytes(&buf[..buf.len() - cut], true, 2).is_err(),
+                "cut {cut} should fail"
+            );
+        }
+        let mut bad_arch = buf.clone();
+        let arch_start = buf.len() - build_valid_arch_bytes(2).len();
+        bad_arch[arch_start] ^= 0xFF;
+        assert!(Sfnn16Net::load_bytes(&bad_arch, true, 2).is_err());
+    }
+
+    #[test]
+    fn sfnn16_load_bytes_sf17_success() {
+        let buf = build_tiny_sf17_for_test(2);
+        let net = Sfnn16Net::load_bytes(&buf, true, 2).unwrap();
+        assert_eq!(net.l1, 2);
+        assert!(net.use_threats);
+        assert_eq!(net.transformer.threat_w.len(), THREAT_DIMS * 2);
+        assert_eq!(net.transformer.pair_w.len(), PAIR_DIMS * 2);
+        assert_eq!(net.transformer.weights.len(), PSQ_DIMS * 2);
+        assert_eq!(net.stacks.len(), N_BUCKETS);
+        let pair_offset = {
+            let mut pos = 0;
+            pos += 4 + 4 + 4;
+            pos += LEB128_MAGIC.len() + 4 + 2;
+            pos += THREAT_DIMS * 2;
+            pos += LEB128_MAGIC.len() + 4 + THREAT_DIMS * N_BUCKETS;
+            pos
+        };
+        let truncated = buf[..pair_offset + 10].to_vec();
+        assert_eq!(
+            Sfnn16Net::load_bytes(&truncated, true, 2).unwrap_err(),
+            "truncated pair weights"
+        );
+        let mut trailing = buf.clone();
+        trailing.extend_from_slice(&[0u8; 4]);
+        assert!(Sfnn16Net::load_bytes(&trailing, true, 2).is_err());
+    }
+
+    #[test]
+    fn load_file_delegates_without_global() {
+        let dir = std::env::temp_dir();
+        let pid = std::process::id();
+        let rudi_path = dir.join(format!("whale_v16_test_rudi_{pid}.tmp"));
+        let normal_path = dir.join(format!("whale_v16_test_normal_{pid}.tmp"));
+        let mut bad_rudi = Vec::new();
+        bad_rudi.extend_from_slice(b"RUDI");
+        bad_rudi.extend_from_slice(&123u32.to_le_bytes());
+        bad_rudi.extend(std::iter::repeat_n(0u8, 123));
+        std::fs::write(&rudi_path, &bad_rudi).unwrap();
+        let rudi_str = rudi_path.to_string_lossy().into_owned();
+        assert!(Sfnn16Net::load_file(&rudi_str, true, L1).is_err());
+        std::fs::write(&normal_path, b"bad!").unwrap();
+        let normal_str = normal_path.to_string_lossy().into_owned();
+        assert!(Sfnn16Net::load_file(&normal_str, true, L1).is_err());
+        assert!(Sfnn16Net::load_file(&normal_str, false, 2).is_err());
+        let _ = std::fs::remove_file(&rudi_path);
+        let _ = std::fs::remove_file(&normal_path);
+    }
+
+    #[test]
+    fn eval_with_net_sf_threats_covers_branches() {
+        let board = BoardState::parse_fen("4k3/8/8/8/2p5/2n5/1PP5/4K3 w - - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        let base = [10i16, 20];
+        let psqt = [3i32; N_BUCKETS];
+        let mk = |with_pairs: bool| Sfnn16Net {
+            l1: 2,
+            use_threats: true,
+            is_rudi: false,
+            transformer: SfnnTransformer {
+                bias: Vec::new(),
+                weights: Vec::new(),
+                threat_w: vec![0i8; THREAT_DIMS * 2],
+                threat_w_i16: Vec::new(),
+                psqt_w: Vec::new(),
+                threat_psqt_w: vec![0i32; THREAT_DIMS * N_BUCKETS],
+                pair_w: if with_pairs {
+                    vec![0i8; PAIR_DIMS * 2]
+                } else {
+                    Vec::new()
+                },
+                pair_w_i16: Vec::new(),
+                pair_psqt_w: if with_pairs {
+                    vec![0i32; PAIR_DIMS * N_BUCKETS]
+                } else {
+                    Vec::new()
+                },
+            },
+            stacks: vec![
+                SfnnArch {
+                    fc0_bias: [0; FC0_OUT],
+                    fc0_w: vec![127i8; 2 * FC0_OUT],
+                    fc1_bias: [0; FC1_OUT],
+                    fc1_w: vec![127i8; FC1_IN * FC1_OUT],
+                    fc2_bias: 0,
+                    fc2_w: [127i8; FC0_OUT * 2 + FC1_OUT * 2],
+                    is_rudi: false,
+                };
+                1
+            ],
+        };
+        let mut net_pairs = mk(true);
+        let net_nopairs = mk(false);
+        let base_pairs = eval_with_net(&pos, &net_pairs, [&base; 2], [&psqt; 2], Side::White, 0);
+        let base_nopairs =
+            eval_with_net(&pos, &net_nopairs, [&base; 2], [&psqt; 2], Side::White, 0);
+        assert_eq!(
+            base_pairs,
+            eval_with_net(&pos, &net_pairs, [&base; 2], [&psqt; 2], Side::White, 0)
+        );
+        let mut threats = [0usize; MAX_THREAT_ACTIVE];
+        let nt = collect_threats(&pos, Side::White, &mut threats);
+        assert!(nt > 0);
+        let t = (threats[0] - PSQ_DIMS) * 2;
+        net_pairs.transformer.threat_w[t] = 127;
+        net_pairs.transformer.threat_w[t + 1] = 127;
+        let after_w = eval_with_net(&pos, &net_pairs, [&base; 2], [&psqt; 2], Side::White, 0);
+        assert_ne!(base_pairs, after_w);
+        net_pairs.transformer.threat_w[t] = 0;
+        net_pairs.transformer.threat_w[t + 1] = 0;
+        net_pairs.transformer.threat_psqt_w[(threats[0] - PSQ_DIMS) * N_BUCKETS] = 64;
+        let after_psqt = eval_with_net(&pos, &net_pairs, [&base; 2], [&psqt; 2], Side::White, 0);
+        assert_ne!(base_pairs, after_psqt);
+        let mut pairs = [0usize; MAX_PAIR_ACTIVE];
+        let np = collect_pairs(&pos, Side::White, &mut pairs);
+        if np > 0 {
+            let pt = (pairs[0] - PSQ_DIMS - THREAT_DIMS) * 2;
+            net_pairs.transformer.pair_w[pt] = 127;
+            net_pairs.transformer.pair_w[pt + 1] = 127;
+            let after_pair =
+                eval_with_net(&pos, &net_pairs, [&base; 2], [&psqt; 2], Side::White, 0);
+            assert_ne!(base_pairs, after_pair);
+        }
+        let _ = eval_with_net(&pos, &net_pairs, [&base; 2], [&psqt; 2], Side::Black, 0);
+        let _ = eval_with_net(&pos, &net_nopairs, [&base; 2], [&psqt; 2], Side::Black, 0);
+        let _ = base_nopairs;
+    }
+
+    #[test]
+    fn eval_with_net_l1_1024_kings_only() {
+        let board = BoardState::parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        let base = [0i16; L1];
+        let psqt = [0i32; N_BUCKETS];
+        let mk = |rudi: bool, threats: bool| Sfnn16Net {
+            l1: L1,
+            use_threats: threats,
+            is_rudi: rudi,
+            transformer: SfnnTransformer {
+                bias: Vec::new(),
+                weights: Vec::new(),
+                threat_w: Vec::new(),
+                threat_w_i16: Vec::new(),
+                psqt_w: Vec::new(),
+                threat_psqt_w: Vec::new(),
+                pair_w: Vec::new(),
+                pair_w_i16: Vec::new(),
+                pair_psqt_w: Vec::new(),
+            },
+            stacks: vec![
+                SfnnArch {
+                    fc0_bias: [0; FC0_OUT],
+                    fc0_w: vec![0; L1 * FC0_OUT],
+                    fc1_bias: [0; FC1_OUT],
+                    fc1_w: vec![0; FC1_IN * FC1_OUT],
+                    fc2_bias: 0,
+                    fc2_w: [0; FC0_OUT * 2 + FC1_OUT * 2],
+                    is_rudi: rudi,
+                };
+                1
+            ],
+        };
+        for rudi in [true, false] {
+            for threats in [true, false] {
+                let net = mk(rudi, threats);
+                for stm in [Side::White, Side::Black] {
+                    let a = eval_with_net(&pos, &net, [&base; 2], [&psqt; 2], stm, 0);
+                    let b = eval_with_net(&pos, &net, [&base; 2], [&psqt; 2], stm, 0);
+                    assert_eq!(a, b);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn refresh_perspective_manual_full_net() {
+        let loaded = dummy_full_loaded_nets_for_test();
+        let board = BoardState::parse_fen("K7/8/8/8/8/8/8/k7 w - - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        let mut accs = Sfnn16Accs::empty();
+        refresh_perspective(&pos, &loaded, Side::White, &mut accs);
+        assert!(accs.halfka[0].iter().all(|&v| v == 7));
+        assert!(accs.psqt[0].iter().all(|&v| v == 0));
+        refresh_perspective(&pos, &loaded, Side::Black, &mut accs);
+        assert!(accs.halfka[1].iter().all(|&v| v == 7));
+        let mut accs2 = Sfnn16Accs::empty();
+        refresh_perspective(&pos, &loaded, Side::White, &mut accs2);
+        assert_eq!(accs.halfka[0], accs2.halfka[0]);
+        assert_eq!(accs.psqt[0], accs2.psqt[0]);
+        let board2 = BoardState::parse_fen("K7/8/8/8/2P5/8/8/k7 w - - 0 1");
+        let pos2 = SfnnPosition::from_board(&board2);
+        refresh_perspective(&pos2, &loaded, Side::White, &mut accs2);
+        assert!(accs2.halfka[0].iter().all(|&v| v == 7));
+    }
+
+    #[test]
+    fn finny_incremental_manual_full_net() {
+        let loaded = dummy_full_loaded_nets_for_test();
+        let fens = [
+            "K7/8/8/8/8/8/8/k7 w - - 0 1",
+            "K7/8/8/8/8/8/1P6/k7 w - - 0 1",
+            "K7/8/8/8/8/8/1N6/k7 w - - 0 1",
+            "K6R/PPPPPPPP/8/8/8/8/pppppppp/k6r w - - 0 1",
+        ];
+        for fen in fens {
+            let board = BoardState::parse_fen(fen);
+            let pos = SfnnPosition::from_board(&board);
+            for perspective in [Side::White, Side::Black] {
+                let mut direct = Sfnn16Accs::empty();
+                refresh_perspective(&pos, &loaded, perspective, &mut direct);
+                let mut via_finny = Sfnn16Accs::empty();
+                update_perspective_finny_or_refresh(&pos, &loaded, perspective, &mut via_finny);
+                assert_eq!(
+                    direct.halfka[perspective as usize], via_finny.halfka[perspective as usize],
+                    "finny mismatch for {fen} {perspective:?} first touch"
+                );
+                let mut via_finny2 = Sfnn16Accs::empty();
+                update_perspective_finny_or_refresh(&pos, &loaded, perspective, &mut via_finny2);
+                assert_eq!(
+                    direct.halfka[perspective as usize], via_finny2.halfka[perspective as usize],
+                    "finny mismatch for {fen} {perspective:?} second touch"
+                );
+                assert_eq!(
+                    direct.psqt[perspective as usize],
+                    via_finny2.psqt[perspective as usize]
+                );
+            }
+        }
+        let board_b = BoardState::parse_fen(fens[1]);
+        let mut pos_b = SfnnPosition::from_board(&board_b);
+        pos_b.white |= 1u64 << 18;
+        let mut acc_inc = Sfnn16Accs::empty();
+        let loaded_ref = &loaded;
+        for perspective in [Side::White, Side::Black] {
+            let mut direct = Sfnn16Accs::empty();
+            refresh_perspective(&pos_b, loaded_ref, perspective, &mut direct);
+            update_perspective_finny_or_refresh(&pos_b, loaded_ref, perspective, &mut acc_inc);
+            assert_eq!(
+                direct.halfka[perspective as usize],
+                acc_inc.halfka[perspective as usize]
+            );
+        }
+    }
+
+    #[test]
+    fn scatter_empty_feats_safe() {
+        let l1 = 8usize;
+        let tr = SfnnTransformer {
+            bias: vec![0; l1],
+            weights: vec![1i16; 2 * l1],
+            threat_w: Vec::new(),
+            threat_w_i16: Vec::new(),
+            psqt_w: vec![2i32; 2 * N_BUCKETS],
+            threat_psqt_w: Vec::new(),
+            pair_w: Vec::new(),
+            pair_w_i16: Vec::new(),
+            pair_psqt_w: Vec::new(),
+        };
+        let mut acc = [0i16; 8];
+        let mut psqt = [0i32; N_BUCKETS];
+        scatter_halfka(&tr, l1, &[], &mut acc, &mut psqt, 1);
+        assert!(acc.iter().all(|&v| v == 0));
+        assert!(psqt.iter().all(|&v| v == 0));
+        scatter_halfka(&tr, l1, &[0], &mut acc, &mut psqt, 1);
+        assert!(acc.iter().all(|&v| v == 1));
+        scatter_halfka(&tr, l1, &[0], &mut acc, &mut psqt, -1);
+        assert!(acc.iter().all(|&v| v == 0));
+    }
+
+    #[test]
+    fn threat_pair_edge_cases_no_global() {
+        assert_eq!(pseudo_attacks_sf(0, 0), 0);
+        assert_eq!(pseudo_attacks_sf(7, 10), 0);
+        assert_eq!(pseudo_attacks_sf(8, 10), 0);
+        assert_eq!(pseudo_attacks_sf(15, 10), 0);
+        let kingless_attack =
+            SfnnPosition::from_board(&BoardState::parse_fen("8/8/8/3p4/4P3/8/8/8 w - - 0 1"));
+        let mut n = 0;
+        for_each_threat(&kingless_attack, |_, _, _, _| n += 1);
+        assert!(n > 0);
+        let mut inconsistent =
+            SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1"));
+        inconsistent.white |= 1u64 << 18;
+        let mut skipped = 0;
+        for_each_threat(&inconsistent, |_, _, _, _| skipped += 1);
+        let _ = skipped;
+        let mut dense_pieces = [0u64; 6];
+        dense_pieces[Piece::Queen as usize] = u64::MAX;
+        let dense = SfnnPosition {
+            pieces: dense_pieces,
+            white: 0x0000_0000_FFFF_FFFF,
+            black: 0xFFFF_FFFF_0000_0000,
+            mapping: [4u8; 64],
+        };
+        let mut tbuf = [0usize; MAX_THREAT_ACTIVE];
+        let tn = collect_threats(&dense, Side::White, &mut tbuf);
+        assert!(tn > 100 && tn <= MAX_THREAT_ACTIVE);
+        let dense_p = SfnnPosition::from_board(&BoardState::parse_fen(
+            "8/PPPPPPPP/PPPPPPPP/PPPPPPPP/PPPPPPPP/PPPPPPPP/PPPPPPPP/8 w - - 0 1",
+        ));
+        let mut pbuf = [0usize; MAX_PAIR_ACTIVE];
+        let pn = collect_pairs(&dense_p, Side::White, &mut pbuf);
+        assert!(pn > 0);
+        for &idx in &pbuf[..pn] {
+            assert!((PSQ_DIMS + THREAT_DIMS..PSQ_DIMS + THREAT_DIMS + PAIR_DIMS).contains(&idx));
+        }
+        let mut found_none = false;
+        let mut found_some = false;
+        for attacker in [1usize, 2, 3, 4, 5] {
+            for attacked in [1usize, 2, 3, 4, 5, 9, 10, 11, 12, 13] {
+                for (from, to) in [(10usize, 20usize), (20, 10)] {
+                    match threat_index_for(Side::White, attacker, from, to, attacked, 4) {
+                        None => found_none = true,
+                        Some(idx) => {
+                            found_some = true;
+                            assert!(idx < THREAT_DIMS);
+                        }
+                    }
+                }
+            }
+        }
+        assert!(found_none && found_some);
+    }
+
+    #[test]
+    fn kingless_evaluate_board_deterministic() {
+        let board = BoardState::parse_fen("8/8/8/8/8/8/8/8 w - - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        let mut accs = Sfnn16Accs::empty();
+        assert!(evaluate_nets(&pos, &mut accs, Side::White).is_none());
+        let gen_before = accs.generation;
+        refresh_all(&pos, &mut accs);
+        assert_eq!(accs.generation, gen_before);
+        ensure_fresh(&pos, &mut accs);
+        let mut pending = SfnnPending::default();
+        note_add(&mut pending, Square::E2, Side::White, Piece::Pawn);
+        flush_pending(&pos, &mut accs, &mut pending);
+        assert_eq!(pending.n_adds, 0);
+        apply_queued(&pos, &mut accs, &[], &[], &[false, false]);
+        let mut board_mut = BoardState::parse_fen("8/8/8/8/8/8/8/8 w - - 0 1");
+        assert!(evaluate_board(&mut board_mut).is_none());
+        assert!(evaluate_board_detailed(&mut board_mut).is_none());
+    }
+
+    #[test]
+    fn sfnn_arch_load_various_paddings() {
+        for fc0_in in [2usize, 15, 32, 33, 64] {
+            let data = build_valid_arch_bytes(fc0_in);
+            let mut pos = 0;
+            let arch = SfnnArch::load(&data, &mut pos, fc0_in, arch_hash(fc0_in as u32)).unwrap();
+            assert_eq!(pos, data.len());
+            assert_eq!(arch.fc0_w.len(), FC0_OUT * fc0_in.next_multiple_of(32));
+        }
+    }
+
+    #[test]
+    fn read_rudi_overflow_guards() {
+        assert_eq!(
+            read_rudi_i16(&[], &mut 0, usize::MAX),
+            Err("bad whale length")
+        );
+        assert_eq!(
+            read_rudi_i32(&[], &mut 0, usize::MAX),
+            Err("bad whale length")
+        );
+    }
 }

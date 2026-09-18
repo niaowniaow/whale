@@ -497,6 +497,103 @@ mod tests {
     }
 
     #[test]
+    fn test_evaluate_internal_clamps_extreme_scores() {
+        let mut high = Network::new_boxed();
+        high.output_bias = 0;
+        high.output_weights.fill(100);
+        let mut low = Network::new_boxed();
+        low.output_bias = 0;
+        low.output_weights.fill(-100);
+
+        let mut board = BoardState::new();
+        let idx = board.history.index;
+        board.history.accumulators[idx].white.state.fill(300);
+        board.history.accumulators[idx].black.state.fill(300);
+        board.side_to_move = Side::White;
+
+        assert_eq!(evaluate_internal(&board, &high), 29000);
+        assert_eq!(evaluate_internal(&board, &low), -29000);
+    }
+
+    #[test]
+    fn test_evaluate_internal_negative_inputs_clamp_to_zero() {
+        let mut network = Network::new_boxed();
+        network.output_bias = 7;
+        network.output_weights.fill(5);
+
+        let mut board = BoardState::new();
+        let idx = board.history.index;
+        board.history.accumulators[idx].white.state.fill(-100);
+        board.history.accumulators[idx].black.state.fill(-100);
+        board.side_to_move = Side::White;
+
+        // Every input clamps to 0, so only the bias survives: 7 * 400 / 16320 = 0.
+        assert_eq!(evaluate_internal(&board, &network), 0);
+    }
+
+    #[test]
+    fn test_evaluate_fast_negative_optimism_lowers_score() {
+        use crate::common::helpers::STARTING_FEN;
+        use crate::common::piece::Piece;
+        use crate::common::square::Square;
+
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        board.add_piece(Square::E4, Side::White, Piece::Queen, true);
+        board.flush_pending_updates(board.history.index);
+        board.ensure_accumulators_fresh();
+        let base = evaluate_fast(&mut board, 0);
+        let pessimistic = evaluate_fast(&mut board, -1000);
+        assert_ne!(base, pessimistic);
+        assert!(pessimistic < base);
+    }
+
+    #[test]
+    fn test_evaluate_fast_material_zero_matches_internal() {
+        use crate::common::piece::Piece;
+        use crate::common::square::Square;
+
+        let mut board = BoardState::new();
+        board.add_piece(Square::E1, Side::White, Piece::King, true);
+        board.add_piece(Square::E8, Side::Black, Piece::King, true);
+        board.flush_pending_updates(board.history.index);
+        board.ensure_accumulators_fresh();
+        board.half_move_clock = 0;
+        let network = Network::get_embedded();
+        // No pawns or pieces: the material term vanishes and optimism is zero,
+        // so evaluate_fast must equal the raw network output.
+        assert_eq!(
+            evaluate_fast(&mut board, 0),
+            evaluate_internal(&board, network)
+        );
+    }
+
+    #[test]
+    fn test_evaluate_with_depth_covers_all_regimes() {
+        use crate::common::helpers::STARTING_FEN;
+
+        clear_eval_cache();
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        // Tactical (<5), blended (5..=15) and strategic (>15) DCN regimes.
+        for depth in [0u8, 1, 5, 10, 15, 16, 64] {
+            let score = evaluate_with_depth(&mut board, 0, depth);
+            assert!(score.abs() <= 29000, "depth {depth} out of range");
+        }
+    }
+
+    #[test]
+    fn test_eval_cache_evicted_on_index_collision() {
+        clear_eval_cache();
+        store_eval_cache(123, 0, 0, 11);
+        assert_eq!(probe_eval_cache(123, 0, 0), Some(11));
+        // Same table index, different hash: direct-mapped overwrite.
+        let colliding = 123u64 + EVAL_CACHE_SIZE as u64;
+        store_eval_cache(colliding, 0, 0, 22);
+        assert_eq!(probe_eval_cache(colliding, 0, 0), Some(22));
+        assert_eq!(probe_eval_cache(123, 0, 0), None);
+        clear_eval_cache();
+    }
+
+    #[test]
     fn test_evaluate_stays_within_mate_range() {
         use crate::common::helpers::STARTING_FEN;
         use crate::common::piece::Piece;

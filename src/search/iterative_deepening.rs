@@ -554,4 +554,69 @@ mod tests {
         search(&mut board, 2, &token, &mut debug, &mut state, 1);
         assert_ne!(state.best_move, Move::NO_MOVE);
     }
+
+    #[test]
+    fn mate_score_early_exit_with_time_manager() {
+        let mut board = BoardState::parse_fen("7k/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        state.opt_time = 100;
+        state.max_time = 500;
+        search(&mut board, 2, &token, &mut debug, &mut state, 1);
+        assert_ne!(state.best_move, Move::NO_MOVE);
+        assert!(state.score > MAX_CENTIPAWN_EVAL - 100);
+    }
+
+    #[test]
+    fn aspiration_sweep_over_volatile_positions() {
+        for fen in [
+            crate::common::helpers::STARTING_FEN,
+            "r1bqkbnr/pppp1ppp/2n5/4p3/4P3/5N2/PPPP1PPP/RNBQKB1R w KQkq - 0 1",
+            "7k/8/8/8/8/8/QQQ5/K7 w - - 0 1",
+        ] {
+            let mut board = BoardState::parse_fen(fen);
+            let token = AtomicBool::new(false);
+            let mut debug = false;
+            let mut state = SearchState::new();
+            search(&mut board, 2, &token, &mut debug, &mut state, 1);
+            assert!(state.score.abs() < MAX_CENTIPAWN_EVAL);
+            assert!(state.nodes > 0);
+        }
+    }
+
+    #[test]
+    fn worker_max_nodes_abort_across_staggered_depths() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        state.max_nodes = 1;
+        search(&mut board, 1, &token, &mut debug, &mut state, 3);
+        assert!(state.nodes >= 1);
+    }
+
+    #[test]
+    fn multithreaded_mate_finds_move_fast() {
+        let mut board = BoardState::parse_fen("7k/5Q2/6K1/8/8/8/8/8 w - - 0 1");
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        search(&mut board, 1, &token, &mut debug, &mut state, 2);
+        assert_ne!(state.best_move, Move::NO_MOVE);
+        assert!(board.is_legal(state.best_move));
+    }
+
+    #[test]
+    fn time_manager_without_stop_covers_falling_eval() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        state.opt_time = 100;
+        state.max_time = 500;
+        search(&mut board, 1, &token, &mut debug, &mut state, 1);
+        assert_ne!(state.best_move, Move::NO_MOVE);
+        assert!(board.is_legal(state.best_move));
+    }
 }

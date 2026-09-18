@@ -550,4 +550,60 @@ mod tests {
         );
         assert!(score.abs() < MAX_CENTIPAWN_EVAL);
     }
+
+    #[test]
+    fn stand_pat_fail_high_stores_beta_bound() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        let score = search(&mut board, -2000, -1999, 2, &cancel, &mut state);
+        assert!(score >= -1999);
+        assert!(score.abs() < MAX_CENTIPAWN_EVAL);
+        let entry = state.tt.probe(board.board_hash).expect("stand-pat stores");
+        assert_eq!(entry.entry_type, TranspositionEntryType::Beta);
+    }
+
+    #[test]
+    fn promo_rescue_fail_high_above_stand_pat() {
+        let mut board = BoardState::parse_fen("7k/5P2/5K2/8/8/8/8/8 w - - 0 1");
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        let eval = evaluate_with_optimism(&mut board, 0);
+        let alpha = eval.saturating_add(99);
+        let beta = eval.saturating_add(100);
+        let score = search(&mut board, alpha, beta, 2, &cancel, &mut state);
+        assert!(score >= beta);
+    }
+
+    #[test]
+    fn capture_fail_high_blends_toward_beta() {
+        let mut board = BoardState::parse_fen("7k/8/8/8/3p4/8/3R4/K7 w - - 0 1");
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        let score = search(&mut board, 0, 1, 2, &cancel, &mut state);
+        assert!(score >= 1);
+        assert!(score.abs() < MAX_CENTIPAWN_EVAL);
+    }
+
+    #[test]
+    fn losing_captures_hit_see_prune_in_tight_window() {
+        let mut board = BoardState::parse_fen("7k/8/2b2b2/3pp3/8/8/8/K2RQ3 w - - 0 1");
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        let score = search(&mut board, 700, 701, 2, &cancel, &mut state);
+        assert!(score.abs() < MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+    }
+
+    #[test]
+    fn alpha_bound_returned_when_nothing_improves() {
+        let mut board = BoardState::parse_fen(QUIET_ONLY);
+        let mut state = SearchState::new();
+        let cancel = AtomicBool::new(false);
+        let eval = evaluate_with_optimism(&mut board, 0);
+        let alpha = eval.saturating_add(100);
+        let beta = eval.saturating_add(101);
+        let score = search(&mut board, alpha, beta, 2, &cancel, &mut state);
+        assert_eq!(score, alpha);
+    }
 }

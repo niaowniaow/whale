@@ -1622,4 +1622,226 @@ mod tests {
         assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
         assert!(nodes > 0);
     }
+
+    #[test]
+    fn mate_distance_clamp_returns_alpha_immediately() {
+        let (score, nodes) = run_search(STARTING_FEN, 1, 30_000, 30_000);
+        assert_eq!(score, 30_000);
+        assert_eq!(nodes, 1);
+    }
+
+    #[test]
+    fn beta_is_mate_skips_rfp_and_nmp_gates() {
+        let (score, nodes) = run_search(STARTING_FEN, 1, 30_999, 31_000);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn small_prob_beta_returns_without_full_search() {
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(1000, 0, board.half_move_clock),
+            0,
+            Move::NO_MOVE,
+            TranspositionEntryType::Exact,
+        );
+        let score = search(&mut board, 2, 0, 1, &cancel, &[], &mut pv_table, &mut state);
+        assert_eq!(score, 381);
+    }
+
+    #[test]
+    fn tt_alpha_cutoff_hits_on_shallow_non_pv() {
+        let mut board = BoardState::parse_fen(FEW_PIECE_ENDGAME);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(-100, 0, board.half_move_clock),
+            5,
+            Move::NO_MOVE,
+            TranspositionEntryType::Alpha,
+        );
+        let score = search(&mut board, 1, 0, 1, &cancel, &[], &mut pv_table, &mut state);
+        assert_eq!(score, -100);
+        assert_eq!(state.nodes, 1);
+    }
+
+    #[test]
+    fn tt_beta_deep_cutoff_hits_on_stalemate() {
+        let mut board = BoardState::parse_fen(STALEMATE);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(500, 0, board.half_move_clock),
+            7,
+            Move::NO_MOVE,
+            TranspositionEntryType::Beta,
+        );
+        let score = search(&mut board, 6, 0, 1, &cancel, &[], &mut pv_table, &mut state);
+        assert_eq!(score, 500);
+        assert_eq!(state.nodes, 1);
+    }
+
+    #[test]
+    fn tt_shallow_depth_miss_falls_through_to_search() {
+        let mut board = BoardState::parse_fen(STARTING_FEN);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(100, 0, board.half_move_clock),
+            1,
+            Move::NO_MOVE,
+            TranspositionEntryType::Beta,
+        );
+        let score = search(&mut board, 2, 0, 1, &cancel, &[], &mut pv_table, &mut state);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 1);
+    }
+
+    #[test]
+    fn tt_cutoff_skipped_when_halfmove_above_90() {
+        let mut board = BoardState::parse_fen("7k/5K2/6Q1/8/8/8/8/8 b - - 95 150");
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(250, 0, board.half_move_clock),
+            5,
+            Move::NO_MOVE,
+            TranspositionEntryType::Exact,
+        );
+        let score = search(&mut board, 1, 0, 1, &cancel, &[], &mut pv_table, &mut state);
+        assert_eq!(score, 0);
+    }
+
+    #[test]
+    fn null_move_prune_triggers_on_material_up() {
+        let (score, nodes) = run_search("7k/8/8/8/8/8/QQQ5/K7 w - - 0 1", 2, 0, 1);
+        assert!(score > 0);
+        assert!(score < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn futility_prunes_late_quiets_with_high_alpha() {
+        let (score, nodes) = run_search(STARTING_FEN, 2, 20_000, 20_001);
+        assert!(score < 20_000);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn see_prune_skips_second_losing_capture() {
+        let (score, nodes) = run_search("7k/8/2b2b2/3pp3/8/8/8/K2RQ3 w - - 0 1", 2, 700, 701);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn lmr_reduces_late_quiets_with_pvs_research() {
+        let (score, nodes) = run_search(STARTING_FEN, 3, i16::MIN + 1, i16::MAX - 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    fn singular_stalemate_search(tt_score: i16, alpha: i16, beta: i16) -> (i16, u64) {
+        use crate::common::move_type::MoveType;
+        let mut board = BoardState::parse_fen(STALEMATE);
+        let cancel = AtomicBool::new(false);
+        let mut pv_table = PvTable::new();
+        let mut state = SearchState::new();
+        let tt_best = Move::new(Square::H8, Square::G8, MoveType::Quiet);
+        state.tt.submit_entry(
+            board.board_hash,
+            tt::TranspositionTable::adjust_score(tt_score, 0, board.half_move_clock),
+            6,
+            tt_best,
+            TranspositionEntryType::Exact,
+        );
+        let score = search(
+            &mut board,
+            6,
+            alpha,
+            beta,
+            &cancel,
+            &[],
+            &mut pv_table,
+            &mut state,
+        );
+        (score, state.nodes)
+    }
+
+    #[test]
+    fn singular_double_extension_on_hopeless_exclusion() {
+        let (score, nodes) = singular_stalemate_search(300, 0, 1);
+        assert_eq!(score, 0);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn singular_single_extension_near_margin() {
+        let (score, nodes) = singular_stalemate_search(13, 0, 1);
+        assert_eq!(score, 0);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn singular_negative_extension_when_original_above_beta() {
+        let (score, nodes) = singular_stalemate_search(10, 0, 1);
+        assert_eq!(score, 0);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn singular_fail_high_returns_with_correction_bonus() {
+        let (score, nodes) = singular_stalemate_search(0, -5, -4);
+        assert_eq!(score, 0);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn check_evasion_deep_copies_eval_stack() {
+        let (score, nodes) = run_search(IN_CHECK_ESCAPE, 3, i16::MIN + 1, i16::MAX - 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
+
+    #[test]
+    fn mate_against_returns_mated_score() {
+        let (score, _) = run_search(
+            "7k/6Q1/5K2/8/8/8/8/8 b - - 0 1",
+            1,
+            i16::MIN + 1,
+            i16::MAX - 1,
+        );
+        assert_eq!(score, -constants::MAX_CENTIPAWN_EVAL);
+    }
+
+    #[test]
+    fn coarse_pass_runs_on_deep_stalemate_both_arms() {
+        let (lo_score, lo_nodes) = run_search(STALEMATE, 7, 0, 1);
+        assert_eq!(lo_score, 0);
+        assert!(lo_nodes > 0);
+        let (hi_score, hi_nodes) = run_search(STALEMATE, 7, 1000, 1001);
+        assert_eq!(hi_score, 0);
+        assert!(hi_nodes > 0);
+    }
+
+    #[test]
+    fn probcut_verifies_captures_on_tiny_board() {
+        let (score, nodes) = run_search("7k/8/8/8/3p4/8/3R4/K7 w - - 0 1", 4, 0, 1);
+        assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(nodes > 0);
+    }
 }

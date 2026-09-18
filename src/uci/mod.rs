@@ -437,6 +437,74 @@ mod tests {
     }
 
     #[test]
+    fn output_best_move_plain_with_plain_ponder() {
+        use crate::common::moves::Move;
+
+        output_best_move(
+            Move::parse_long_algebraic("e2e4").unwrap(),
+            Move::parse_long_algebraic("e7e5").unwrap(),
+        );
+    }
+
+    #[test]
+    fn output_best_move_none_ignores_ponder() {
+        use crate::common::moves::Move;
+
+        // The "(none)" shape takes an early return; any ponder is dropped.
+        output_best_move(Move::NO_MOVE, Move::parse_long_algebraic("e2e4").unwrap());
+    }
+
+    #[test]
+    fn get_u64_max_value_and_first_occurrence_wins() {
+        assert_eq!(
+            get_u64("wtime", &["wtime", "18446744073709551615"]),
+            Some(u64::MAX)
+        );
+        assert_eq!(
+            get_u64("wtime", &["wtime", "100", "wtime", "200"]),
+            Some(100)
+        );
+        // A present-but-unparseable first token keeps the default (None);
+        // later duplicates are not consulted.
+        assert_eq!(get_u64("wtime", &["wtime", "xx", "wtime", "200"]), None);
+    }
+
+    #[test]
+    fn perft_kiwipete_shallow_depths() {
+        use crate::common::helpers::KIWI_PETE_FEN;
+
+        let mut board = BoardState::parse_fen(KIWI_PETE_FEN);
+        let original = board.clone();
+        for (depth, expected) in [(0, 1), (1, 48), (2, 2039)] {
+            assert_eq!(perft_count(&mut board, depth), expected);
+            assert!(board == original);
+        }
+    }
+
+    #[test]
+    fn run_perft_on_kiwipete_preserves_position() {
+        use crate::common::helpers::KIWI_PETE_FEN;
+
+        let mut client = UciClient::new();
+        let parts: Vec<&str> = KIWI_PETE_FEN.split_whitespace().collect();
+        let mut params = vec!["fen"];
+        params.extend(parts);
+        client.run_position(&params);
+        let original = client.board.lock().unwrap().clone();
+        client.run_perft(&["1"]);
+        client.run_perft(&["2"]);
+        assert!(*client.board.lock().unwrap() == original);
+    }
+
+    #[test]
+    fn run_bench_tiny_hash_preserves_position() {
+        let mut client = UciClient::new();
+        let original = client.board.lock().unwrap().clone();
+        client.run_bench(&["2", "1", "1"]);
+        assert!(*client.board.lock().unwrap() == original);
+    }
+
+    #[test]
     fn run_perft_small_depths_preserve_position() {
         let mut client = UciClient::new();
         let original = client.board.lock().unwrap().clone();
