@@ -197,14 +197,16 @@ pub fn root_move(board: &mut BoardState) -> Option<Move> {
     None
 }
 
+// Tests that mutate the global table configuration must not run
+// concurrently with each other (or with setoption tests that forward
+// Syzygy options).
+#[cfg(test)]
+pub(crate) static SYZYGY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::common::helpers::STARTING_FEN;
-
-    // All tests below mutate the global table configuration, so they must
-    // not run concurrently with each other.
-    static SYZYGY_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn clear_tables() {
         let _ = set_path("");

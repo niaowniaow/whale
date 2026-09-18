@@ -233,3 +233,119 @@ impl BoardState {
         self.history.computed[self.history.index] = true;
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::common::helpers::STARTING_FEN;
+    use crate::common::moves::Move;
+
+    fn startpos() -> BoardState {
+        BoardState::parse_fen(STARTING_FEN)
+    }
+
+    fn flush_shape(adds: &[Square], removes: &[Square]) -> BoardState {
+        let mut board = startpos();
+        for &sq in adds {
+            board.add_piece(sq, Side::White, Piece::Pawn, true);
+        }
+        for &sq in removes {
+            board.remove_piece(sq, true);
+        }
+        board.flush_pending_updates(0);
+        board
+    }
+
+    #[test]
+    fn flush_each_pending_shape_marks_computed() {
+        use Square::*;
+
+        // (0, 0): nothing queued.
+        let board = flush_shape(&[], &[]);
+        assert!(board.history.computed[0]);
+
+        // (1, 0): single add.
+        let board = flush_shape(&[E4], &[]);
+        assert!(board.history.computed[0]);
+        assert_eq!(board.pending_adds, 0);
+
+        // (1, 1): add plus capture-style remove.
+        let board = flush_shape(&[E4], &[D2]);
+        assert!(board.history.computed[0]);
+        assert_eq!((board.pending_adds, board.pending_removes), (0, 0));
+
+        // (1, 2): en-passant shape.
+        let board = flush_shape(&[E4], &[D2, E2]);
+        assert!(board.history.computed[0]);
+
+        // (2, 2): castling shape.
+        let board = flush_shape(&[E4, E5], &[D2, E2]);
+        assert!(board.history.computed[0]);
+
+        // Fallback shapes refresh instead of replaying.
+        let board = flush_shape(&[], &[D2]);
+        assert!(board.history.computed[0]);
+        let board = flush_shape(&[E4, E5], &[D2]);
+        assert!(board.history.computed[0]);
+    }
+
+    #[test]
+    fn record_then_ensure_replays_dirty_updates() {
+        let mut board = startpos();
+        let m = Move::parse_long_algebraic("e2e4").unwrap();
+        board.make_move(m);
+        assert_eq!(board.history.index, 1);
+        assert!(!board.history.computed[1]);
+        board.ensure_accumulators_fresh();
+        assert!(board.history.computed[1]);
+
+        // Fresh board: index 0 arrives computed, so ensure is a no-op.
+        let mut clean = startpos();
+        assert!(clean.history.computed[clean.history.index]);
+        clean.ensure_accumulators_fresh();
+        assert!(clean.history.computed[clean.history.index]);
+    }
+
+    #[test]
+    fn ensure_replays_each_dirty_shape() {
+        use Square::*;
+
+        // (adds, removes) shapes replayed through index 1.
+        let shapes: &[(&[Square], &[Square])] = &[
+            (&[], &[]),
+            (&[E4], &[]),
+            (&[E4], &[D2]),
+            (&[E4], &[D2, E2]),
+            (&[E4, E5], &[D2, E2]),
+            (&[], &[D2]),
+        ];
+        for (adds, removes) in shapes {
+            let mut board = startpos();
+            for &sq in *adds {
+                board.add_piece(sq, Side::White, Piece::Pawn, true);
+            }
+            for &sq in *removes {
+                board.remove_piece(sq, true);
+            }
+            board.record_pending_updates(1);
+            assert!(!board.history.computed[1]);
+            board.history.index = 1;
+            board.ensure_accumulators_fresh();
+            assert!(
+                board.history.computed[1],
+                "shape ({}, {}) did not replay",
+                adds.len(),
+                removes.len()
+            );
+        }
+    }
+
+    #[test]
+    fn refresh_rebuilds_both_perspectives() {
+        let network = Network::get_embedded();
+        let mut board = startpos();
+        board.refresh_accumulator(Side::White, network);
+        board.refresh_accumulator(Side::Black, network);
+        assert!(board.history.computed[board.history.index]);
+    }
+}

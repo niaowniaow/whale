@@ -213,4 +213,116 @@ mod tests {
         assert!((state.params.lmr_base - 0.60).abs() < 1e-5);
         assert!((state.params.lmr_div - 2.20).abs() < 1e-5);
     }
+
+    #[test]
+    fn should_apply_threads_overhead_and_ponder() {
+        let mut client = UciClient::new();
+        client.run_setoption(&["name", "Threads", "value", "8"]);
+        assert_eq!(client.num_threads, 8);
+        client.run_setoption(&["name", "Threads", "value", "9999"]);
+        assert_eq!(client.num_threads, 256);
+        client.run_setoption(&["name", "Threads", "value", "bogus"]);
+        assert_eq!(client.num_threads, 256);
+        client.run_setoption(&["name", "Move Overhead", "value", "100"]);
+        assert_eq!(client.move_overhead, 100);
+        client.run_setoption(&["name", "MoveOverhead", "value", "99999"]);
+        assert_eq!(client.move_overhead, 5000);
+        client.run_setoption(&["name", "Ponder", "value", "true"]);
+        assert!(client.ponder_enabled);
+        client.run_setoption(&["name", "Ponder", "value", "0"]);
+        assert!(!client.ponder_enabled);
+    }
+
+    #[test]
+    fn should_clear_hash_and_clamp_margins() {
+        let mut client = UciClient::new();
+        client.run_setoption(&["name", "Clear", "Hash"]);
+        client.run_setoption(&["name", "Futility_Margin", "value", "1"]);
+        client.run_setoption(&["name", "Singular_Margin", "value", "99"]);
+        client.run_setoption(&["name", "ProbCut_Margin", "value", "9"]);
+        client.run_setoption(&["name", "NMP_Base", "value", "0"]);
+        client.run_setoption(&["name", "NMP_Depth_Div", "value", "99"]);
+        client.run_setoption(&["name", "History_Weight", "value", "99"]);
+        let state = client.search_state.lock().unwrap();
+        assert_eq!(state.params.futility_margin_mult, 50);
+        assert_eq!(state.params.singular_margin_mult, 5);
+        assert_eq!(state.params.probcut_margin, 50);
+        assert_eq!(state.params.nmp_base, 1);
+        assert_eq!(state.params.nmp_depth_div, 8);
+        assert_eq!(state.params.history_weight_mult, 4);
+    }
+
+    #[test]
+    fn should_toggle_feature_flags_and_thresholds() {
+        let mut client = UciClient::new();
+        for name in ["ALP_Enabled", "PSM_Enabled", "GTP_Enabled"] {
+            client.run_setoption(&["name", name, "value", "true"]);
+        }
+        client.run_setoption(&["name", "ALP_Threshold", "value", "1"]);
+        client.run_setoption(&["name", "GTP_Threshold", "value", "99"]);
+        {
+            let state = client.search_state.lock().unwrap();
+            assert!(state.params.alp_enabled);
+            assert!(state.params.psm_enabled);
+            assert!(state.params.gtp_enabled);
+            assert_eq!(state.params.alp_threshold, 50);
+            assert_eq!(state.params.gtp_threshold, 50);
+        }
+        client.run_setoption(&["name", "ALP_Enabled", "value", "false"]);
+        assert!(!client.search_state.lock().unwrap().params.alp_enabled);
+    }
+
+    #[test]
+    fn should_ignore_malformed_options() {
+        let mut client = UciClient::new();
+        client.run_setoption(&[]);
+        client.run_setoption(&["name"]);
+        client.run_setoption(&["name", "NoSuchOption", "value", "1"]);
+        assert_eq!(client.num_threads, 1);
+        assert_eq!(client.move_overhead, 10);
+    }
+
+    #[test]
+    fn should_forward_syzygy_options_without_loading() {
+        let _serial = crate::syzygy::SYZYGY_TEST_LOCK.lock().unwrap();
+        let mut client = UciClient::new();
+        client.run_setoption(&["name", "SyzygyProbeLimit", "value", "3"]);
+        assert_eq!(crate::syzygy::probe_limit(), 3);
+        client.run_setoption(&["name", "SyzygyProbeDepth", "value", "2"]);
+        assert_eq!(crate::syzygy::probe_depth(), 2);
+        client.run_setoption(&["name", "Syzygy50MoveRule", "value", "false"]);
+        assert!(!crate::syzygy::use_50mr());
+        client.run_setoption(&["name", "SyzygyProbeLimit", "value", "bogus"]);
+        assert_eq!(crate::syzygy::probe_limit(), 3);
+        client.run_setoption(&["name", "SyzygyProbeLimit", "value", "7"]);
+        client.run_setoption(&["name", "SyzygyProbeDepth", "value", "1"]);
+        client.run_setoption(&["name", "Syzygy50MoveRule", "value", "true"]);
+        client.run_setoption(&["name", "SyzygyPath", "value", "<empty>"]);
+        assert_eq!(crate::syzygy::table_count(), 0);
+        client.run_setoption(&["name", "SyzygyPath", "value", "definitely/missing"]);
+        assert_eq!(crate::syzygy::table_count(), 0);
+    }
+
+    #[test]
+    fn should_defer_setoption_while_searching() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let mut client = UciClient::new();
+        let state = Arc::clone(&client.search_state);
+        let _guard = state.lock().unwrap();
+        let cancel = Arc::new(AtomicBool::new(false));
+        client.current_search = Some(Arc::clone(&cancel));
+        client.run_setoption(&["name", "Threads", "value", "4"]);
+        assert_eq!(client.num_threads, 1);
+        assert!(cancel.load(Ordering::Relaxed));
+        assert!(client.precompute_cancel.load(Ordering::Relaxed));
+
+        let mut idle = UciClient::new();
+        let idle_state = Arc::clone(&idle.search_state);
+        let _idle_guard = idle_state.lock().unwrap();
+        idle.run_setoption(&["name", "Threads", "value", "4"]);
+        assert_eq!(idle.num_threads, 1);
+        assert!(idle.precompute_cancel.load(Ordering::Relaxed));
+    }
 }

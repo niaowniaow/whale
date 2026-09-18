@@ -181,4 +181,98 @@ mod tests {
 
         run_precomputation(board, test_move, state, cancel, 4);
     }
+
+    #[test]
+    fn test_select_skips_illegal_moves() {
+        use crate::common::square::Square;
+
+        // Be2 is pinned to the king by the rook on e8: every bishop move
+        // leaves the file and is illegal.
+        let board = BoardState::parse_fen("3kr3/8/8/8/8/8/4B3/4K3 w - - 0 1");
+        let tt = TranspositionTable::new(1024);
+        let replies = select_speculative_replies(&board, &tt, 3);
+        assert!(!replies.is_empty());
+        for m in &replies {
+            assert!(board.is_legal(*m));
+        }
+        assert!(!replies.iter().any(|m| m.source == Square::E2));
+    }
+
+    #[test]
+    fn test_select_prefers_winning_capture() {
+        use crate::common::square::Square;
+
+        let board = BoardState::parse_fen("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1");
+        let tt = TranspositionTable::new(1024);
+        let replies = select_speculative_replies(&board, &tt, 3);
+        assert!(!replies.is_empty());
+        assert_eq!(replies[0].source, Square::E4);
+        assert_eq!(replies[0].target, Square::D5);
+    }
+
+    #[test]
+    fn test_select_scores_losing_capture_above_quiets() {
+        use crate::common::square::Square;
+
+        // Qxd3 wins a pawn but loses the queen to ...cxd3.
+        let board = BoardState::parse_fen("4k3/8/8/8/2p5/3p4/4Q3/4K3 w - - 0 1");
+        let tt = TranspositionTable::new(1024);
+        let replies = select_speculative_replies(&board, &tt, 5);
+        assert!(
+            replies
+                .iter()
+                .any(|m| m.source == Square::E2 && m.target == Square::D3)
+        );
+        assert!(replies[0].is_capture());
+    }
+
+    #[test]
+    fn test_select_scores_promotions() {
+        let board = BoardState::parse_fen("4k3/3P4/8/8/8/8/8/4K3 w - - 0 1");
+        let tt = TranspositionTable::new(1024);
+        let replies = select_speculative_replies(&board, &tt, 4);
+        assert!(!replies.is_empty());
+        assert!(replies.iter().any(|m| m.is_promotion()));
+    }
+
+    #[test]
+    fn test_run_precomputation_rejects_illegal_best_move() {
+        use crate::common::move_type::MoveType;
+        use crate::common::square::Square;
+
+        // Be2 is pinned: leaving the e-file exposes the king.
+        let board = BoardState::parse_fen("4r2k/8/8/8/8/8/4B3/4K3 w - - 0 1");
+        let state = Arc::new(Mutex::new(SearchState::new()));
+        let cancel = Arc::new(AtomicBool::new(false));
+        let illegal = Move::new(Square::E2, Square::D3, MoveType::Quiet);
+        assert!(!board.is_legal(illegal));
+        run_precomputation(board, illegal, state, cancel, 1);
+        // Null moves must not panic the precompute path either.
+        let board = BoardState::parse_fen(STARTING_FEN);
+        assert!(!board.is_legal(Move::NO_MOVE));
+        run_precomputation(
+            board,
+            Move::NO_MOVE,
+            Arc::new(Mutex::new(SearchState::new())),
+            Arc::new(AtomicBool::new(false)),
+            1,
+        );
+    }
+
+    #[test]
+    fn test_run_precomputation_completes_depth_one() {
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let mut move_list = MoveList::new();
+        board.generate_moves(&mut move_list);
+        let best = move_list
+            .iter()
+            .map(|e| e.mv)
+            .find(|m| board.is_legal(*m))
+            .expect("startpos has legal moves");
+
+        let state = Arc::new(Mutex::new(SearchState::new()));
+        let cancel = Arc::new(AtomicBool::new(false));
+        run_precomputation(board, best, state, cancel.clone(), 1);
+        assert!(!cancel.load(Ordering::Relaxed));
+    }
 }

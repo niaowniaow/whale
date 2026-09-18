@@ -686,6 +686,12 @@ impl BoardState {
     }
 
     pub fn is_legal(&self, m: Move) -> bool {
+        // Null moves would index `piece_mapping` out of bounds (NoSquare
+        // == 64); reject them like `is_pseudo_legal` does. Search can hand
+        // us NO_MOVE (stalemate/checkmate, empty searchmoves filter).
+        if m == Move::NO_MOVE || m.source == Square::NoSquare || m.target == Square::NoSquare {
+            return false;
+        }
         let us = self.side_to_move;
         let them = us.other();
         let king_bb = self.get_pieces(us, Piece::King);

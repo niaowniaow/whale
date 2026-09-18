@@ -114,3 +114,27 @@ pub fn run() {
 pub fn write_line(message: &str) {
     println!("{message}");
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn info_command_prints_version() {
+        InfoCommand.run(&[]);
+    }
+
+    #[test]
+    fn datagen_rejects_bad_cli_args() {
+        // NOTE: valid arguments are deliberately never passed here: without
+        // the `train` feature the stub calls `process::exit(1)`, and with it
+        // a real datagen run would start.
+        let cmd = DatagenCommand;
+        cmd.run(&[]);
+        cmd.run(&["out.binpack"]);
+        cmd.run(&["out.binpack", "8"]);
+        cmd.run(&["out.binpack", "many", "book.fen"]);
+        cmd.run(&["out.binpack", "8", "book.fen", "deep"]);
+        cmd.run(&["out.binpack", "8", "book.fen", "3", "lots"]);
+    }
+}
