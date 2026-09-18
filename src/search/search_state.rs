@@ -124,14 +124,19 @@ impl SearchState {
         }
     }
 
-    pub fn clone_for_worker(&self, _thread_id: usize) -> Self {
-        // FIX PERSONA-TT-POLLUTION: workers share the same Arc TT, so they
-        // must search with params/optimism/lmr_table IDENTICAL to the primary.
-        // Per-thread search diversity comes only from the odd/even stagger in
-        // iterative_deepening::worker_search (standard Lazy SMP). Persona
-        // application is intentionally disabled (see sps.rs).
+    pub fn clone_for_worker(&self, thread_id: usize) -> Self {
+        // SPS v2: each helper searches under its own persona for diversity
+        // (on top of the odd/even depth stagger in worker_search). This is
+        // TT-safe by construction: personas only reshape pruning/LMR, which
+        // preserves bound validity, while optimism — the one knob that shifts
+        // stored scores — stays uniform across all threads (see sps.rs).
+        // The TT itself stays shared so helpers keep warming it for primary.
+        let persona = crate::search::sps::persona_for_thread(thread_id);
+        let mut params = self.params.clone();
+        let mut lmr_table = self.lmr_table.clone();
+        crate::search::sps::apply_persona(persona, &mut params, &mut lmr_table);
         Self {
-            params: self.params.clone(),
+            params,
             opt_time: self.opt_time,
             max_time: self.max_time,
             best_move: Move::NO_MOVE,
@@ -153,11 +158,11 @@ impl SearchState {
             captures_stack: Box::new([MoveList::new(); MAX_PLY]),
             quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
             eval_stack: Box::new([i16::MIN; MAX_PLY]),
-            lmr_table: self.lmr_table.clone(),
+            lmr_table,
             correction_history: crate::search::correction_history::CorrectionHistory::new(),
             bmo: self.bmo.clone(),
             ras: crate::search::ras::RuntimeAnnealer::new(),
-            persona: crate::search::sps::SearchPersona::Standard,
+            persona,
             psm_stack: Box::new(crate::search::psm::PsmStack::new()),
         }
     }
@@ -188,5 +193,61 @@ impl SearchState {
 impl Default for SearchState {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::search::sps::SearchPersona;
+
+    #[test]
+    fn clone_for_worker_assigns_personas_per_thread() {
+        let primary = SearchState::new();
+
+        let w0 = primary.clone_for_worker(0);
+        assert_eq!(w0.persona, SearchPersona::Standard);
+        assert_eq!(
+            w0.params.futility_margin_mult,
+            primary.params.futility_margin_mult
+        );
+
+        let w1 = primary.clone_for_worker(1);
+        assert_eq!(w1.persona, SearchPersona::Tactical);
+        assert_eq!(w1.params.futility_margin_mult, 160);
+        assert_eq!(w1.params.probcut_margin, 140);
+
+        let w2 = primary.clone_for_worker(2);
+        assert_eq!(w2.persona, SearchPersona::Solid);
+        assert_eq!(w2.params.nmp_depth_div, 2);
+
+        let w3 = primary.clone_for_worker(3);
+        assert_eq!(w3.persona, SearchPersona::Aggressive);
+        assert_eq!(w3.params.futility_margin_mult, 140);
+
+        // Thread ids wrap every 4 workers.
+        assert_eq!(primary.clone_for_worker(4).persona, SearchPersona::Standard);
+    }
+
+    #[test]
+    fn clone_for_worker_keeps_tt_shared_and_optimism_uniform() {
+        use std::sync::Arc;
+
+        let mut primary = SearchState::new();
+        primary.optimism = [12, -12];
+        // A custom primary margin must survive verbatim on Standard workers.
+        primary.params.futility_margin_mult = 111;
+
+        for thread_id in 0..8 {
+            let worker = primary.clone_for_worker(thread_id);
+            // TT stays shared so helpers keep warming it for primary...
+            assert!(Arc::ptr_eq(&worker.tt, &primary.tt));
+            // ...while optimism stays uniform so stored scores keep one eval
+            // semantic across threads (the TT-pollution invariant).
+            assert_eq!(worker.optimism, [12, -12]);
+            if worker.persona == SearchPersona::Standard {
+                assert_eq!(worker.params.futility_margin_mult, 111);
+            }
+        }
     }
 }

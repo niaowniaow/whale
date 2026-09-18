@@ -30,7 +30,7 @@ The search engine uses a multi-threaded Principal Variation Search (PVS) with it
 * **Depth Allocation & Root Search:**
 
   * **Disagreement-Allocated Depth (DAD):** Adjusts depth and time for tactical positions based on score disagreements.
-  * **Speculative Persona Search (SPS):** Multi-threaded search that explores different strategies (Aggressive, Tactical, Solid, Standard).
+  * **Speculative Persona Search (SPS):** Helper threads search under different strategies (Aggressive, Tactical, Solid, Standard) on top of the usual depth stagger. Personas only reshape pruning/LMR — never eval optimism — so shared Transposition Table entries stay sound across threads.
 
 * **Neural & Adaptive Pruning:**
 
