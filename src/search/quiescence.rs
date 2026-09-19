@@ -6,18 +6,19 @@ use crate::common::piece::Piece;
 use crate::common::tt::{self, TranspositionEntryType};
 use crate::eval::evaluate_with_optimism;
 use crate::search::bmo::BanditArm;
+use crate::search::draw;
 use crate::search::move_picker::MovePicker;
-use crate::search::search_state::SearchState;
+use crate::search::search_state::{SearchState, stm_is_white};
 use crate::{board::state::BoardState, common::constants::MAX_CENTIPAWN_EVAL};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn has_legal_move(board_state: &BoardState) -> bool {
     let mut moves = MoveList::new();
-    board_state.generate_quiets(&mut moves);
+    board_state.generate_captures(&mut moves);
     if moves.iter().any(|entry| board_state.is_legal(entry.mv)) {
         return true;
     }
-    board_state.generate_captures(&mut moves);
+    board_state.generate_quiets(&mut moves);
     moves.iter().any(|entry| board_state.is_legal(entry.mv))
 }
 
@@ -35,15 +36,27 @@ pub fn search(
     }
 
     if board_state.is_draw_in_search(ply as u16) {
-        return 0;
+        let base = draw::draw_score(search_state.nodes);
+        return draw::apply_contempt(
+            base,
+            stm_is_white(board_state.side_to_move),
+            search_state.contempt_cp,
+            search_state.draw_score_cp,
+        );
     }
 
     let in_check = board_state.is_in_check(board_state.side_to_move);
-    if !has_legal_move(board_state) {
+    if board_state.occupancy().count_ones() <= 10 && !has_legal_move(board_state) {
         return if in_check {
             -MAX_CENTIPAWN_EVAL + ply as i16
         } else {
-            0
+            let base = draw::draw_score(search_state.nodes);
+            draw::apply_contempt(
+                base,
+                stm_is_white(board_state.side_to_move),
+                search_state.contempt_cp,
+                search_state.draw_score_cp,
+            )
         };
     }
 
@@ -149,6 +162,7 @@ pub fn search(
     };
 
     let mut has_legal_moves = false;
+    let mut move_count = 0;
 
     while let Some(move_obj) = move_picker.next(
         board_state,
@@ -160,29 +174,36 @@ pub fn search(
             break;
         }
 
+        if !board_state.is_legal(move_obj) {
+            continue;
+        }
+
         if !in_check {
             if board_state.see(move_obj) < -74 {
                 continue;
             }
 
             if !move_obj.is_promotion() {
+                move_count += 1;
+                if move_count > 2 {
+                    continue;
+                }
+
                 let captured_piece = if move_obj.move_type == MoveType::EnPassant {
                     Piece::Pawn
                 } else {
                     board_state.piece_mapping[move_obj.target as usize]
                 };
-                // FIX QSEARCH-LERP: futility updates bestValue instead of
-                // silently skipping (Stockfish search.cpp:1815-1818).
                 let futility_val = futility_base + captured_piece.see_value();
                 if futility_val <= alpha {
                     best_value = best_value.max(futility_val);
                     continue;
                 }
+                if board_state.see(move_obj) < alpha.saturating_sub(futility_base) {
+                    best_value = best_value.max(alpha.min(futility_base));
+                    continue;
+                }
             }
-        }
-
-        if !board_state.is_legal(move_obj) {
-            continue;
         }
 
         board_state.make_move(move_obj);
@@ -328,7 +349,9 @@ mod tests {
             (-MAX_CENTIPAWN_EVAL, MAX_CENTIPAWN_EVAL),
         ] {
             state.tt.clear();
-            assert_eq!(search(&mut board, alpha, beta, 4, &cancel, &mut state), 0);
+            // Draw score with node parity: near-zero.
+            let s = search(&mut board, alpha, beta, 4, &cancel, &mut state);
+            assert!(s.abs() <= 2, "stalemate qsearch {s}");
         }
     }
 
@@ -352,7 +375,8 @@ mod tests {
                     entry_type,
                 );
                 assert_eq!(state.tt.probe(board.board_hash).unwrap().score, score);
-                assert_eq!(search(&mut board, alpha, beta, 4, &cancel, &mut state), 0);
+                let s = search(&mut board, alpha, beta, 4, &cancel, &mut state);
+                assert!(s.abs() <= 2, "stalemate qsearch {s}");
             }
         }
     }
@@ -410,14 +434,12 @@ mod tests {
                     Move::NO_MOVE,
                     TranspositionEntryType::Exact,
                 );
-                assert_eq!(
-                    search(&mut board, 0, 1, ply, &cancel, &mut state),
-                    if in_check {
-                        -MAX_CENTIPAWN_EVAL + ply as i16
-                    } else {
-                        0
-                    },
-                );
+                let s = search(&mut board, 0, 1, ply, &cancel, &mut state);
+                if in_check {
+                    assert_eq!(s, -MAX_CENTIPAWN_EVAL + ply as i16);
+                } else {
+                    assert!(s.abs() <= 2, "stalemate qsearch {s}");
+                }
             }
         }
     }

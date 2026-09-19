@@ -150,6 +150,15 @@ pub struct TranspositionTable {
     pub generation: AtomicU8,
 }
 
+// SAFETY: `TranspositionTable` is shared across Lazy SMP search threads via
+// `Arc<TranspositionTable>`. Thread safety is upheld by:
+//  1. Every read/write to `Cluster::entries` is guarded by a per-cluster
+//     `AtomicBool` spinlock (`try_lock` / `ClusterGuard` RAII).
+//  2. The `generation` field is `AtomicU8` with relaxed ordering (benign races).
+//  3. `clusters: Vec<Cluster>` and `locks: Vec<AtomicBool>` are never resized
+//     while shared — `resize` takes `&mut self`, requiring exclusive access.
+//  4. `prefetch` performs a read-only, side-effect-free CPU hint on an immutable
+//     pointer derived from the stable `Vec` backing store.
 unsafe impl Send for TranspositionTable {}
 unsafe impl Sync for TranspositionTable {}
 
@@ -222,6 +231,33 @@ impl TranspositionTable {
         self.capacity
     }
 
+    /// Permille (0..1000) of occupied slots, Stockfish `hashfull` concept.
+    /// Best-effort under contention: contended clusters are skipped.
+    pub fn hashfull(&self) -> u32 {
+        let mut used = 0u64;
+        // Sample up to 1024 clusters to bound cost on huge tables.
+        let step = (self.cluster_count / 1024).max(1);
+        let mut sampled = 0u64;
+        let mut i = 0;
+        while i < self.cluster_count {
+            if let Some(_guard) = self.try_lock(i) {
+                for entry in &self.clusters[i].entries {
+                    let k = entry.key.load(Ordering::Relaxed);
+                    let d = entry.data.load(Ordering::Relaxed);
+                    if k != 0 && unpack_entry(k, d).entry_type != TranspositionEntryType::None {
+                        used += 1;
+                    }
+                }
+                sampled += CLUSTER_SIZE as u64;
+            }
+            i += step;
+        }
+        if sampled == 0 {
+            return 0;
+        }
+        ((used * 1000) / sampled) as u32
+    }
+
     pub fn clear(&self) {
         for (index, cluster) in self.clusters.iter().enumerate() {
             let _guard = loop {
@@ -240,11 +276,18 @@ impl TranspositionTable {
     #[inline(always)]
     pub fn prefetch(&self, hash: u64) {
         #[cfg(target_arch = "x86_64")]
-        unsafe {
-            use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
-            let index = (hash as usize) & (self.cluster_count - 1);
-            let ptr = self.clusters.as_ptr().add(index) as *const i8;
-            _mm_prefetch(ptr, _MM_HINT_T0);
+        {
+            // SAFETY: `index` is masked to `cluster_count - 1` (a power-of-two),
+            // so it is always in bounds of `self.clusters`. The resulting pointer
+            // targets a valid, allocated `Cluster`. `_mm_prefetch` with `_MM_HINT_T0`
+            // is a no-op hint to the CPU cache hierarchy and never traps, even if
+            // the address were invalid (it would simply be ignored).
+            unsafe {
+                use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
+                let index = (hash as usize) & (self.cluster_count - 1);
+                let ptr = self.clusters.as_ptr().add(index) as *const i8;
+                _mm_prefetch(ptr, _MM_HINT_T0);
+            }
         }
     }
 
@@ -920,6 +963,19 @@ mod tests {
         assert_eq!(tt.probe(5 * STRIDE).unwrap().best_move, newcomer);
         assert_eq!(tt.probe(STRIDE), None);
         assert!(tt.probe(2 * STRIDE).is_some());
+    }
+
+    #[test]
+    fn test_tt_hashfull_tracks_usage() {
+        let tt = TranspositionTable::new(1024);
+        assert_eq!(tt.hashfull(), 0);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        // One entry in 2048 slots is 0 permille; fill enough to register.
+        for i in 0..600u64 {
+            tt.submit_entry(424243 + i * 7919, 100, 5, m, TranspositionEntryType::Exact);
+        }
+        assert!(tt.hashfull() > 0);
+        assert!(tt.hashfull() <= 1000);
     }
 
     #[test]

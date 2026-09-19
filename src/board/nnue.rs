@@ -102,6 +102,7 @@ impl BoardState {
             let pos = SfnnPosition::from_board(self);
             let accs = &mut self.history.sfnn16[target_idx];
             sfnn16::flush_pending(&pos, accs, &mut self.sfnn16_pending);
+            self.history.sfnn16_computed[target_idx] = [true, true];
         }
     }
 
@@ -119,16 +120,18 @@ impl BoardState {
         self.pending_removes = 0;
 
         if sfnn16::maintenance_active() {
-            let pos = SfnnPosition::from_board(self);
-            if target_idx > 0 {
-                self.history.sfnn16[target_idx] = self.history.sfnn16[target_idx - 1].clone();
-            }
-            let accs = &mut self.history.sfnn16[target_idx];
-            sfnn16::flush_pending(&pos, accs, &mut self.sfnn16_pending);
+            self.history.sfnn16_pending[target_idx] = self.sfnn16_pending;
+            self.history.sfnn16_computed[target_idx] = [false; 2];
+            self.sfnn16_pending.clear();
         }
     }
 
     pub fn ensure_accumulators_fresh(&mut self) {
+        if sfnn16::maintenance_active() {
+            let pos = SfnnPosition::from_board(self);
+            sfnn16::ensure_sfnn16_fresh(self, &pos);
+        }
+
         let target_idx = self.history.index;
         if self.history.computed[target_idx] {
             return;

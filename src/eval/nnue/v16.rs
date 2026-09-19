@@ -210,71 +210,86 @@ pub fn append_halfka(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>
 const FILE_A_BB: u64 = 0x0101_0101_0101_0101;
 const FILE_H_BB: u64 = 0x8080_8080_8080_8080;
 
+const KNIGHT_ATTACKS_TABLE: [u64; 64] = {
+    let mut table = [0u64; 64];
+    let mut sq = 0;
+    while sq < 64 {
+        let b = 1u64 << sq;
+        let mut attacks = 0u64;
+        attacks |= (b << 17) & !FILE_A_BB;
+        attacks |= (b << 15) & !FILE_H_BB;
+        attacks |= (b << 10) & !(FILE_A_BB | (FILE_A_BB << 1));
+        attacks |= (b << 6) & !(FILE_H_BB | (FILE_H_BB >> 1));
+        attacks |= (b >> 17) & !FILE_H_BB;
+        attacks |= (b >> 15) & !FILE_A_BB;
+        attacks |= (b >> 10) & !(FILE_H_BB | (FILE_H_BB >> 1));
+        attacks |= (b >> 6) & !(FILE_A_BB | (FILE_A_BB << 1));
+        table[sq] = attacks;
+        sq += 1;
+    }
+    table
+};
+
+const KING_ATTACKS_TABLE: [u64; 64] = {
+    let mut table = [0u64; 64];
+    let mut sq = 0;
+    while sq < 64 {
+        let b = 1u64 << sq;
+        let mut attacks = 0u64;
+        attacks |= (b << 8) | (b >> 8);
+        attacks |= ((b << 1) & !FILE_A_BB) | ((b >> 1) & !FILE_H_BB);
+        attacks |= ((b << 9) & !FILE_A_BB) | ((b << 7) & !FILE_H_BB);
+        attacks |= ((b >> 7) & !FILE_A_BB) | ((b >> 9) & !FILE_H_BB);
+        table[sq] = attacks;
+        sq += 1;
+    }
+    table
+};
+
+const PAWN_ATTACKS_TABLE: [[u64; 64]; 2] = {
+    let mut table = [[0u64; 64]; 2];
+    let mut sq = 0;
+    while sq < 64 {
+        let b = 1u64 << sq;
+        table[0][sq] = ((b << 9) & !FILE_A_BB) | ((b << 7) & !FILE_H_BB);
+        table[1][sq] = ((b >> 7) & !FILE_A_BB) | ((b >> 9) & !FILE_H_BB);
+        sq += 1;
+    }
+    table
+};
+
+#[inline(always)]
 fn knight_attacks_sf(sq: usize) -> u64 {
-    let b = 1u64 << sq;
-    let mut attacks = 0u64;
-    attacks |= (b << 17) & !FILE_A_BB;
-    attacks |= (b << 15) & !FILE_H_BB;
-    attacks |= (b << 10) & !(FILE_A_BB | (FILE_A_BB << 1));
-    attacks |= (b << 6) & !(FILE_H_BB | (FILE_H_BB >> 1));
-    attacks |= (b >> 17) & !FILE_H_BB;
-    attacks |= (b >> 15) & !FILE_A_BB;
-    attacks |= (b >> 10) & !(FILE_H_BB | (FILE_H_BB >> 1));
-    attacks |= (b >> 6) & !(FILE_A_BB | (FILE_A_BB << 1));
-    attacks
+    KNIGHT_ATTACKS_TABLE[sq]
 }
 
+#[inline(always)]
 fn king_attacks_sf(sq: usize) -> u64 {
-    let b = 1u64 << sq;
-    let mut attacks = 0u64;
-    attacks |= (b << 8) | (b >> 8);
-    attacks |= ((b << 1) & !FILE_A_BB) | ((b >> 1) & !FILE_H_BB);
-    attacks |= ((b << 9) & !FILE_A_BB) | ((b << 7) & !FILE_H_BB);
-    attacks |= ((b >> 7) & !FILE_A_BB) | ((b >> 9) & !FILE_H_BB);
-    attacks
+    KING_ATTACKS_TABLE[sq]
 }
 
+#[inline(always)]
 fn pawn_attacks_sf(side: Side, sq: usize) -> u64 {
-    let b = 1u64 << sq;
-    if side == Side::White {
-        ((b << 9) & !FILE_A_BB) | ((b << 7) & !FILE_H_BB)
-    } else {
-        ((b >> 7) & !FILE_A_BB) | ((b >> 9) & !FILE_H_BB)
-    }
+    PAWN_ATTACKS_TABLE[side as usize][sq]
 }
 
+#[inline(always)]
 fn slider_attacks_sf(sf_piece_type: usize, sq: usize, occ: u64) -> u64 {
-    // sf_piece_type: 3=Bishop, 4=Rook, 5=Queen.
-    let f = (sq & 7) as i32;
-    let r = (sq >> 3) as i32;
-    let dirs: &[(i32, i32)] = match sf_piece_type {
-        3 => &[(1, 1), (1, -1), (-1, 1), (-1, -1)], // Bishop
-        4 => &[(1, 0), (-1, 0), (0, 1), (0, -1)],   // Rook
-        _ => &[
-            (1, 0),
-            (-1, 0),
-            (0, 1),
-            (0, -1),
-            (1, 1),
-            (1, -1),
-            (-1, 1),
-            (-1, -1),
-        ], // Queen
-    };
-    let mut attacks = 0u64;
-    for &(df, dr) in dirs {
-        let (mut cf, mut cr) = (f + df, r + dr);
-        while (0..8).contains(&cf) && (0..8).contains(&cr) {
-            let t = (cr * 8 + cf) as usize;
-            attacks |= 1u64 << t;
-            if (occ >> t) & 1 == 1 {
-                break;
-            }
-            cf += df;
-            cr += dr;
+    use crate::bitboard::lookups::{get_bishop_attacks_from_table, get_rook_attacks_from_table};
+    use crate::bitboard::Bitboard;
+    use crate::common::square::Square;
+
+    let whale_sq = Square::from(sq ^ 56);
+    let whale_occ = Bitboard(occ.swap_bytes());
+    let whale_attacks = match sf_piece_type {
+        3 => get_bishop_attacks_from_table(whale_sq, whale_occ).0,
+        4 => get_rook_attacks_from_table(whale_sq, whale_occ).0,
+        _ => {
+            get_bishop_attacks_from_table(whale_sq, whale_occ).0
+                | get_rook_attacks_from_table(whale_sq, whale_occ).0
         }
-    }
-    attacks
+    };
+    whale_attacks.swap_bytes()
 }
 
 fn pseudo_attacks_sf(piece_code: usize, sq: usize) -> u64 {
@@ -547,14 +562,25 @@ fn make_pawn_id(color: Side, square_sf: usize) -> usize {
     (color as usize) * 48 + square_sf - 8
 }
 
+const PAWN_PAIR_BB_TABLE: [u64; 64] = {
+    let mut table = [0u64; 64];
+    let mut s = 0;
+    while s < 64 {
+        let file = s & 7;
+        let file_bb = 0x0101_0101_0101_0101u64 << file;
+        let east = (file_bb << 1) & !0x0101_0101_0101_0101u64;
+        let west = (file_bb >> 1) & !0x8080_8080_8080_8080u64;
+        let files = file_bb | east | west;
+        let rank18 = 0xFF00_0000_0000_00FFu64;
+        table[s] = files & !rank18 & !(1u64 << s);
+        s += 1;
+    }
+    table
+};
+
+#[inline(always)]
 fn pawn_pair_bb(s: usize) -> u64 {
-    let file = s & 7;
-    let file_bb = 0x0101_0101_0101_0101u64 << file;
-    let east = (file_bb << 1) & !0x0101_0101_0101_0101u64;
-    let west = (file_bb >> 1) & !0x8080_8080_8080_8080u64;
-    let files = file_bb | east | west;
-    let rank18 = 0xFF00_0000_0000_00FFu64;
-    files & !rank18 & !(1u64 << s)
+    PAWN_PAIR_BB_TABLE[s]
 }
 
 pub fn pair_make_index(
@@ -1263,6 +1289,16 @@ fn read_rudi_i32(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i3
 // Inference (scalar + AVX2 paths).
 // ---------------------------------------------------------------------------
 
+// SAFETY invariants for all AVX2 routines below:
+//  - Callers verify AVX2 availability via `is_x86_feature_detected!("avx2")`
+//    at runtime before invoking any `*_avx2` function.
+//  - Buffers and slices passed to these functions have fixed dimensions
+//    proportional to SIMD vector widths (e.g. `FC0_OUT = 32`, `FC1_OUT = 32`,
+//    `L1 = 1024`, `N_BUCKETS = 8`). Loop indices are strictly bounded by
+//    these compile-time constants.
+//  - Memory reads use `_mm256_loadu_si256` for potentially unaligned slices,
+//    preventing alignment fault exceptions.
+
 #[inline(always)]
 fn div_trunc(a: i32, b: i32) -> i32 {
     a / b
@@ -1289,26 +1325,56 @@ unsafe fn fc0_avx2(arch: &SfnnArch, in_row: &[u8], fc0: &mut [i32; FC0_OUT]) {
     unsafe {
         use std::arch::x86_64::*;
         let ones = _mm256_set1_epi16(1);
+        let mask = _mm256_set1_epi8(0x7f);
         let in_ptr = in_row.as_ptr() as *const __m256i;
         let chunks = in_row.len() / 32;
         let l1 = in_row.len();
 
-        for (o, output) in fc0.iter_mut().enumerate() {
-            let mut sum = _mm256_setzero_si256();
-            let w_ptr = arch.fc0_w.as_ptr().add(o * l1) as *const __m256i;
+        let mut o = 0;
+        while o < FC0_OUT {
+            let mut sum0 = _mm256_setzero_si256();
+            let mut sum1 = _mm256_setzero_si256();
+            let mut sum2 = _mm256_setzero_si256();
+            let mut sum3 = _mm256_setzero_si256();
+
+            let w0_ptr = arch.fc0_w.as_ptr().add(o * l1) as *const __m256i;
+            let w1_ptr = arch.fc0_w.as_ptr().add((o + 1) * l1) as *const __m256i;
+            let w2_ptr = arch.fc0_w.as_ptr().add((o + 2) * l1) as *const __m256i;
+            let w3_ptr = arch.fc0_w.as_ptr().add((o + 3) * l1) as *const __m256i;
 
             for j in 0..chunks {
                 let in_vec = _mm256_loadu_si256(in_ptr.add(j));
-                let w_vec = _mm256_loadu_si256(w_ptr.add(j));
-                let mask = _mm256_set1_epi8(0x7f);
                 let low = _mm256_and_si256(in_vec, mask);
                 let high = _mm256_andnot_si256(mask, in_vec);
-                let low32 = _mm256_madd_epi16(_mm256_maddubs_epi16(low, w_vec), ones);
-                let high32 = _mm256_madd_epi16(_mm256_maddubs_epi16(high, w_vec), ones);
-                sum = _mm256_add_epi32(sum, _mm256_add_epi32(low32, high32));
+
+                let w0 = _mm256_loadu_si256(w0_ptr.add(j));
+                let w1 = _mm256_loadu_si256(w1_ptr.add(j));
+                let w2 = _mm256_loadu_si256(w2_ptr.add(j));
+                let w3 = _mm256_loadu_si256(w3_ptr.add(j));
+
+                let low32_0 = _mm256_madd_epi16(_mm256_maddubs_epi16(low, w0), ones);
+                let high32_0 = _mm256_madd_epi16(_mm256_maddubs_epi16(high, w0), ones);
+                sum0 = _mm256_add_epi32(sum0, _mm256_add_epi32(low32_0, high32_0));
+
+                let low32_1 = _mm256_madd_epi16(_mm256_maddubs_epi16(low, w1), ones);
+                let high32_1 = _mm256_madd_epi16(_mm256_maddubs_epi16(high, w1), ones);
+                sum1 = _mm256_add_epi32(sum1, _mm256_add_epi32(low32_1, high32_1));
+
+                let low32_2 = _mm256_madd_epi16(_mm256_maddubs_epi16(low, w2), ones);
+                let high32_2 = _mm256_madd_epi16(_mm256_maddubs_epi16(high, w2), ones);
+                sum2 = _mm256_add_epi32(sum2, _mm256_add_epi32(low32_2, high32_2));
+
+                let low32_3 = _mm256_madd_epi16(_mm256_maddubs_epi16(low, w3), ones);
+                let high32_3 = _mm256_madd_epi16(_mm256_maddubs_epi16(high, w3), ones);
+                sum3 = _mm256_add_epi32(sum3, _mm256_add_epi32(low32_3, high32_3));
             }
 
-            *output = arch.fc0_bias[o] + hsum256_ps_avx2(sum);
+            fc0[o] = arch.fc0_bias[o] + hsum256_ps_avx2(sum0);
+            fc0[o + 1] = arch.fc0_bias[o + 1] + hsum256_ps_avx2(sum1);
+            fc0[o + 2] = arch.fc0_bias[o + 2] + hsum256_ps_avx2(sum2);
+            fc0[o + 3] = arch.fc0_bias[o + 3] + hsum256_ps_avx2(sum3);
+
+            o += 4;
         }
     }
 }
@@ -1369,7 +1435,7 @@ unsafe fn fc2_avx2(arch: &SfnnArch, concat: &[u8]) -> i32 {
 fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
     if arch.is_rudi {
         #[cfg(target_arch = "x86_64")]
-        let use_avx2 = is_x86_feature_detected!("avx2") && l1.is_multiple_of(32);
+        let use_avx2 = has_avx2() && l1.is_multiple_of(32);
         #[cfg(not(target_arch = "x86_64"))]
         let use_avx2 = false;
 
@@ -1423,7 +1489,7 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
     let in_row = &input[..l1];
 
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2") && l1 == 1024;
+    let use_avx2 = has_avx2() && l1 == 1024;
     #[cfg(not(target_arch = "x86_64"))]
     let use_avx2 = false;
 
@@ -1531,9 +1597,38 @@ pub struct LoadedNets {
 }
 
 static NETS: RwLock<Option<Arc<LoadedNets>>> = RwLock::new(None);
+static ACTIVE_NET: std::sync::atomic::AtomicPtr<LoadedNets> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 static NETS_GEN: AtomicU64 = AtomicU64::new(0);
 static PENDING_PATH: RwLock<Option<String>> = RwLock::new(None);
 
+#[cfg(target_arch = "x86_64")]
+static HAS_AVX2: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| is_x86_feature_detected!("avx2"));
+
+#[inline(always)]
+pub fn has_avx2() -> bool {
+    #[cfg(target_arch = "x86_64")]
+    {
+        *HAS_AVX2
+    }
+    #[cfg(not(target_arch = "x86_64"))]
+    {
+        false
+    }
+}
+
+#[inline(always)]
+pub fn active_loaded_net() -> Option<&'static LoadedNets> {
+    let ptr = ACTIVE_NET.load(Ordering::Acquire);
+    if ptr.is_null() {
+        None
+    } else {
+        unsafe { Some(&*ptr) }
+    }
+}
+
+#[allow(dead_code)]
 fn loaded_nets() -> Option<Arc<LoadedNets>> {
     NETS.read().ok().and_then(|guard| guard.clone())
 }
@@ -1543,6 +1638,12 @@ pub fn try_load_default_path() -> Option<&'static str> {
         return Some("active");
     }
     let candidates = [
+        "models/whale_big.nnue",
+        "models/whale_medium.nnue",
+        "models/whale_small.nnue",
+        "whale_big.nnue",
+        "whale_medium.nnue",
+        "whale_small.nnue",
         "whale_farseer_final.nnue",
         "v16/whale_farseer_final.nnue",
         "whale_farseerT76.nnue",
@@ -1570,8 +1671,9 @@ pub fn try_load_default() -> bool {
     try_load_default_path().is_some()
 }
 
+#[inline(always)]
 pub fn maintenance_active() -> bool {
-    loaded_nets().is_some()
+    !ACTIVE_NET.load(Ordering::Relaxed).is_null()
 }
 
 fn current_gen() -> u64 {
@@ -1584,8 +1686,13 @@ fn current_gen() -> u64 {
 pub fn load_net(path: &str) -> Result<(), &'static str> {
     let net =
         Sfnn16Net::load_file(path, true, L1).or_else(|_| Sfnn16Net::load_file(path, false, L1))?;
+    let loaded = Arc::new(LoadedNets { net });
+    ACTIVE_NET.store(Arc::as_ptr(&loaded) as *mut LoadedNets, Ordering::Release);
     if let Ok(mut guard) = NETS.write() {
-        *guard = Some(Arc::new(LoadedNets { net }));
+        *guard = Some(loaded);
+    }
+    if let Ok(mut guard) = PENDING_PATH.write() {
+        *guard = Some(path.to_string());
     }
     NETS_GEN.fetch_add(1, Ordering::SeqCst);
     crate::eval::nnue::clear_eval_cache();
@@ -1593,24 +1700,60 @@ pub fn load_net(path: &str) -> Result<(), &'static str> {
 }
 
 pub fn unload_nets() {
+    ACTIVE_NET.store(std::ptr::null_mut(), Ordering::Release);
     if let Ok(mut guard) = NETS.write() {
+        *guard = None;
+    }
+    if let Ok(mut guard) = PENDING_PATH.write() {
         *guard = None;
     }
     NETS_GEN.fetch_add(1, Ordering::SeqCst);
     crate::eval::nnue::clear_eval_cache();
 }
 
+pub fn resolve_model_path(path: &str) -> Option<String> {
+    let trimmed = path.trim();
+    if trimmed.is_empty() || trimmed == "<empty>" || trimmed.eq_ignore_ascii_case("embedded") {
+        return None;
+    }
+    if std::path::Path::new(trimmed).exists() {
+        return Some(trimmed.to_string());
+    }
+    let candidates = [
+        format!("models/{trimmed}"),
+        format!("models/{trimmed}.nnue"),
+        format!("models/whale_{trimmed}.nnue"),
+    ];
+    for candidate in candidates {
+        if std::path::Path::new(&candidate).exists() {
+            return Some(candidate);
+        }
+    }
+    Some(trimmed.to_string())
+}
+
+pub fn active_model_name() -> String {
+    if let Ok(guard) = PENDING_PATH.read() {
+        if let Some(ref p) = *guard {
+            let path = std::path::Path::new(p);
+            return path
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or(p)
+                .to_string();
+        }
+    }
+    "embedded".to_string()
+}
+
 pub fn set_eval_file(which: &str, path: &str) -> Result<&'static str, &'static str> {
     if which.eq_ignore_ascii_case("EvalFileSmall") {
         return Ok("EvalFileSmall is deprecated and ignored (SFNNv16 uses a single network)");
     }
-    if which.eq_ignore_ascii_case("EvalFile") {
+    if which.eq_ignore_ascii_case("EvalFile") || which.eq_ignore_ascii_case("Model") {
+        let resolved = resolve_model_path(path);
         if let Ok(mut guard) = PENDING_PATH.write() {
-            *guard = if path.is_empty() || path == "<empty>" {
-                None
-            } else {
-                Some(path.to_string())
-            };
+            *guard = resolved;
         }
     } else {
         return Err("unknown eval file option");
@@ -1639,8 +1782,24 @@ unsafe fn scatter_halfka_add_avx2(acc: &mut [i16], w: &[i16]) {
         use std::arch::x86_64::*;
         let a_ptr = acc.as_mut_ptr() as *mut __m256i;
         let w_ptr = w.as_ptr() as *const __m256i;
-        let n = acc.len() / 16;
+        let n = acc.len() / 64;
         for i in 0..n {
+            let idx = i * 4;
+            let va0 = _mm256_loadu_si256(a_ptr.add(idx));
+            let vw0 = _mm256_loadu_si256(w_ptr.add(idx));
+            let va1 = _mm256_loadu_si256(a_ptr.add(idx + 1));
+            let vw1 = _mm256_loadu_si256(w_ptr.add(idx + 1));
+            let va2 = _mm256_loadu_si256(a_ptr.add(idx + 2));
+            let vw2 = _mm256_loadu_si256(w_ptr.add(idx + 2));
+            let va3 = _mm256_loadu_si256(a_ptr.add(idx + 3));
+            let vw3 = _mm256_loadu_si256(w_ptr.add(idx + 3));
+
+            _mm256_storeu_si256(a_ptr.add(idx), _mm256_add_epi16(va0, vw0));
+            _mm256_storeu_si256(a_ptr.add(idx + 1), _mm256_add_epi16(va1, vw1));
+            _mm256_storeu_si256(a_ptr.add(idx + 2), _mm256_add_epi16(va2, vw2));
+            _mm256_storeu_si256(a_ptr.add(idx + 3), _mm256_add_epi16(va3, vw3));
+        }
+        for i in (n * 4)..(acc.len() / 16) {
             let va = _mm256_loadu_si256(a_ptr.add(i));
             let vw = _mm256_loadu_si256(w_ptr.add(i));
             _mm256_storeu_si256(a_ptr.add(i), _mm256_add_epi16(va, vw));
@@ -1655,8 +1814,24 @@ unsafe fn scatter_halfka_sub_avx2(acc: &mut [i16], w: &[i16]) {
         use std::arch::x86_64::*;
         let a_ptr = acc.as_mut_ptr() as *mut __m256i;
         let w_ptr = w.as_ptr() as *const __m256i;
-        let n = acc.len() / 16;
+        let n = acc.len() / 64;
         for i in 0..n {
+            let idx = i * 4;
+            let va0 = _mm256_loadu_si256(a_ptr.add(idx));
+            let vw0 = _mm256_loadu_si256(w_ptr.add(idx));
+            let va1 = _mm256_loadu_si256(a_ptr.add(idx + 1));
+            let vw1 = _mm256_loadu_si256(w_ptr.add(idx + 1));
+            let va2 = _mm256_loadu_si256(a_ptr.add(idx + 2));
+            let vw2 = _mm256_loadu_si256(w_ptr.add(idx + 2));
+            let va3 = _mm256_loadu_si256(a_ptr.add(idx + 3));
+            let vw3 = _mm256_loadu_si256(w_ptr.add(idx + 3));
+
+            _mm256_storeu_si256(a_ptr.add(idx), _mm256_sub_epi16(va0, vw0));
+            _mm256_storeu_si256(a_ptr.add(idx + 1), _mm256_sub_epi16(va1, vw1));
+            _mm256_storeu_si256(a_ptr.add(idx + 2), _mm256_sub_epi16(va2, vw2));
+            _mm256_storeu_si256(a_ptr.add(idx + 3), _mm256_sub_epi16(va3, vw3));
+        }
+        for i in (n * 4)..(acc.len() / 16) {
             let va = _mm256_loadu_si256(a_ptr.add(i));
             let vw = _mm256_loadu_si256(w_ptr.add(i));
             _mm256_storeu_si256(a_ptr.add(i), _mm256_sub_epi16(va, vw));
@@ -1673,7 +1848,7 @@ fn scatter_halfka(
     sign: i16,
 ) {
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2") && l1.is_multiple_of(16);
+    let use_avx2 = has_avx2() && l1.is_multiple_of(16);
     #[cfg(not(target_arch = "x86_64"))]
     let use_avx2 = false;
 
@@ -1704,13 +1879,30 @@ fn scatter_halfka(
         }
         let pbase = f * N_BUCKETS;
         let pw_slice = &tr.psqt_w[pbase..pbase + N_BUCKETS];
-        if sign == 1 {
-            for b in 0..N_BUCKETS {
-                psqt[b] = psqt[b].wrapping_add(pw_slice[b]);
+        if use_avx2 {
+            #[cfg(target_arch = "x86_64")]
+            unsafe {
+                use std::arch::x86_64::*;
+                let p_ptr = psqt.as_mut_ptr() as *mut __m256i;
+                let pw_ptr = pw_slice.as_ptr() as *const __m256i;
+                let vp = _mm256_loadu_si256(p_ptr);
+                let vpw = _mm256_loadu_si256(pw_ptr);
+                let res = if sign == 1 {
+                    _mm256_add_epi32(vp, vpw)
+                } else {
+                    _mm256_sub_epi32(vp, vpw)
+                };
+                _mm256_storeu_si256(p_ptr, res);
             }
         } else {
-            for b in 0..N_BUCKETS {
-                psqt[b] = psqt[b].wrapping_sub(pw_slice[b]);
+            if sign == 1 {
+                for b in 0..N_BUCKETS {
+                    psqt[b] = psqt[b].wrapping_add(pw_slice[b]);
+                }
+            } else {
+                for b in 0..N_BUCKETS {
+                    psqt[b] = psqt[b].wrapping_sub(pw_slice[b]);
+                }
             }
         }
     }
@@ -1877,11 +2069,10 @@ pub fn refresh_all(pos: &SfnnPosition, accs: &mut Sfnn16Accs) {
     if !kings_present(pos) {
         return;
     }
-    let nets = loaded_nets();
-    if let Some(nets) = nets.as_ref() {
+    let nets = active_loaded_net();
+    if let Some(nets) = nets {
         refresh_perspective(pos, nets, Side::White, accs);
         refresh_perspective(pos, nets, Side::Black, accs);
-        // Threat PSQT is recomputed per eval; keep stored part zeroed.
         accs.threat_psqt = [[0i32; N_BUCKETS]; 2];
         accs.generation = current_gen();
     } else {
@@ -1895,7 +2086,6 @@ pub fn ensure_fresh(pos: &SfnnPosition, accs: &mut Sfnn16Accs) {
     }
 }
 
-// Queued HalfKA deltas applied at flush time. Threats/pairs recompute per eval.
 pub fn apply_queued(
     pos: &SfnnPosition,
     accs: &mut Sfnn16Accs,
@@ -1903,8 +2093,8 @@ pub fn apply_queued(
     dels: &[Option<SfnnEvent>],
     king_moved: &[bool; 2],
 ) {
-    let nets = loaded_nets();
-    if let Some(nets) = nets.as_ref() {
+    let nets = active_loaded_net();
+    if let Some(nets) = nets {
         for (pi, perspective) in [Side::White, Side::Black].iter().enumerate() {
             if king_moved[pi] {
                 update_perspective_finny_or_refresh(pos, nets, *perspective, accs);
@@ -2026,37 +2216,110 @@ unsafe fn pairwise_transform_rudi_avx2(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn add_threat_w_avx2(buf: &mut [i32; L1], w: &[i8]) {
+unsafe fn pairwise_transform_threats_tiled_avx2(
+    base_acc: &[i16],
+    threat_w: &[i8],
+    pair_w: &[i8],
+    threat_features: &[usize],
+    pair_features: &[usize],
+    dst: &mut [u8],
+    half: usize,
+    clip_max: i32,
+) {
     unsafe {
         use std::arch::x86_64::*;
-        let b_ptr = buf.as_mut_ptr() as *mut __m256i;
-        let w_ptr = w.as_ptr() as *const __m128i;
-        for i in 0..64 {
-            let w16 = _mm_loadu_si128(w_ptr.add(i));
-            let w_low = _mm256_cvtepi8_epi32(w16);
-            let w_high = _mm256_cvtepi8_epi32(_mm_srli_si128(w16, 8));
+        let zero = _mm256_setzero_si256();
+        let max_val = _mm256_set1_epi16(clip_max as i16);
+        let base_ptr = base_acc.as_ptr();
+        let threat_ptr = threat_w.as_ptr();
+        let pair_ptr = pair_w.as_ptr();
 
-            let b_idx = i * 2;
-            let b0 = _mm256_loadu_si256(b_ptr.add(b_idx));
-            let b1 = _mm256_loadu_si256(b_ptr.add(b_idx + 1));
+        for chunk in 0..(half / 16) {
+            let offset0 = chunk * 16;
+            let offset1 = offset0 + half;
 
-            _mm256_storeu_si256(b_ptr.add(b_idx), _mm256_add_epi32(b0, w_low));
-            _mm256_storeu_si256(b_ptr.add(b_idx + 1), _mm256_add_epi32(b1, w_high));
+            let mut sum0 = _mm256_setzero_si256();
+            let mut sum1 = _mm256_setzero_si256();
+
+            for &f in threat_features {
+                let t = f - PSQ_DIMS;
+                let w_base = threat_ptr.add(t * 1024);
+
+                let raw0 = _mm_loadu_si128(w_base.add(offset0) as *const __m128i);
+                let w0 = _mm256_cvtepi8_epi16(raw0);
+                sum0 = _mm256_add_epi16(sum0, w0);
+
+                let raw1 = _mm_loadu_si128(w_base.add(offset1) as *const __m128i);
+                let w1 = _mm256_cvtepi8_epi16(raw1);
+                sum1 = _mm256_add_epi16(sum1, w1);
+            }
+
+            if !pair_w.is_empty() {
+                for &f in pair_features {
+                    let t = f - PSQ_DIMS - THREAT_DIMS;
+                    let w_base = pair_ptr.add(t * 1024);
+
+                    let raw0 = _mm_loadu_si128(w_base.add(offset0) as *const __m128i);
+                    let w0 = _mm256_cvtepi8_epi16(raw0);
+                    sum0 = _mm256_add_epi16(sum0, w0);
+
+                    let raw1 = _mm_loadu_si128(w_base.add(offset1) as *const __m128i);
+                    let w1 = _mm256_cvtepi8_epi16(raw1);
+                    sum1 = _mm256_add_epi16(sum1, w1);
+                }
+            }
+
+            let b0 = _mm256_loadu_si256(base_ptr.add(offset0) as *const __m256i);
+            let b1 = _mm256_loadu_si256(base_ptr.add(offset1) as *const __m256i);
+
+            let s0 = _mm256_adds_epi16(b0, sum0);
+            let s1 = _mm256_adds_epi16(b1, sum1);
+
+            let s0_clamp = _mm256_min_epi16(_mm256_max_epi16(s0, zero), max_val);
+            let s0_shl = _mm256_slli_epi16(s0_clamp, 7);
+            let s1_min = _mm256_min_epi16(s1, max_val);
+
+            let mul = _mm256_mulhi_epi16(s0_shl, s1_min);
+
+            let lo = _mm256_castsi256_si128(mul);
+            let hi = _mm256_extracti128_si256(mul, 1);
+            let bytes = _mm_packus_epi16(lo, hi);
+            _mm_storeu_si128(dst.as_mut_ptr().add(offset0) as *mut __m128i, bytes);
         }
     }
 }
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
-unsafe fn add_psqt_avx2(dst: &mut [i32; N_BUCKETS], src: &[i32]) {
+unsafe fn accumulate_psqt_avx2(
+    dst: &mut [i32; N_BUCKETS],
+    threat_psqt_w: &[i32],
+    pair_psqt_w: &[i32],
+    threat_features: &[usize],
+    pair_features: &[usize],
+) {
     unsafe {
         use std::arch::x86_64::*;
-        let d = _mm256_loadu_si256(dst.as_ptr() as *const __m256i);
-        let s = _mm256_loadu_si256(src.as_ptr() as *const __m256i);
-        _mm256_storeu_si256(dst.as_mut_ptr() as *mut __m256i, _mm256_add_epi32(d, s));
+        let mut acc = _mm256_setzero_si256();
+        let t_ptr = threat_psqt_w.as_ptr();
+        for &f in threat_features {
+            let t = f - PSQ_DIMS;
+            let p = _mm256_loadu_si256(t_ptr.add(t * N_BUCKETS) as *const __m256i);
+            acc = _mm256_add_epi32(acc, p);
+        }
+        if !pair_psqt_w.is_empty() {
+            let p_ptr = pair_psqt_w.as_ptr();
+            for &f in pair_features {
+                let t = f - PSQ_DIMS - THREAT_DIMS;
+                let p = _mm256_loadu_si256(p_ptr.add(t * N_BUCKETS) as *const __m256i);
+                acc = _mm256_add_epi32(acc, p);
+            }
+        }
+        _mm256_storeu_si256(dst.as_mut_ptr() as *mut __m256i, acc);
     }
 }
 
+#[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn pairwise_transform_threats_avx2(
@@ -2177,7 +2440,6 @@ fn eval_with_net(
 ) -> (i32, i32) {
     let l1 = net.l1;
     let half = l1 / 2;
-    // Stockfish FtMaxVal (nnue_common.h): always 255, with threats or not.
     let clip_max: i32 = 255;
     let perspectives = [stm, stm.other()];
 
@@ -2187,137 +2449,202 @@ fn eval_with_net(
     let mut pair_lens = [0usize; 2];
 
     if net.use_threats {
+        let mut raw_threats = [(0u8, 0u8, 0u8, 0u8); 128];
+        let mut n_raw_threats = 0usize;
+        for_each_threat(pos, |attacker, from, to, attacked| {
+            if n_raw_threats < 128 {
+                raw_threats[n_raw_threats] = (attacker as u8, from as u8, to as u8, attacked as u8);
+                n_raw_threats += 1;
+            }
+        });
+
         for (slot, &persp) in perspectives.iter().enumerate() {
-            threat_lens[slot] = collect_threats(pos, persp, &mut threat_lists[slot]);
-            if !net.transformer.pair_w.is_empty() || !net.transformer.pair_w_i16.is_empty() {
-                pair_lens[slot] = collect_pairs(pos, persp, &mut pair_lists[slot]);
+            let ksq = pos.king_square(persp);
+            let mut len = 0;
+            for &(attacker, from, to, attacked) in &raw_threats[..n_raw_threats] {
+                if let Some(idx) = threat_make_index(
+                    persp,
+                    attacker as usize,
+                    from as usize,
+                    to as usize,
+                    attacked as usize,
+                    ksq,
+                ) && len < MAX_THREAT_ACTIVE
+                {
+                    threat_lists[slot][len] = PSQ_DIMS + idx;
+                    len += 1;
+                }
+            }
+            threat_lens[slot] = len;
+        }
+
+        if !net.transformer.pair_w.is_empty() || !net.transformer.pair_w_i16.is_empty() {
+            let mut raw_pairs = [(Side::White, 0u8, 0u8, Side::White); 64];
+            let mut n_raw_pairs = 0usize;
+            for_each_pair(pos, |color, from, to, paired| {
+                if n_raw_pairs < 64 {
+                    raw_pairs[n_raw_pairs] = (color, from as u8, to as u8, paired);
+                    n_raw_pairs += 1;
+                }
+            });
+
+            for (slot, &persp) in perspectives.iter().enumerate() {
+                let ksq = pos.king_square(persp);
+                let mut len = 0;
+                for &(color, from, to, paired) in &raw_pairs[..n_raw_pairs] {
+                    if len < MAX_PAIR_ACTIVE {
+                        pair_lists[slot][len] = pair_make_index(
+                            persp,
+                            color,
+                            from as usize,
+                            to as usize,
+                            paired,
+                            ksq,
+                        );
+                        len += 1;
+                    }
+                }
+                pair_lens[slot] = len;
             }
         }
     }
 
     #[cfg(target_arch = "x86_64")]
-    let use_avx2 = is_x86_feature_detected!("avx2") && l1 == 1024 && !net.is_rudi;
+    let use_avx2 = has_avx2() && l1 == 1024 && !net.is_rudi;
     #[cfg(not(target_arch = "x86_64"))]
     let use_avx2 = false;
 
     let mut feats = [0u8; L1];
     let mut per_psqt = [[0i32; N_BUCKETS]; 2];
-    for (slot, &persp) in perspectives.iter().enumerate() {
-        let pi = persp as usize;
-        let base_acc = halfka_accs[pi];
-        let mut threat_buf = [0i32; L1];
-        if net.use_threats {
-            if net.is_rudi {
-                #[cfg(target_arch = "x86_64")]
-                let use_rudi_avx2 = is_x86_feature_detected!("avx2") && l1 == L1;
-                #[cfg(not(target_arch = "x86_64"))]
-                let use_rudi_avx2 = false;
 
-                for &f in &threat_lists[slot][..threat_lens[slot]] {
-                    let t = f - PSQ_DIMS;
-                    let base = t * l1;
-                    let w_slice = &net.transformer.threat_w_i16[base..base + l1];
-                    if use_rudi_avx2 {
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            add_threat_w_i16_avx2(&mut threat_buf, w_slice);
-                        }
-                    } else {
-                        for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
-                            *acc += i32::from(w);
-                        }
-                    }
-                }
-                for &f in &pair_lists[slot][..pair_lens[slot]] {
-                    let base = (f - PSQ_DIMS - THREAT_DIMS) * l1;
-                    let w_slice = &net.transformer.pair_w_i16[base..base + l1];
-                    if use_rudi_avx2 {
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            add_threat_w_i16_avx2(&mut threat_buf, w_slice);
-                        }
-                    } else {
-                        for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
-                            *acc += i32::from(w);
-                        }
-                    }
+    if use_avx2 && half == 512 {
+        for (slot, &persp) in perspectives.iter().enumerate() {
+            let pi = persp as usize;
+            let base_acc = halfka_accs[pi];
+            let dst = &mut feats[slot * half..(slot + 1) * half];
+
+            if net.use_threats {
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    pairwise_transform_threats_tiled_avx2(
+                        base_acc,
+                        &net.transformer.threat_w,
+                        &net.transformer.pair_w,
+                        &threat_lists[slot][..threat_lens[slot]],
+                        &pair_lists[slot][..pair_lens[slot]],
+                        dst,
+                        half,
+                        clip_max,
+                    );
+                    accumulate_psqt_avx2(
+                        &mut per_psqt[slot],
+                        &net.transformer.threat_psqt_w,
+                        &net.transformer.pair_psqt_w,
+                        &threat_lists[slot][..threat_lens[slot]],
+                        &pair_lists[slot][..pair_lens[slot]],
+                    );
                 }
             } else {
-                for &f in &threat_lists[slot][..threat_lens[slot]] {
-                    let t = f - PSQ_DIMS;
-                    let base = t * l1;
-                    let w_slice = &net.transformer.threat_w[base..base + l1];
-                    if use_avx2 {
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            add_threat_w_avx2(&mut threat_buf, w_slice);
-                        }
-                    } else {
-                        for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
-                            *acc += i32::from(w);
-                        }
-                    }
-                    let base_psqt = t * N_BUCKETS;
-                    let p_slice = &net.transformer.threat_psqt_w[base_psqt..base_psqt + N_BUCKETS];
-                    if use_avx2 {
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            add_psqt_avx2(&mut per_psqt[slot], p_slice);
-                        }
-                        #[cfg(not(target_arch = "x86_64"))]
-                        for b in 0..N_BUCKETS {
-                            per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
-                        }
-                    } else {
-                        for b in 0..N_BUCKETS {
-                            per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
-                        }
-                    }
+                #[cfg(target_arch = "x86_64")]
+                unsafe {
+                    pairwise_transform_no_threats_avx2(base_acc, dst, half, clip_max);
                 }
-                for &f in &pair_lists[slot][..pair_lens[slot]] {
-                    let t = f - PSQ_DIMS - THREAT_DIMS;
-                    let base = t * l1;
-                    let w_slice = &net.transformer.pair_w[base..base + l1];
-                    if use_avx2 {
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            add_threat_w_avx2(&mut threat_buf, w_slice);
+            }
+        }
+    } else {
+        for (slot, &persp) in perspectives.iter().enumerate() {
+            let pi = persp as usize;
+            let base_acc = halfka_accs[pi];
+            let mut threat_buf = [0i32; L1];
+            if net.use_threats {
+                if net.is_rudi {
+                    #[cfg(target_arch = "x86_64")]
+                    let use_rudi_avx2 = has_avx2() && l1 == L1;
+                    #[cfg(not(target_arch = "x86_64"))]
+                    let use_rudi_avx2 = false;
+
+                    for &f in &threat_lists[slot][..threat_lens[slot]] {
+                        let t = f - PSQ_DIMS;
+                        let base = t * l1;
+                        let w_slice = &net.transformer.threat_w_i16[base..base + l1];
+                        if use_rudi_avx2 {
+                            #[cfg(target_arch = "x86_64")]
+                            unsafe {
+                                add_threat_w_i16_avx2(&mut threat_buf, w_slice);
+                            }
+                        } else {
+                            for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
+                                *acc += i32::from(w);
+                            }
                         }
-                    } else {
+                    }
+                    for &f in &pair_lists[slot][..pair_lens[slot]] {
+                        let base = (f - PSQ_DIMS - THREAT_DIMS) * l1;
+                        let w_slice = &net.transformer.pair_w_i16[base..base + l1];
+                        if use_rudi_avx2 {
+                            #[cfg(target_arch = "x86_64")]
+                            unsafe {
+                                add_threat_w_i16_avx2(&mut threat_buf, w_slice);
+                            }
+                        } else {
+                            for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
+                                *acc += i32::from(w);
+                            }
+                        }
+                    }
+                } else {
+                    for &f in &threat_lists[slot][..threat_lens[slot]] {
+                        let t = f - PSQ_DIMS;
+                        let base = t * l1;
+                        let w_slice = &net.transformer.threat_w[base..base + l1];
                         for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
                             *acc += i32::from(w);
                         }
-                    }
-                    let base_psqt = t * N_BUCKETS;
-                    let p_slice = &net.transformer.pair_psqt_w[base_psqt..base_psqt + N_BUCKETS];
-                    if use_avx2 {
-                        #[cfg(target_arch = "x86_64")]
-                        unsafe {
-                            add_psqt_avx2(&mut per_psqt[slot], p_slice);
-                        }
-                        #[cfg(not(target_arch = "x86_64"))]
+                        let base_psqt = t * N_BUCKETS;
+                        let p_slice = &net.transformer.threat_psqt_w[base_psqt..base_psqt + N_BUCKETS];
                         for b in 0..N_BUCKETS {
                             per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
                         }
-                    } else {
+                    }
+                    for &f in &pair_lists[slot][..pair_lens[slot]] {
+                        let t = f - PSQ_DIMS - THREAT_DIMS;
+                        let base = t * l1;
+                        let w_slice = &net.transformer.pair_w[base..base + l1];
+                        for (acc, &w) in threat_buf.iter_mut().zip(w_slice) {
+                            *acc += i32::from(w);
+                        }
+                        let base_psqt = t * N_BUCKETS;
+                        let p_slice = &net.transformer.pair_psqt_w[base_psqt..base_psqt + N_BUCKETS];
                         for b in 0..N_BUCKETS {
                             per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
                         }
                     }
                 }
             }
-        }
-        let dst = &mut feats[slot * half..(slot + 1) * half];
-        if net.is_rudi {
-            #[cfg(target_arch = "x86_64")]
-            let use_rudi_avx2 = is_x86_feature_detected!("avx2") && half.is_multiple_of(16);
-            #[cfg(not(target_arch = "x86_64"))]
-            let use_rudi_avx2 = false;
-
-            if use_rudi_avx2 {
+            let dst = &mut feats[slot * half..(slot + 1) * half];
+            if net.is_rudi {
                 #[cfg(target_arch = "x86_64")]
-                unsafe {
-                    pairwise_transform_rudi_avx2(base_acc, &threat_buf, dst, half, net.use_threats);
+                let use_rudi_avx2 = has_avx2() && half.is_multiple_of(16);
+                #[cfg(not(target_arch = "x86_64"))]
+                let use_rudi_avx2 = false;
+
+                if use_rudi_avx2 {
+                    #[cfg(target_arch = "x86_64")]
+                    unsafe {
+                        pairwise_transform_rudi_avx2(base_acc, &threat_buf, dst, half, net.use_threats);
+                    }
+                } else {
+                    for j in 0..half {
+                        let mut s0 = i32::from(base_acc[j]);
+                        let mut s1 = i32::from(base_acc[j + half]);
+                        if net.use_threats {
+                            s0 += threat_buf[j];
+                            s1 += threat_buf[j + half];
+                        }
+                        let c0 = s0.clamp(0, clip_max);
+                        let c1 = s1.clamp(0, clip_max);
+                        dst[j] = ((c0 * c1) / 255) as u8;
+                    }
                 }
             } else {
                 for j in 0..half {
@@ -2329,33 +2656,8 @@ fn eval_with_net(
                     }
                     let c0 = s0.clamp(0, clip_max);
                     let c1 = s1.clamp(0, clip_max);
-                    dst[j] = ((c0 * c1) / 255) as u8;
+                    dst[j] = ((c0 * c1) / 512) as u8;
                 }
-            }
-        } else if use_avx2 && half == 512 {
-            #[cfg(target_arch = "x86_64")]
-            unsafe {
-                if net.use_threats {
-                    pairwise_transform_threats_avx2(base_acc, &threat_buf, dst, half, clip_max);
-                } else {
-                    pairwise_transform_no_threats_avx2(base_acc, dst, half, clip_max);
-                }
-            }
-        } else {
-            for j in 0..half {
-                let mut s0 = i32::from(base_acc[j]);
-                let mut s1 = i32::from(base_acc[j + half]);
-                if net.use_threats {
-                    s0 += threat_buf[j];
-                    s1 += threat_buf[j + half];
-                }
-                let c0 = s0.clamp(0, clip_max);
-                let c1 = s1.clamp(0, clip_max);
-                dst[j] = if net.is_rudi {
-                    ((c0 * c1) / 255) as u8
-                } else {
-                    ((c0 * c1) / 512) as u8
-                };
             }
         }
     }
@@ -2390,7 +2692,7 @@ pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Op
     if !kings_present(pos) {
         return None;
     }
-    let nets = loaded_nets()?;
+    let nets = active_loaded_net()?;
     ensure_fresh(pos, accs);
 
     let bucket = material_bucket(pos.piece_count());
@@ -2412,17 +2714,93 @@ pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Op
     })
 }
 
+pub fn ensure_sfnn16_fresh(board: &mut BoardState, pos: &SfnnPosition) {
+    let idx = board.history.index;
+    let current_generation = current_gen();
+    let nets = match active_loaded_net() {
+        Some(n) => n,
+        None => return,
+    };
+
+    if !kings_present(pos) {
+        return;
+    }
+
+    for (p, &perspective) in [Side::White, Side::Black].iter().enumerate() {
+        if board.history.sfnn16_computed[idx][p]
+            && board.history.sfnn16[idx].generation == current_generation
+        {
+            continue;
+        }
+
+        let mut ancestor = None;
+        for anc in (0..idx).rev() {
+            if board.history.sfnn16_pending[anc + 1].king_moved[p]
+                || board.history.sfnn16_pending[anc + 1].overflowed
+            {
+                break;
+            }
+            if board.history.sfnn16_computed[anc][p]
+                && board.history.sfnn16[anc].generation == current_generation
+            {
+                ancestor = Some(anc);
+                break;
+            }
+        }
+
+        if let Some(anc) = ancestor {
+            let ksq = pos.king_square(perspective);
+            for k in (anc + 1)..=idx {
+                if !board.history.sfnn16_computed[k][p]
+                    || board.history.sfnn16[k].generation != current_generation
+                {
+                    board.history.sfnn16[k].halfka[p] = board.history.sfnn16[k - 1].halfka[p];
+                    board.history.sfnn16[k].psqt[p] = board.history.sfnn16[k - 1].psqt[p];
+
+                    let pending = board.history.sfnn16_pending[k];
+                    let slot = &mut board.history.sfnn16[k].halfka[p];
+                    let psqt = &mut board.history.sfnn16[k].psqt[p];
+
+                    for &ev in &pending.dels[..pending.n_dels] {
+                        if let Some((sq_sf, side, piece)) = ev {
+                            if let Some(f) = halfka_index(perspective, side, piece, sq_sf, ksq) {
+                                scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, -1);
+                            }
+                        }
+                    }
+
+                    for &ev in &pending.adds[..pending.n_adds] {
+                        if let Some((sq_sf, side, piece)) = ev {
+                            if let Some(f) = halfka_index(perspective, side, piece, sq_sf, ksq) {
+                                scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, 1);
+                            }
+                        }
+                    }
+
+                    board.history.sfnn16_computed[k][p] = true;
+                    board.history.sfnn16[k].generation = current_generation;
+                }
+            }
+        } else {
+            let accs = &mut board.history.sfnn16[idx];
+            update_perspective_finny_or_refresh(pos, nets, perspective, accs);
+            board.history.sfnn16_computed[idx][p] = true;
+            board.history.sfnn16[idx].generation = current_generation;
+        }
+    }
+}
+
 pub fn evaluate_board(board: &mut BoardState) -> Option<i16> {
     if !maintenance_active() {
         return None;
     }
     let pos = SfnnPosition::from_board(board);
+    ensure_sfnn16_fresh(board, &pos);
     let idx = board.history.index;
     if idx >= board.history.sfnn16.len() {
         return None;
     }
     let accs = &mut board.history.sfnn16[idx];
-    ensure_fresh(&pos, accs);
     // Internal units, same as evaluate_board_detailed: the single caller
     // (nnue::evaluate_with_optimism fallback) applies gate/material/damping
     // itself. No *100/256 rescale here (that scale is only for UCI display).
@@ -2434,12 +2812,12 @@ pub fn evaluate_board_detailed(board: &mut BoardState) -> Option<SfnnEval> {
         return None;
     }
     let pos = SfnnPosition::from_board(board);
+    ensure_sfnn16_fresh(board, &pos);
     let idx = board.history.index;
     if idx >= board.history.sfnn16.len() {
         return None;
     }
     let accs = &mut board.history.sfnn16[idx];
-    ensure_fresh(&pos, accs);
     evaluate_nets(&pos, accs, board.side_to_move)
 }
 
@@ -2450,7 +2828,7 @@ pub fn evaluate_board_detailed(board: &mut BoardState) -> Option<SfnnEval> {
 /// Queued v10 feature event in SF numbering: (sq_sf, side, piece).
 pub type SfnnEvent = (usize, Side, Piece);
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct SfnnPending {
     pub adds: [Option<SfnnEvent>; 8],
     pub dels: [Option<SfnnEvent>; 8],
@@ -2804,6 +3182,31 @@ mod tests {
     }
 
     #[test]
+    fn bench_eval_speed() {
+        if !std::path::Path::new("v16/nn-1a298aa575a0.nnue").exists() {
+            return;
+        }
+        load_net("v16/nn-1a298aa575a0.nnue").unwrap();
+        let board = BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let pos = SfnnPosition::from_board(&board);
+        let mut accs = Sfnn16Accs::empty();
+        refresh_all(&pos, &mut accs);
+        let start = std::time::Instant::now();
+        let iters = 10_000;
+        for _ in 0..iters {
+            let _ = evaluate_nets(&pos, &mut accs, board.side_to_move);
+        }
+        let el = start.elapsed();
+        println!(
+            "BASELINE: {} evals in {:?} ({:.2} us/eval, {:.0} NPS)",
+            iters,
+            el,
+            (el.as_micros() as f64) / (iters as f64),
+            (iters as f64) / el.as_secs_f64()
+        );
+    }
+
+    #[test]
     fn square_helpers_use_sf_numbering() {
         // Whale E2 = 52 flips to SF E2 = 12 (A1 = 0).
         assert_eq!(to_sf(52), 12);
@@ -3078,6 +3481,31 @@ mod tests {
         assert_eq!(b_h.len(), 32);
         assert!(!w_t.is_empty());
         assert!(!b_t.is_empty());
+    }
+
+    #[test]
+    fn whale_family_models_load() {
+        // The Whale model family lives in models/ (git-ignored: present in
+        // local checkouts, absent on CI — hence the skip when missing).
+        // Pure load_file: no global NETS mutation, safe under parallel tests.
+        for name in ["whale_big", "whale_medium", "whale_small"] {
+            let path = format!("models/{name}.nnue");
+            if !std::path::Path::new(&path).exists() {
+                println!("Missing {path}, skipping");
+                continue;
+            }
+            let net = Sfnn16Net::load_file(&path, true, L1)
+                .or_else(|_| Sfnn16Net::load_file(&path, false, L1))
+                .unwrap_or_else(|e| panic!("{path} failed to load: {e}"));
+            assert!(!net.stacks.is_empty(), "{path} has no stacks");
+            println!(
+                "{name}: l1={} rudi={} threats={} stacks={}",
+                net.l1,
+                net.is_rudi,
+                net.use_threats,
+                net.stacks.len()
+            );
+        }
     }
 
     #[test]

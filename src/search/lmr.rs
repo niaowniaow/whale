@@ -61,6 +61,11 @@ pub struct LmrQuery {
     pub momentum: i16,
     pub found_pv: bool,
     pub structural_disagreement: i16,
+    /// Expected fail-high node (Stockfish cut-node concept, clean-room).
+    pub cut_node: bool,
+    /// PV-ish position (TT hit on PV path). Whale has no TT pv-flag yet,
+    /// so callers pass `is_pv_node` as a conservative proxy.
+    pub tt_pv: bool,
 }
 
 #[inline(always)]
@@ -85,6 +90,14 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
 
     if query.is_pv_node {
         reduction = reduction.saturating_sub(1);
+    }
+    // Whale's own small cut-node / tt-pv tweak (Stockfish concept, own numbers):
+    // PV-ish lines reduce less, expected cut-nodes reduce more.
+    if query.tt_pv {
+        reduction = reduction.saturating_sub(1);
+    }
+    if query.cut_node {
+        reduction += 1;
     }
     if query.gives_check {
         reduction = reduction.saturating_sub(1);
@@ -181,6 +194,8 @@ mod tests {
                     momentum: 0,
                     found_pv: false,
                     structural_disagreement: 0,
+                    cut_node: false,
+                    tt_pv: false,
                 };
                 let r = compute_reduction(&query, &table, &divisors);
                 assert!(r < d);
@@ -206,6 +221,8 @@ mod tests {
             momentum: 0,
             found_pv: false,
             structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
         };
         let pv_query = LmrQuery {
             is_pv_node: true,
@@ -240,6 +257,8 @@ mod tests {
             momentum: 0,
             found_pv: false,
             structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
         };
         let improving_query = LmrQuery {
             is_improving: true,
@@ -268,6 +287,8 @@ mod tests {
             momentum: 0,
             found_pv: true,
             structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
         };
         let crisis_query = LmrQuery {
             momentum: -150,
@@ -302,6 +323,8 @@ mod tests {
             momentum: 0,
             found_pv: true,
             structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
         };
         let no_pv_query = LmrQuery {
             found_pv: false,
@@ -330,6 +353,8 @@ mod tests {
             momentum: 0,
             found_pv: true,
             structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
         };
         let dis_query = LmrQuery {
             structural_disagreement: 150,
@@ -378,6 +403,8 @@ mod tests {
             momentum: 500,
             found_pv: false,
             structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
         };
         assert_eq!(compute_reduction(&base, &table, &divisors), 1);
         let shallow = LmrQuery { depth: 1, ..base };
@@ -402,6 +429,8 @@ mod tests {
             momentum: 0,
             found_pv: true,
             structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
         };
         let hi = compute_reduction(&base, &table, &divisors);
         let lo_query = LmrQuery {
@@ -428,6 +457,34 @@ mod tests {
             ..base
         };
         assert!(compute_reduction(&wild, &table, &divisors) < 8);
+    }
+
+    #[test]
+    fn cut_node_increases_and_tt_pv_decreases() {
+        let table = LmrTable::default();
+        let divisors = [3000; 16];
+        let base = LmrQuery {
+            depth: 8,
+            move_count: 8,
+            is_pv_node: false,
+            is_improving: false,
+            gives_check: false,
+            is_tactical: false,
+            has_non_pawn_material: true,
+            history_score: 0,
+            alpha: 0,
+            static_eval: 0,
+            momentum: 0,
+            found_pv: true,
+            structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
+        };
+        let r_base = compute_reduction(&base, &table, &divisors);
+        let r_cut = compute_reduction(&LmrQuery { cut_node: true, ..base }, &table, &divisors);
+        let r_pv = compute_reduction(&LmrQuery { tt_pv: true, ..base }, &table, &divisors);
+        assert!(r_cut >= r_base);
+        assert!(r_pv <= r_base);
     }
 
     #[test]

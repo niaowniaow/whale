@@ -52,7 +52,9 @@ pub mod train {
     }
 }
 
-pub fn init() {}
+pub fn init() {
+    let _ = crate::eval::nnue::v16::try_load_default();
+}
 
 #[cfg(test)]
 mod tests {

@@ -23,6 +23,7 @@ pub(crate) static SEARCH_STATE: LazyLock<Mutex<SearchState>> = LazyLock::new(|| 
 
 pub fn run(_parameters: &[&str]) {
     let mut client = UciClient::new();
+    client.write_id();
     client.run();
 }
 
@@ -37,6 +38,7 @@ pub(crate) struct UciClient {
     pub precompute_cancel: Arc<AtomicBool>,
     pub num_threads: usize,
     pub move_overhead: i32,
+    pub max_move_time: i32,
 }
 
 impl UciClient {
@@ -57,6 +59,7 @@ impl UciClient {
             precompute_cancel: Arc::new(AtomicBool::new(false)),
             num_threads: 1,
             move_overhead: 10,
+            max_move_time: 0,
         }
     }
 
@@ -66,8 +69,10 @@ impl UciClient {
         let stdin = std::io::stdin();
         loop {
             let mut line = String::new();
-            if stdin.read_line(&mut line).is_err() {
-                continue;
+            match stdin.read_line(&mut line) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(_) => continue,
             }
 
             let line = line.trim();
@@ -87,22 +92,27 @@ impl UciClient {
                 std::process::exit(0);
             }
 
-            match command {
-                "isready" => self.run_isready(parameters),
-                "position" => self.run_position(parameters),
-                "go" => self.run_go(parameters),
-                "stop" => self.run_stop(parameters),
-                "ponderhit" => self.run_ponderhit(),
-                "ucinewgame" => self.run_ucinewgame(parameters),
-                "debug" => self.run_debug(parameters),
-                "setoption" => self.run_setoption(parameters),
-                "uci" => self.write_id(),
-                "perft" => self.run_perft(parameters),
-                "bench" => self.run_bench(parameters),
-                // Unexpected commands are ignored silently (stderr only) so GUI
-                // stdout parsing never breaks (Reckless uci.rs).
-                _ => eprintln!("Unknown command {command}"),
-            }
+            self.handle_command(command, parameters);
+        }
+    }
+
+    pub(crate) fn handle_command(&mut self, command: &str, parameters: &[&str]) {
+        match command {
+            "isready" => self.run_isready(parameters),
+            "position" => self.run_position(parameters),
+            "go" => self.run_go(parameters),
+            "stop" => self.run_stop(parameters),
+            "ponderhit" => self.run_ponderhit(),
+            "ucinewgame" => self.run_ucinewgame(parameters),
+            "debug" => self.run_debug(parameters),
+            "setoption" => self.run_setoption(parameters),
+            "uci" => self.write_id(),
+            "perft" => self.run_perft(parameters),
+            "bench" => self.run_bench(parameters),
+            "model" => self.run_model(parameters),
+            // Unexpected commands are ignored silently (stderr only) so GUI
+            // stdout parsing never breaks (Reckless uci.rs).
+            _ => eprintln!("Unknown command {command}"),
         }
     }
 
@@ -117,14 +127,21 @@ impl UciClient {
         cli::write_line("option name Hash type spin default 16 min 1 max 2048");
         cli::write_line("option name Threads type spin default 1 min 1 max 256");
         cli::write_line("option name Move Overhead type spin default 10 min 0 max 5000");
+        cli::write_line("option name MaxMoveTime type spin default 0 min 0 max 300000");
         cli::write_line("option name Ponder type check default false");
         cli::write_line("option name Clear Hash type button");
+        cli::write_line(
+            "option name Model type combo default whale_big var whale_big var whale_medium var whale_small var embedded",
+        );
         cli::write_line("option name EvalFile type string default <empty>");
         cli::write_line("option name EvalFileSmall type string default <empty>");
         cli::write_line("option name SyzygyPath type string default <empty>");
         cli::write_line("option name SyzygyProbeLimit type spin default 7 min 0 max 7");
         cli::write_line("option name SyzygyProbeDepth type spin default 1 min 1 max 100");
         cli::write_line("option name Syzygy50MoveRule type check default true");
+        cli::write_line("option name Contempt type spin default 0 min -200 max 200");
+        cli::write_line("option name DrawScore type spin default 0 min -200 max 200");
+        cli::write_line("option name ShowWDL type check default true");
         cli::write_line("option name RFP_Margin type spin default 110 min 50 max 300");
         cli::write_line("option name Futility_Margin type spin default 120 min 50 max 300");
         cli::write_line("option name Singular_Margin type spin default 2 min 1 max 5");
@@ -173,7 +190,7 @@ impl UciClient {
     /// fixed set of positions with a stable output format (Reckless
     /// tools/bench.rs, Stockfish benchmark.cpp). Defaults: 16MB / 1 / 12.
     pub(crate) fn run_bench(&mut self, parameters: &[&str]) {
-        use crate::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
+        use crate::common::helpers::BENCH_FENS;
         let hash_mb: usize = parameters
             .first()
             .and_then(|v| v.parse::<usize>().ok())
@@ -186,17 +203,22 @@ impl UciClient {
             .get(2)
             .and_then(|v| v.parse::<u8>().ok())
             .unwrap_or(12);
-        let positions = [STARTING_FEN, KIWI_PETE_FEN, ENDGAME_FEN, ADVANCED_MOVE_FEN];
+        if let Some(&model) = parameters.get(3) {
+            let _ = crate::eval::nnue::v16::set_eval_file("Model", model);
+        }
+        let positions = BENCH_FENS;
         let cancel = std::sync::atomic::AtomicBool::new(false);
         let mut debug = false;
         let mut total_nodes: u64 = 0;
         let total_start = std::time::Instant::now();
+        // Shared TT across positions measures realistic replacement.
+        let shared_tt = std::sync::Arc::new(crate::common::tt::TranspositionTable::new_mb(
+            hash_mb.clamp(1, 2048),
+        ));
         for (index, fen) in positions.iter().enumerate() {
             let mut board = BoardState::parse_fen(fen);
             let mut state = crate::search::search_state::SearchState::new();
-            state.tt = std::sync::Arc::new(crate::common::tt::TranspositionTable::new_mb(
-                hash_mb.clamp(1, 2048),
-            ));
+            state.tt = std::sync::Arc::clone(&shared_tt);
             let start = std::time::Instant::now();
             board.find_best_move(
                 depth,
@@ -221,9 +243,23 @@ impl UciClient {
             0
         };
         cli::write_line(&format!(
-            "info string bench done: {total_nodes} nodes in {} ms ({nps} nps)",
-            total_elapsed.as_millis()
+            "info string bench done: {total_nodes} nodes in {} ms ({nps} nps) hashfull {}",
+            total_elapsed.as_millis(),
+            shared_tt.hashfull()
         ));
+    }
+
+    pub(crate) fn run_model(&mut self, parameters: &[&str]) {
+        if let Some(&name) = parameters.first() {
+            let res = crate::eval::nnue::v16::set_eval_file("Model", name);
+            match res {
+                Ok(msg) => cli::write_line(&format!("info string {msg}: {name}")),
+                Err(e) => cli::write_line(&format!("info string Failed to load model {name}: {e}")),
+            }
+        } else {
+            let current = crate::eval::nnue::v16::active_model_name();
+            cli::write_line(&format!("info string Active model: {current}"));
+        }
     }
 }
 

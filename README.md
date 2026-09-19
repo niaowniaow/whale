@@ -169,6 +169,9 @@ cargo run --release -- --generate-magics
 | `SyzygyPath`    | string |   `<empty>`  | Path to directory with `.rtbw` and `.rtbz` files.     |
 | `EvalFile`      | string | `<embedded>` | Path to custom NNUE weights file.                       |
 | `EvalFileSmall` | string |   `<empty>`  | Path to small NNUE net for dual-net mode.              |
+| `Contempt`      |  spin  |       0      | Draw aversion in cp (-200 to 200, Lc0-inspired).       |
+| `DrawScore`     |  spin  |       0      | Absolute draw value override in cp.                    |
+| `ShowWDL`       | check  |     true     | Emit `wdl w d l` on search info lines.                 |
 | `Clear Hash`    | button |       -      | Clears all entries in the Transposition Table.         |
 
 ---
@@ -188,6 +191,7 @@ cargo test --release
 * [znxftw/rudim](https://github.com/znxftw/rudim): Base repository.
 * [Stockfish](https://github.com/official-stockfish/Stockfish): Ideas and benchmarks.
 * [Reckless](https://github.com/codedeliveryservice/Reckless): Design references and optimization patterns.
+* [Lc0](https://github.com/LeelaChessZero/lc0): Ideas for contempt, draw scoring and WDL reporting.
 * [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch): NNUE training pipeline.
 * [Bullet](https://github.com/jw1912/bullet): Alternative NNUE training backend under research.
 

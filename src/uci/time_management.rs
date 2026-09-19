@@ -22,8 +22,20 @@ pub fn calculate_optimum_with_ply(
         return (10, 10);
     }
 
+    let available_clock = (clock - move_overhead).max(10);
+    let (format_opt_cap, format_max_cap) = if available_clock <= 15_000 {
+        (available_clock / 15 + increment / 2, available_clock / 8 + increment)
+    } else if available_clock <= 60_000 {
+        (1_500.min(available_clock / 20) + increment / 2, 3_000.min(available_clock / 10) + increment)
+    } else if available_clock <= 300_000 {
+        (4_500.min(available_clock / 30) + increment / 2, 8_000.min(available_clock / 15) + increment)
+    } else if available_clock <= 900_000 {
+        (10_000.min(available_clock / 35) + increment / 2, 18_000.min(available_clock / 20) + increment)
+    } else {
+        (20_000.min(available_clock / 40) + increment / 2, 35_000.min(available_clock / 25) + increment)
+    };
+
     let scaled_time = clock.max(1);
-    // SF: mtg = movestogo ? min(movestogo, 50) : 50; mtg may become 0 below.
     let mut mtg = if movestogo > 0 { movestogo.min(50) } else { 50 };
     if scaled_time < 1000 && movestogo <= 0 {
         mtg = (scaled_time as f64 * 0.05) as i32;
@@ -35,15 +47,14 @@ pub fn calculate_optimum_with_ply(
         let max_constant = (3.3744 + 3.0608 * log_time).max(3.1441);
         let mut opt = (0.012112 + (ply as f64 + 3.22713).powf(0.46866) * opt_constant)
             .min(0.19404 * clock as f64 / time_left as f64);
-        // SF has no .max(0.1) clamp here; the adjust may go slightly negative.
         let original_adjust = 0.3272 * (time_left as f64).log10() - 0.4141;
         opt *= original_adjust;
-        let max = (6.873_f64).min(max_constant + ply as f64 / 12.352);
+        let max = (2.5_f64).min(max_constant + ply as f64 / 12.352);
         (opt, max)
     } else {
         let opt =
             ((0.88 + ply as f64 / 116.4) / mtg as f64).min(0.88 * clock as f64 / time_left as f64);
-        let max = 1.3 + 0.11 * mtg as f64;
+        let max = (1.3 + 0.11 * mtg as f64).min(2.5);
         (opt, max)
     };
 
@@ -53,18 +64,19 @@ pub fn calculate_optimum_with_ply(
         opt_scale *= 1.0 + 0.9 * time_advantage.min(0.0);
     }
 
-    // SF: optimum = max(1, optScale * timeLeft); maximum from UNbonused optimum,
-    // then the Ponder-option bonus applies to optimum only (timeman.cpp:164-165).
-    let base_optimum = (opt_scale * time_left as f64).max(1.0) as i32;
-    // SF: maximum = max(optimum, min(0.8097 * time - overhead, maxScale * optimum)).
-    let maximum = ((max_scale * base_optimum as f64)
-        .min(0.8097 * clock as f64 - move_overhead as f64) as i32)
+    let raw_optimum = (opt_scale * time_left as f64).max(1.0) as i32;
+    let base_optimum = raw_optimum.min(format_opt_cap.max(10)).max(10);
+    let raw_max = (max_scale * base_optimum as f64) as i32;
+    let maximum = raw_max
+        .min(format_max_cap.max(base_optimum))
+        .min((clock - move_overhead - 5).max(base_optimum))
         .max(base_optimum);
+
     let mut optimum = base_optimum;
     if ponder {
         optimum += optimum / 4;
     }
-    (optimum.max(1), maximum.max(1))
+    (optimum.max(10), maximum.max(10))
 }
 
 #[cfg(test)]

@@ -42,6 +42,8 @@ pub struct History {
     pub entries: Box<[BoardHistory]>,
     pub accumulators: Box<[Accumulators]>,
     pub sfnn16: Box<[Sfnn16Accs]>,
+    pub sfnn16_computed: Box<[[bool; 2]]>,
+    pub sfnn16_pending: Box<[crate::eval::nnue::v16::SfnnPending]>,
     pub dirty_updates: Box<[DirtyUpdate]>,
     pub computed: Box<[bool]>,
     pub index: usize,
@@ -56,10 +58,18 @@ impl History {
     pub fn new() -> Self {
         let mut computed = vec![false; HISTORY_SIZE].into_boxed_slice();
         computed[0] = true;
+        let mut sfnn16_computed = vec![[false, false]; HISTORY_SIZE].into_boxed_slice();
+        sfnn16_computed[0] = [true, true];
         Self {
             entries: vec![BoardHistory::default(); HISTORY_SIZE].into_boxed_slice(),
             accumulators: vec![Accumulators::default(); HISTORY_SIZE].into_boxed_slice(),
             sfnn16: vec![Sfnn16Accs::empty(); HISTORY_SIZE].into_boxed_slice(),
+            sfnn16_computed,
+            sfnn16_pending: vec![
+                crate::eval::nnue::v16::SfnnPending::default();
+                HISTORY_SIZE
+            ]
+            .into_boxed_slice(),
             dirty_updates: vec![DirtyUpdate::default(); HISTORY_SIZE].into_boxed_slice(),
             computed,
             index: 0,
@@ -108,6 +118,8 @@ impl History {
         }
         self.computed.fill(false);
         self.computed[0] = true;
+        self.sfnn16_computed.fill([false, false]);
+        self.sfnn16_computed[0] = [true, true];
         self.index = 0;
         self.plies_from_null = 0;
     }

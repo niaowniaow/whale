@@ -198,6 +198,11 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
+            // SAFETY: AVX2 availability is verified above. `acc_active.state` and
+            // `acc_passive.state` are `[i16; ACC_SIZE]` inside `Accumulator` which is
+            // `#[repr(C, align(64))]` — satisfying the 32-byte alignment required by
+            // `_mm256_load_si256`. Weight slices are `&[i16]` of length `ACC_SIZE`,
+            // read via unaligned loads. See `evaluate_side_avx2` for loop bound proof.
             unsafe {
                 output +=
                     evaluate_side_avx2(&acc_active.state, &network.output_weights[0..ACC_SIZE]);
@@ -260,6 +265,12 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
     output.clamp(-29000, 29000) as i16
 }
 
+// SAFETY: Caller guarantees AVX2 is available (checked via `is_x86_feature_detected!`).
+// `state` is `&[i16; 256]` from an `align(64)` Accumulator — 32-byte aligned for
+// `_mm256_load_si256`. `weights` is `&[i16]` of length 256, read via `_mm256_loadu_si256`
+// (no alignment required). Loop runs 16 iterations × 16 i16 per __m256i = 256 elements,
+// exactly covering `ACC_SIZE`. The `_mm256_storeu_si256` into a stack `[i32; 8]` is safe
+// because it writes exactly 32 bytes = 8 × i32.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn evaluate_side_avx2(state: &[i16; ACC_SIZE], weights: &[i16]) -> i64 {

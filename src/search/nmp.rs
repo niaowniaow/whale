@@ -2,8 +2,6 @@ use crate::board::state::BoardState;
 use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::search::alp::{AlpFeatures, AlpModel};
 
-// TODO: tune conditions and reduction
-
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub fn can_prune(
@@ -57,9 +55,23 @@ pub fn get_reduction(
     params: &crate::search::search_state::SearchParameters,
     momentum: i16,
 ) -> u8 {
+    get_reduction_with_margin(depth, params, momentum, 0)
+}
+
+#[inline(always)]
+pub fn get_reduction_with_margin(
+    depth: u8,
+    params: &crate::search::search_state::SearchParameters,
+    momentum: i16,
+    eval_margin: i16,
+) -> u8 {
     let mut red = params.nmp_base + depth / params.nmp_depth_div;
     if momentum > 120 && depth >= 6 {
         red += 1;
+    }
+    if eval_margin > 200 {
+        let bonus = ((eval_margin - 200) / 200).clamp(0, 2) as u8;
+        red = red.saturating_add(bonus);
     }
     red
 }
@@ -148,5 +160,16 @@ mod tests {
             get_reduction(2, &params, 0),
             params.nmp_base + 2 / params.nmp_depth_div
         );
+    }
+
+    #[test]
+    fn reduction_scales_with_eval_margin() {
+        let params = crate::search::search_state::SearchParameters::default();
+        let base = params.nmp_base + 6 / params.nmp_depth_div;
+        // Eval margin <= 200 adds no bonus
+        assert_eq!(get_reduction_with_margin(6, &params, 0, 150), base);
+        // Eval margin > 200 adds bonus
+        assert_eq!(get_reduction_with_margin(6, &params, 0, 400), base + 1);
+        assert_eq!(get_reduction_with_margin(6, &params, 0, 800), base + 2);
     }
 }

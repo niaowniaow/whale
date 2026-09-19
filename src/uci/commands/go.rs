@@ -121,7 +121,7 @@ impl UciClient {
         // SINGLE time calculation with the real overhead/ply/opponent clock
         // (previously computed twice with dummy values, then recomputed).
         // movetime: opt = max = movetime - overhead, floored at 1ms.
-        let (opt_ms, max_ms): (i64, u64) = match (movetime, clock_opt) {
+        let (mut opt_ms, mut max_ms): (i64, u64) = match (movetime, clock_opt) {
             (Some(mt), _) => {
                 let t = (mt as i64 - self.move_overhead as i64).max(1);
                 (t, t.max(1) as u64)
@@ -145,6 +145,11 @@ impl UciClient {
             }
             (None, None) => (-1, u64::MAX),
         };
+
+        if self.max_move_time > 0 && max_ms != u64::MAX {
+            max_ms = max_ms.min(self.max_move_time as u64);
+            opt_ms = opt_ms.min(self.max_move_time as i64);
+        }
 
         // While pondering, the inner search runs unbounded (opt/max = -1, like
         // Stockfish search.cpp:2137-2139 which never stops a ponder search);
@@ -231,7 +236,7 @@ impl UciClient {
             output_best_move(best_move, ponder_move);
             drop(search_state_guard);
 
-            if best_move != Move::NO_MOVE && !is_pondering_search.load(Ordering::Relaxed) {
+            if best_move != Move::NO_MOVE && !is_pondering_search.load(Ordering::Relaxed) && ponder_option {
                 crate::search::smp_precompute::run_precomputation(
                     board,
                     best_move,

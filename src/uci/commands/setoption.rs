@@ -48,6 +48,13 @@ impl UciClient {
             {
                 self.move_overhead = v.clamp(0, 5000);
             }
+            if (name.eq_ignore_ascii_case("MaxMoveTime")
+                || name.eq_ignore_ascii_case("Max_Move_Time")
+                || name.eq_ignore_ascii_case("MaxMove_Time"))
+                && let Ok(v) = value.parse::<i32>()
+            {
+                self.max_move_time = v.max(0);
+            }
             if name.eq_ignore_ascii_case("Ponder") {
                 self.ponder_enabled = value.eq_ignore_ascii_case("true") || value == "1";
             }
@@ -134,6 +141,20 @@ impl UciClient {
             {
                 state.params.gtp_threshold = v.clamp(5, 50);
             }
+            // Draw aversion (Lc0 Contempt/DrawScore concepts, Whale's own use).
+            if name.eq_ignore_ascii_case("Contempt")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.contempt_cp = v.clamp(-200, 200);
+            }
+            if name.eq_ignore_ascii_case("DrawScore")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.draw_score_cp = v.clamp(-200, 200);
+            }
+            if name.eq_ignore_ascii_case("ShowWDL") {
+                state.show_wdl = !(value.eq_ignore_ascii_case("false") || value == "0");
+            }
         } else {
             // The search thread holds the search_state lock for its whole run,
             // so a failed try_lock means a search is in flight. Stop it and
@@ -150,7 +171,10 @@ impl UciClient {
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         }
 
-        if name.eq_ignore_ascii_case("EvalFile") || name.eq_ignore_ascii_case("EvalFileSmall") {
+        if name.eq_ignore_ascii_case("EvalFile")
+            || name.eq_ignore_ascii_case("EvalFileSmall")
+            || name.eq_ignore_ascii_case("Model")
+        {
             match crate::eval::nnue::v16::set_eval_file(&name, &value) {
                 Ok(msg) => crate::uci::cli::write_line(&format!("info string {msg}")),
                 Err(e) => crate::uci::cli::write_line(&format!("info string EvalFile error: {e}")),
@@ -270,6 +294,27 @@ mod tests {
         }
         client.run_setoption(&["name", "ALP_Enabled", "value", "false"]);
         assert!(!client.search_state.lock().unwrap().params.alp_enabled);
+    }
+
+    #[test]
+    fn should_apply_contempt_drawscore_showwdl() {
+        let mut client = UciClient::new();
+        client.run_setoption(&["name", "Contempt", "value", "30"]);
+        client.run_setoption(&["name", "DrawScore", "value", "-10"]);
+        client.run_setoption(&["name", "ShowWDL", "value", "false"]);
+        {
+            let state = client.search_state.lock().unwrap();
+            assert_eq!(state.contempt_cp, 30);
+            assert_eq!(state.draw_score_cp, -10);
+            assert!(!state.show_wdl);
+        }
+        client.run_setoption(&["name", "Contempt", "value", "9999"]);
+        client.run_setoption(&["name", "ShowWDL", "value", "true"]);
+        {
+            let state = client.search_state.lock().unwrap();
+            assert_eq!(state.contempt_cp, 200);
+            assert!(state.show_wdl);
+        }
     }
 
     #[test]

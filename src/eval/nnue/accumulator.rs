@@ -32,6 +32,7 @@ impl Accumulator {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
+                // SAFETY: see invariants documented above `add_feature_avx2`.
                 unsafe {
                     Self::add_feature_avx2(&mut self.state, weights);
                 }
@@ -50,6 +51,7 @@ impl Accumulator {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
+                // SAFETY: see invariants documented above `add_feature_avx2`.
                 unsafe {
                     Self::remove_feature_avx2(&mut self.state, weights);
                 }
@@ -70,6 +72,7 @@ impl Accumulator {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
+                // SAFETY: see invariants documented above `add_feature_avx2`.
                 unsafe {
                     Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
                 }
@@ -98,6 +101,7 @@ impl Accumulator {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
+                // SAFETY: see invariants documented above `add_feature_avx2`.
                 unsafe {
                     Self::add_1_sub_2_avx2(
                         &mut self.state,
@@ -134,6 +138,7 @@ impl Accumulator {
         #[cfg(target_arch = "x86_64")]
         {
             if is_x86_feature_detected!("avx2") {
+                // SAFETY: see invariants documented above `add_feature_avx2`.
                 unsafe {
                     Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
                 }
@@ -144,6 +149,19 @@ impl Accumulator {
             self.state[i] += a1[i] + a2[i] - r1[i] - r2[i];
         }
     }
+
+    // SAFETY invariants for all AVX2 accumulator functions below:
+    //  - AVX2 availability is verified by `is_x86_feature_detected!("avx2")` at
+    //    every call site before entering `unsafe`. The `#[target_feature(enable = "avx2")]`
+    //    attribute ensures the compiler may emit AVX2 instructions.
+    //  - `state: &mut [i16; ACC_SIZE]` is part of `Accumulator` which is
+    //    `#[repr(C, align(64))]`, so `state.as_mut_ptr()` is 64-byte aligned,
+    //    satisfying `_mm256_load_si256` / `_mm256_store_si256` (32-byte alignment required).
+    //  - `ACC_SIZE = 256` i16 values = 256 * 2 = 512 bytes = 16 × 32-byte __m256i vectors,
+    //    so the loop bound `0..16` never reads/writes out of bounds.
+    //  - `weights` slices are `&[i16]` of length `ACC_SIZE`, obtained by slicing
+    //    `network.transformer_weights[start..start + ACC_SIZE]` in each public caller.
+    //    `_mm256_loadu_si256` does not require alignment.
 
     #[cfg(target_arch = "x86_64")]
     #[target_feature(enable = "avx2")]

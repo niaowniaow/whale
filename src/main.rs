@@ -5,13 +5,23 @@ use std::time::Instant;
 
 use whale::bitboard::magics::generate_all_magic_numbers;
 use whale::board::state::BoardState;
-use whale::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
+use whale::common::helpers::{ADVANCED_MOVE_FEN, BENCH_FENS, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
 use whale::init;
 use whale::search::search_state::SearchState;
 use whale::train::{run as train_run, run_smoke as train_smoke_run};
 use whale::uci::cli::run as uci_run;
 
 fn main() {
+    let builder = std::thread::Builder::new()
+        .name("whale-main".into())
+        .stack_size(16 * 1024 * 1024);
+    let handler = builder.spawn(real_main).unwrap();
+    if let Err(e) = handler.join() {
+        std::panic::resume_unwind(e);
+    }
+}
+
+fn real_main() {
     let raw_args: Vec<String> = args().collect();
 
     match raw_args.get(1).map(String::as_str) {
@@ -51,16 +61,25 @@ fn main() {
                 .and_then(|v| v.parse::<u8>().ok())
                 .unwrap_or(12)
                 .clamp(1, 64);
-            println!("Bench: hash={hash_mb}MB threads={threads} depth={depth}");
-            let positions = [STARTING_FEN, KIWI_PETE_FEN, ENDGAME_FEN, ADVANCED_MOVE_FEN];
+            let model = raw_args.get(5).map(String::as_str);
+            if let Some(m) = model {
+                let _ = whale::eval::nnue::v16::set_eval_file("Model", m);
+            } else if std::path::Path::new("models/whale_big.nnue").exists() {
+                let _ = whale::eval::nnue::v16::set_eval_file("Model", "whale_big");
+            }
+            let active_net = whale::eval::nnue::v16::active_model_name();
+            println!("Bench: hash={hash_mb}MB threads={threads} depth={depth} model={active_net}");
+            let positions = BENCH_FENS;
             let cancellation_token = AtomicBool::new(false);
             let mut debug_mode = false;
             let mut total_nodes: u64 = 0;
             let total_start = Instant::now();
+            let shared_tt =
+                std::sync::Arc::new(whale::common::tt::TranspositionTable::new_mb(hash_mb));
             for (index, fen) in positions.iter().enumerate() {
+                cancellation_token.store(false, std::sync::atomic::Ordering::Relaxed);
                 let mut search_state = SearchState::new();
-                search_state.tt =
-                    std::sync::Arc::new(whale::common::tt::TranspositionTable::new_mb(hash_mb));
+                search_state.tt = std::sync::Arc::clone(&shared_tt);
                 let mut board = BoardState::parse_fen(fen);
                 let start = Instant::now();
                 let best = board.find_best_move(
@@ -94,7 +113,10 @@ fn main() {
             } else {
                 0
             };
-            println!("Total: {total_nodes} nodes {total_ms} ms {nps} nps");
+            println!(
+                "Total: {total_nodes} nodes {total_ms} ms {nps} nps hashfull {}",
+                shared_tt.hashfull()
+            );
             exit(0);
         }
         Some("datagen") | Some("--datagen") | Some("datagen-teacher") => {
@@ -166,8 +188,17 @@ fn main() {
             );
             exit(0);
         }
+        Some("--model") => {
+            init();
+            let model_name = raw_args.get(2).map(String::as_str).unwrap_or("whale_big");
+            let _ = whale::eval::nnue::v16::set_eval_file("Model", model_name);
+            uci_run();
+        }
         _ => {
             init();
+            if std::path::Path::new("models/whale_big.nnue").exists() {
+                let _ = whale::eval::nnue::v16::set_eval_file("Model", "whale_big");
+            }
             uci_run();
         }
     }

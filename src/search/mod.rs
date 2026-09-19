@@ -2,6 +2,7 @@ pub mod alp;
 pub mod bmo;
 pub mod cfss;
 pub mod correction_history;
+pub mod draw;
 pub mod gtp;
 pub mod iterative_deepening;
 pub mod lmr;

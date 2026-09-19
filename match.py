@@ -55,8 +55,11 @@ def play_match(games=10, time_limit=2.0, depth=None, book_path=None, show=False)
 
         # Start engines
         mine_engine = chess.engine.SimpleEngine.popen_uci(MINE_EXE)
+        model = os.environ.get("WHALE_MODEL")
         eval_file = os.environ.get("WHALE_EVAL_FILE")
-        if eval_file:
+        if model:
+            mine_engine.configure({"Model": model})
+        elif eval_file:
             mine_engine.configure({"EvalFile": os.path.abspath(eval_file)})
         orig_engine = chess.engine.SimpleEngine.popen_uci(ORIG_EXE)
 

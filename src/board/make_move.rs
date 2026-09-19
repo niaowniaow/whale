@@ -21,11 +21,7 @@ fn is_light_square(sq: usize) -> bool {
 
 impl BoardState {
     pub fn make_move(&mut self, m: Move) {
-        let current_idx = self.history.index;
-        let next_idx = current_idx + 1;
-        if crate::eval::nnue::v16::maintenance_active() {
-            self.history.sfnn16[next_idx] = self.history.sfnn16[current_idx].clone();
-        }
+        let next_idx = self.history.index + 1;
 
         let captured_piece = Piece::None;
         let original_board_hash = self.board_hash;
@@ -33,8 +29,11 @@ impl BoardState {
         let original_castling_rights = self.castle;
         let original_half_move_clock = self.half_move_clock;
 
-        self.board_hash ^=
-            zobrist::zobrist_table()[self.get_piece_on(m.source) as usize][m.source as usize];
+        let piece_idx = self.get_piece_on(m.source);
+        if piece_idx < 0 {
+            return;
+        }
+        self.board_hash ^= zobrist::zobrist_table()[piece_idx as usize][m.source as usize];
         let moved_piece = self.remove_piece(m.source, true);
         if moved_piece == Piece::Pawn || m.is_capture() {
             self.half_move_clock = 0;
@@ -397,12 +396,12 @@ impl BoardState {
     }
 
     pub fn make_null_move(&mut self) {
-        let current_idx = self.history.index;
-        let next_idx = current_idx + 1;
+        let next_idx = self.history.index + 1;
         self.history.dirty_updates[next_idx] = crate::board::history::DirtyUpdate::default();
         self.history.computed[next_idx] = false;
         if crate::eval::nnue::v16::maintenance_active() {
-            self.history.sfnn16[next_idx] = self.history.sfnn16[current_idx].clone();
+            self.history.sfnn16_pending[next_idx].clear();
+            self.history.sfnn16_computed[next_idx] = [false; 2];
         }
 
         self.history.save(

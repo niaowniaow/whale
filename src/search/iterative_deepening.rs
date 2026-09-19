@@ -294,17 +294,26 @@ fn search_primary(
                 .collect::<Vec<String>>()
                 .join(" ");
             let score_str = format_score(search_state.score);
+            // Lc0-style WDL reporting (Whale's own logistic in search::draw).
+            let wdl_str = if search_state.show_wdl {
+                let (w, d, l) = crate::search::draw::cp_to_wdl(search_state.score);
+                format!(" wdl {w} {d} {l}")
+            } else {
+                String::new()
+            };
             println!(
-                "info depth {} seldepth {} score {} nodes {} tbhits {} time {} nps {} pv {}",
+                "info depth {} seldepth {} score {}{} nodes {} tbhits {} time {} nps {} pv {}",
                 current_depth,
                 search_state.seldepth,
                 score_str,
+                wdl_str,
                 total_nodes,
                 search_state.tbhits,
                 time_ms,
                 nps,
                 pv_string
             );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
         }
     }
     search_state.best_previous_score = Some(search_state.score);

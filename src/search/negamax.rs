@@ -1,6 +1,6 @@
 use crate::board::state::BoardState;
 use crate::common::castle::Castle;
-use crate::common::constants;
+use crate::common::constants::{self, MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
@@ -9,8 +9,8 @@ use crate::common::tt::{self, TranspositionEntryType};
 use crate::eval::evaluate_with_depth;
 use crate::search::move_picker::MovePicker;
 use crate::search::pv_table::PvTable;
-use crate::search::search_state::SearchState;
-use crate::search::{alp, cfss, gtp, lmr, nmp, psm, quiescence, tce};
+use crate::search::search_state::{SearchState, stm_is_white};
+use crate::search::{alp, cfss, draw, gtp, lmr, nmp, psm, quiescence, tce};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[inline(always)]
@@ -86,7 +86,16 @@ fn search_internal(
     let mut best_score = -constants::MAX_CENTIPAWN_EVAL;
 
     if ply > 0 && board_state.is_draw_in_search(ply as u16) {
-        return 0;
+        // Learned draw scoring (Stockfish value_draw + Lc0 contempt concepts,
+        // Whale's own formulas in search::draw): parity tweak avoids repetition
+        // blindness, contempt shifts draws when the user asks for it.
+        let base = draw::draw_score(ctx.search_state.nodes);
+        return draw::apply_contempt(
+            base,
+            stm_is_white(board_state.side_to_move),
+            ctx.search_state.contempt_cp,
+            ctx.search_state.draw_score_cp,
+        );
     }
 
     let mated = -constants::MAX_CENTIPAWN_EVAL + ply as i16;
@@ -122,7 +131,8 @@ fn search_internal(
     let mut tt_best = None;
 
     // FIX TT-CUTOFF-CONDITIONS (Reckless search.rs:386-406, Stockfish 880-920):
-    // depth margin for fail-low entries, cut-node gating, fifty>=90 skip.
+    // depth margin for fail-low entries, cut-node gating, fifty>=96 skip
+    // (Stockfish rule50 gate concept; see search::draw::allow_tt_cutoff).
     if let Some(entry) = tt_entry {
         if entry.best_move != Move::NO_MOVE {
             tt_best = Some(entry.best_move);
@@ -138,7 +148,7 @@ fn search_internal(
                 TranspositionEntryType::Beta => tt_score >= beta && (cut_node || depth > 5),
                 TranspositionEntryType::None => false,
             };
-            if depth_cond && bound_ok && halfmove < 90 {
+            if depth_cond && bound_ok && draw::allow_tt_cutoff(halfmove) {
                 return tt_score;
             }
         }
@@ -497,13 +507,15 @@ fn search_internal(
         )
     {
         board_state.make_null_move();
-        let reduction = nmp::get_reduction(depth, &ctx.search_state.params, momentum);
+        let eval_margin = static_eval.saturating_sub(beta);
+        let reduction =
+            nmp::get_reduction_with_margin(depth, &ctx.search_state.params, momentum, eval_margin);
         let reduced_depth = depth.saturating_sub(reduction).max(1);
         // FIX PV-TABLE: NMP verify uses a temp table.
         let mut nmp_graph = ctx.gtp_graph;
         let nmp_parent = nmp_graph.add_node(gtp::GtpNode {
             depth: reduced_depth,
-            eval_margin: static_eval.saturating_sub(beta),
+            eval_margin,
             is_capture: false,
             in_check,
             history_score: 0,
@@ -538,6 +550,8 @@ fn search_internal(
         }
 
         if score >= beta {
+            let mate_bound = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
+            let score = if score >= mate_bound { beta } else { score };
             if ctx.excluded_move.is_none() {
                 ctx.search_state.tt.submit_entry(
                     board_state.board_hash,
@@ -960,6 +974,11 @@ fn search_internal(
                 momentum,
                 found_pv,
                 structural_disagreement,
+                // Stockfish cut-node / tt-pv concept with Whale's own weights
+                // (see lmr::compute_reduction). No TT pv-flag yet, so PV nodes
+                // act as the conservative tt-pv proxy.
+                cut_node: ctx.cut_node,
+                tt_pv: is_pv_node,
             };
             let base_reduction = lmr::compute_reduction(
                 &lmr_query,
@@ -1139,7 +1158,13 @@ fn search_internal(
         if in_check {
             return -constants::MAX_CENTIPAWN_EVAL + ply as i16;
         }
-        return 0;
+        let base = draw::draw_score(ctx.search_state.nodes);
+        return draw::apply_contempt(
+            base,
+            stm_is_white(board_state.side_to_move),
+            ctx.search_state.contempt_cp,
+            ctx.search_state.draw_score_cp,
+        );
     }
 
     // FIX EXCLUDED-MOVE GUARDS: singular searches update nothing (Stockfish
@@ -1518,7 +1543,8 @@ mod tests {
     #[test]
     fn stalemate_returns_zero() {
         let (score, _) = run_search(STALEMATE, 1, i16::MIN + 1, i16::MAX - 1);
-        assert_eq!(score, 0);
+        // Draw score with node parity (search::draw): near-zero, not always 0.
+        assert!(score.abs() <= 2, "stalemate score {score}");
     }
 
     #[test]
@@ -1548,7 +1574,7 @@ mod tests {
             i16::MIN + 1,
             i16::MAX - 1,
         );
-        assert_eq!(score, 0);
+        assert!(score.abs() <= 2, "fifty-move score {score}");
     }
 
     #[test]
@@ -1710,7 +1736,9 @@ mod tests {
 
     #[test]
     fn tt_cutoff_skipped_when_halfmove_above_90() {
-        let mut board = BoardState::parse_fen("7k/5K2/6Q1/8/8/8/8/8 b - - 95 150");
+        // TT cutoff gate is 96 (search::draw::allow_tt_cutoff, Stockfish 50mr
+        // concept): halfmove 97 must skip the cutoff and fall back to search.
+        let mut board = BoardState::parse_fen("7k/5K2/6Q1/8/8/8/8/8 b - - 97 150");
         let cancel = AtomicBool::new(false);
         let mut pv_table = PvTable::new();
         let mut state = SearchState::new();
@@ -1722,7 +1750,7 @@ mod tests {
             TranspositionEntryType::Exact,
         );
         let score = search(&mut board, 1, 0, 1, &cancel, &[], &mut pv_table, &mut state);
-        assert_eq!(score, 0);
+        assert!(score.abs() <= 2, "gated TT score {score}");
     }
 
     #[test]
@@ -1785,28 +1813,28 @@ mod tests {
     #[test]
     fn singular_double_extension_on_hopeless_exclusion() {
         let (score, nodes) = singular_stalemate_search(300, 0, 1);
-        assert_eq!(score, 0);
+        assert!(score.abs() <= 2, "singular score {score}");
         assert!(nodes > 0);
     }
 
     #[test]
     fn singular_single_extension_near_margin() {
         let (score, nodes) = singular_stalemate_search(13, 0, 1);
-        assert_eq!(score, 0);
+        assert!(score.abs() <= 2, "singular score {score}");
         assert!(nodes > 0);
     }
 
     #[test]
     fn singular_negative_extension_when_original_above_beta() {
         let (score, nodes) = singular_stalemate_search(10, 0, 1);
-        assert_eq!(score, 0);
+        assert!(score.abs() <= 2, "singular score {score}");
         assert!(nodes > 0);
     }
 
     #[test]
     fn singular_fail_high_returns_with_correction_bonus() {
         let (score, nodes) = singular_stalemate_search(0, -5, -4);
-        assert_eq!(score, 0);
+        assert!(score.abs() <= 2, "singular score {score}");
         assert!(nodes > 0);
     }
 
@@ -1831,10 +1859,10 @@ mod tests {
     #[test]
     fn coarse_pass_runs_on_deep_stalemate_both_arms() {
         let (lo_score, lo_nodes) = run_search(STALEMATE, 7, 0, 1);
-        assert_eq!(lo_score, 0);
+        assert!(lo_score.abs() <= 2, "coarse lo {lo_score}");
         assert!(lo_nodes > 0);
         let (hi_score, hi_nodes) = run_search(STALEMATE, 7, 1000, 1001);
-        assert_eq!(hi_score, 0);
+        assert!(hi_score.abs() <= 2, "coarse hi {hi_score}");
         assert!(hi_nodes > 0);
     }
 
@@ -1918,7 +1946,7 @@ mod tests {
             TranspositionEntryType::Exact,
         );
         let score = search(&mut board, 6, 0, 1, &cancel, &[], &mut pv_table, &mut state);
-        assert_eq!(score, 0);
+        assert!(score.abs() <= 2, "singular clamp score {score}");
         assert!(state.nodes > 0);
     }
 

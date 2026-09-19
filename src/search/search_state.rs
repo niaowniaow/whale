@@ -50,6 +50,12 @@ impl Default for SearchParameters {
     }
 }
 
+/// Side-to-move view helper for contempt (Whale's own linear form).
+#[inline(always)]
+pub fn stm_is_white(side: crate::common::side::Side) -> bool {
+    side == crate::common::side::Side::White
+}
+
 use std::sync::Arc;
 
 pub struct SearchState {
@@ -71,6 +77,13 @@ pub struct SearchState {
     pub previous_time_reduction: f64,
     pub best_move_changes: i32,
     pub optimism: [i32; 2],
+    /// Lc0-style draw aversion (cp, -200..200, 0 = off). Positive values make
+    /// both sides prefer playing on instead of taking draws.
+    pub contempt_cp: i16,
+    /// Absolute draw-value override (cp). Added to near-zero scores.
+    pub draw_score_cp: i16,
+    /// Emit `wdl w d l` on info lines (Lc0 `info wdl` concept).
+    pub show_wdl: bool,
     pub move_ordering: MoveOrdering,
     pub tt: Arc<TranspositionTable>,
 
@@ -108,6 +121,9 @@ impl SearchState {
             previous_time_reduction: 0.85,
             best_move_changes: 0,
             optimism: [0; 2],
+            contempt_cp: 0,
+            draw_score_cp: 0,
+            show_wdl: true,
             move_ordering: MoveOrdering::new(),
             tt: Arc::new(TranspositionTable::new(
                 TranspositionTable::DEFAULT_CAPACITY,
@@ -153,6 +169,9 @@ impl SearchState {
             previous_time_reduction: self.previous_time_reduction,
             best_move_changes: 0,
             optimism: self.optimism,
+            contempt_cp: self.contempt_cp,
+            draw_score_cp: self.draw_score_cp,
+            show_wdl: self.show_wdl,
             move_ordering: MoveOrdering::new(),
             tt: Arc::clone(&self.tt),
             captures_stack: Box::new([MoveList::new(); MAX_PLY]),
@@ -177,6 +196,7 @@ impl SearchState {
         self.root_best_move_nodes = 0;
         self.best_move_changes = 0;
         self.optimism = [0; 2];
+        // contempt/draw_score/show_wdl persist across searches (UCI options).
         *self.eval_stack = [i16::MIN; MAX_PLY];
         self.bmo.reset();
         self.psm_stack.reset();
@@ -227,6 +247,18 @@ mod tests {
 
         // Thread ids wrap every 4 workers.
         assert_eq!(primary.clone_for_worker(4).persona, SearchPersona::Standard);
+    }
+
+    #[test]
+    fn clone_for_worker_carries_draw_options() {
+        let mut primary = SearchState::new();
+        primary.contempt_cp = 25;
+        primary.draw_score_cp = -5;
+        primary.show_wdl = false;
+        let worker = primary.clone_for_worker(1);
+        assert_eq!(worker.contempt_cp, 25);
+        assert_eq!(worker.draw_score_cp, -5);
+        assert!(!worker.show_wdl);
     }
 
     #[test]

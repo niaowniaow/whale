@@ -208,46 +208,49 @@ pub struct DatagenMetadata {
     pub draws: usize,
 }
 
-pub fn read_metadata(output_path: &str) -> DatagenMetadata {
-    let meta_path = format!("{}.meta", output_path);
+pub fn parse_metadata_json(content: &str) -> DatagenMetadata {
     let mut meta = DatagenMetadata::default();
-    let content = match std::fs::read_to_string(&meta_path) {
-        Ok(c) => c,
-        Err(_) => return meta,
-    };
-    for line in content.lines() {
-        let line = line.trim();
-        // TODO: Include serde? Unnecessary dependency for just one tiny JSON file
-        if line.starts_with('{') || line.starts_with('}') {
+    let cleaned = content.trim().trim_start_matches('{').trim_end_matches('}');
+    for entry in cleaned.split(',') {
+        let entry = entry.trim();
+        if entry.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = line.split(':').collect();
-        if parts.len() != 2 {
-            continue;
-        }
-        let key = parts[0].trim().trim_matches('"');
-        let val_str = parts[1].trim().trim_matches(',').trim();
-        if let Ok(val) = val_str.parse::<usize>() {
-            match key {
-                "games_completed" => meta.games_completed = val,
-                "total_positions" => meta.total_positions = val,
-                "white_wins" => meta.white_wins = val,
-                "black_wins" => meta.black_wins = val,
-                "draws" => meta.draws = val,
-                _ => {}
+        if let Some((key_part, val_part)) = entry.split_once(':') {
+            let key = key_part.trim().trim_matches('"').trim();
+            let val_str = val_part.trim().trim_matches('"').trim();
+            if let Ok(val) = val_str.parse::<usize>() {
+                match key {
+                    "games_completed" => meta.games_completed = val,
+                    "total_positions" => meta.total_positions = val,
+                    "white_wins" => meta.white_wins = val,
+                    "black_wins" => meta.black_wins = val,
+                    "draws" => meta.draws = val,
+                    _ => {}
+                }
             }
         }
     }
     meta
 }
 
+pub fn read_metadata(output_path: &str) -> DatagenMetadata {
+    let meta_path = format!("{}.meta", output_path);
+    match std::fs::read_to_string(&meta_path) {
+        Ok(c) => parse_metadata_json(&c),
+        Err(_) => DatagenMetadata::default(),
+    }
+}
+
 pub fn write_metadata(output_path: &str, meta: &DatagenMetadata) -> Result<()> {
     let meta_path = format!("{}.meta", output_path);
+    let temp_path = format!("{}.meta.tmp", output_path);
     let content = format!(
         "{{\n  \"games_completed\": {},\n  \"total_positions\": {},\n  \"white_wins\": {},\n  \"black_wins\": {},\n  \"draws\": {}\n}}\n",
         meta.games_completed, meta.total_positions, meta.white_wins, meta.black_wins, meta.draws
     );
-    std::fs::write(&meta_path, content)
+    std::fs::write(&temp_path, content)?;
+    std::fs::rename(&temp_path, &meta_path)
 }
 
 pub fn run(output_path: &str, num_games: usize, book_path: &str, depth: u8, num_threads: usize) {
@@ -560,4 +563,65 @@ pub fn run_with_teacher(
         });
     });
     exit(0);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_metadata_handles_multiline_json() {
+        let json = r#"{
+  "games_completed": 150,
+  "total_positions": 12500,
+  "white_wins": 60,
+  "black_wins": 50,
+  "draws": 40
+}
+"#;
+        let meta = parse_metadata_json(json);
+        assert_eq!(meta.games_completed, 150);
+        assert_eq!(meta.total_positions, 12500);
+        assert_eq!(meta.white_wins, 60);
+        assert_eq!(meta.black_wins, 50);
+        assert_eq!(meta.draws, 40);
+    }
+
+    #[test]
+    fn parse_metadata_handles_single_line_json() {
+        let json = r#"{"games_completed": 42, "total_positions": 3000, "white_wins": 15, "black_wins": 12, "draws": 15}"#;
+        let meta = parse_metadata_json(json);
+        assert_eq!(meta.games_completed, 42);
+        assert_eq!(meta.total_positions, 3000);
+        assert_eq!(meta.white_wins, 15);
+        assert_eq!(meta.black_wins, 12);
+        assert_eq!(meta.draws, 15);
+    }
+
+    #[test]
+    fn write_and_read_metadata_roundtrip() {
+        let dir = std::env::temp_dir().join(format!("whale-datagen-test-{}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("test_out.binpack");
+        let path_str = path.to_str().unwrap();
+
+        let original = DatagenMetadata {
+            games_completed: 100,
+            total_positions: 7500,
+            white_wins: 40,
+            black_wins: 35,
+            draws: 25,
+        };
+
+        write_metadata(path_str, &original).unwrap();
+        let loaded = read_metadata(path_str);
+
+        assert_eq!(loaded.games_completed, original.games_completed);
+        assert_eq!(loaded.total_positions, original.total_positions);
+        assert_eq!(loaded.white_wins, original.white_wins);
+        assert_eq!(loaded.black_wins, original.black_wins);
+        assert_eq!(loaded.draws, original.draws);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }

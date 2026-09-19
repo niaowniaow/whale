@@ -17,6 +17,7 @@ cuda = ["train", "bullet_lib/cuda"]
 rocm = ["train", "bullet_lib/rocm"]
 
 [profile.dev]
+opt-level = 1
 debug = true
 debug-assertions = true
 
@@ -28,3 +29,6 @@ codegen-units = 1
 [profile.profiling]
 inherits = "release"
 debug = true
+
+[profile.test]
+opt-level = 2
