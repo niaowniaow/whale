@@ -1,5 +1,4 @@
 pub mod accumulator;
-pub mod arr;
 pub mod dcn;
 pub mod features;
 pub mod loader;
@@ -20,7 +19,7 @@ pub const SCALE: i32 = 400;
 // changes per iteration/side, halfmove clock is not part of the Zobrist hash —
 // so both are part of the key. Thread-local: each search thread gets its own
 // table, no locking on the hot path.
-const EVAL_CACHE_BITS: u32 = 20;
+const EVAL_CACHE_BITS: u32 = 16;
 const EVAL_CACHE_SIZE: usize = 1 << EVAL_CACHE_BITS;
 const EVAL_CACHE_MASK: u64 = (EVAL_CACHE_SIZE as u64) - 1;
 

@@ -4,7 +4,6 @@ use crate::common::constants::{self, MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
-use crate::common::side::Side;
 use crate::common::tt::{self, TranspositionEntryType};
 use crate::eval::evaluate_with_depth;
 use crate::search::move_picker::MovePicker;
@@ -730,34 +729,27 @@ fn search_internal(
             0
         };
 
-        let prev_side = board_state.side_to_move.other();
-        let piece = board_state.get_piece_on_side(move_obj.target, prev_side);
-        if piece == Piece::Pawn as usize {
-            let target_rank = (move_obj.target as usize) / 8;
-            if (prev_side == Side::White && target_rank == 1)
-                || (prev_side == Side::Black && target_rank == 6)
-            {
-                extension = extension.max(1);
-            }
-        } else if let Some(prev) = previous_move
-            && prev.is_capture()
-            && move_obj.is_capture()
-            && move_obj.target == prev.target
-        {
-            extension = extension.max(1);
-        }
-
-        // FIX EXTENSIONS: TCE capped to +1 and only at depth>=6.
-        let tce_raw = tce::compute_extension(
-            board_state,
-            move_obj,
-            current_depth,
-            in_check,
-            ply,
-            previous_move,
-        );
-        let tce_ext = if current_depth >= 6 {
-            tce_raw.clamp(0, 1)
+        // COMPLEXITY-TRAP FIX (Stockfish/Reckless have no pawn-push or
+        // recapture extensions): the old +1s here stacked with singular/TCE
+        // every node along tactical lines, so depth never decreased and the
+        // search dived to MAX_PLY (observed ply 52-64 in Kiwi Pete depth 6).
+        // Threat-based extension is covered once, cheaply, by gated TCE below.
+        //
+        // FIX EXTENSIONS: TCE capped to +1, only at depth>=6, and only
+        // evaluated for tactical moves (captures/promotions/checks) — its
+        // feature extraction (pins x2, threats, checkers) is too costly
+        // to run on every quiet move.
+        let is_tactical_move = cap_or_promo || gives_check;
+        let tce_ext = if current_depth >= 6 && is_tactical_move {
+            tce::compute_extension(
+                board_state,
+                move_obj,
+                current_depth,
+                in_check,
+                ply,
+                previous_move,
+            )
+            .clamp(0, 1)
         } else {
             0
         };

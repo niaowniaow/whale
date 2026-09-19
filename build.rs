@@ -186,7 +186,7 @@ fn main() {
 }
 
 fn download_nnue_if_needed() {
-    use std::fs::{create_dir_all, metadata, write};
+    use std::fs::{create_dir_all, metadata};
     use std::path::Path;
     use std::process::Command;
 
@@ -243,10 +243,9 @@ fn download_nnue_if_needed() {
         };
 
         if !success {
-            println!(
-                "cargo:warning=Failed to download correct weights from GitHub. Generating zero-initialized weights instead..."
+            panic!(
+                "build.rs: failed to download NNUE weights (expected {expected_size} bytes at {dest_path:?}); refusing to embed zero-initialized weights"
             );
-            write(dest_path, vec![0u8; expected_size]).unwrap();
         } else {
             println!("cargo:warning=Successfully downloaded NNUE weights.");
         }

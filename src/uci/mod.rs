@@ -329,11 +329,6 @@ pub(crate) fn get_parameter(name: &str, parameters: &[&str], fallback: i32) -> i
     fallback
 }
 
-#[allow(dead_code)]
-pub(crate) fn has_flag(name: &str, parameters: &[&str]) -> bool {
-    parameters.contains(&name)
-}
-
 /// Parse an unsigned (`u64`) go/setoption value. A present-but-unparseable
 /// (or negative) token is ignored and `None` is returned so the caller keeps
 /// its default instead of silently falling back to a wrong value
@@ -401,12 +396,6 @@ mod tests {
     }
 
     #[test]
-    fn has_flag_checks_presence() {
-        assert!(has_flag("ponder", &["go", "ponder"]));
-        assert!(!has_flag("ponder", &["go", "depth", "1"]));
-    }
-
-    #[test]
     fn output_best_move_handles_all_shapes() {
         use crate::common::moves::Move;
 
@@ -436,13 +425,6 @@ mod tests {
         assert_eq!(get_parameter("depth", &["depth", "-3"], 8), -3);
         // First occurrence wins.
         assert_eq!(get_parameter("depth", &["depth", "3", "depth", "9"], 8), 3);
-    }
-
-    #[test]
-    fn has_flag_handles_empty_and_missing() {
-        assert!(!has_flag("ponder", &[]));
-        assert!(!has_flag("infinite", &["depth", "1"]));
-        assert!(has_flag("infinite", &["infinite"]));
     }
 
     #[test]

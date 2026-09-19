@@ -53,3 +53,13 @@ checksum.md5
 /Stockfish/
 /Reckless/
 /lc0/
+
+# Local build artifacts / probe output at repo root (never commit binaries)
+/whale
+/whale-*
+/fens_out.txt
+/depth_out.txt
+/kiwi_out.txt
+/probe_*.py
+/scratch_test.py
+/in.txt
