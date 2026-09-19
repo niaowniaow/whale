@@ -275,8 +275,8 @@ fn pawn_attacks_sf(side: Side, sq: usize) -> u64 {
 
 #[inline(always)]
 fn slider_attacks_sf(sf_piece_type: usize, sq: usize, occ: u64) -> u64 {
-    use crate::bitboard::lookups::{get_bishop_attacks_from_table, get_rook_attacks_from_table};
     use crate::bitboard::Bitboard;
+    use crate::bitboard::lookups::{get_bishop_attacks_from_table, get_rook_attacks_from_table};
     use crate::common::square::Square;
 
     let whale_sq = Square::from(sq ^ 56);
@@ -1733,15 +1733,15 @@ pub fn resolve_model_path(path: &str) -> Option<String> {
 }
 
 pub fn active_model_name() -> String {
-    if let Ok(guard) = PENDING_PATH.read() {
-        if let Some(ref p) = *guard {
-            let path = std::path::Path::new(p);
-            return path
-                .file_stem()
-                .and_then(|s| s.to_str())
-                .unwrap_or(p)
-                .to_string();
-        }
+    if let Ok(guard) = PENDING_PATH.read()
+        && let Some(ref p) = *guard
+    {
+        let path = std::path::Path::new(p);
+        return path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .unwrap_or(p)
+            .to_string();
     }
     "embedded".to_string()
 }
@@ -2216,6 +2216,7 @@ unsafe fn pairwise_transform_rudi_avx2(
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
+#[allow(clippy::too_many_arguments)]
 unsafe fn pairwise_transform_threats_tiled_avx2(
     base_acc: &[i16],
     threat_w: &[i8],
@@ -2493,14 +2494,8 @@ fn eval_with_net(
                 let mut len = 0;
                 for &(color, from, to, paired) in &raw_pairs[..n_raw_pairs] {
                     if len < MAX_PAIR_ACTIVE {
-                        pair_lists[slot][len] = pair_make_index(
-                            persp,
-                            color,
-                            from as usize,
-                            to as usize,
-                            paired,
-                            ksq,
-                        );
+                        pair_lists[slot][len] =
+                            pair_make_index(persp, color, from as usize, to as usize, paired, ksq);
                         len += 1;
                     }
                 }
@@ -2601,7 +2596,8 @@ fn eval_with_net(
                             *acc += i32::from(w);
                         }
                         let base_psqt = t * N_BUCKETS;
-                        let p_slice = &net.transformer.threat_psqt_w[base_psqt..base_psqt + N_BUCKETS];
+                        let p_slice =
+                            &net.transformer.threat_psqt_w[base_psqt..base_psqt + N_BUCKETS];
                         for b in 0..N_BUCKETS {
                             per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
                         }
@@ -2614,7 +2610,8 @@ fn eval_with_net(
                             *acc += i32::from(w);
                         }
                         let base_psqt = t * N_BUCKETS;
-                        let p_slice = &net.transformer.pair_psqt_w[base_psqt..base_psqt + N_BUCKETS];
+                        let p_slice =
+                            &net.transformer.pair_psqt_w[base_psqt..base_psqt + N_BUCKETS];
                         for b in 0..N_BUCKETS {
                             per_psqt[slot][b] = per_psqt[slot][b].wrapping_add(p_slice[b]);
                         }
@@ -2631,7 +2628,13 @@ fn eval_with_net(
                 if use_rudi_avx2 {
                     #[cfg(target_arch = "x86_64")]
                     unsafe {
-                        pairwise_transform_rudi_avx2(base_acc, &threat_buf, dst, half, net.use_threats);
+                        pairwise_transform_rudi_avx2(
+                            base_acc,
+                            &threat_buf,
+                            dst,
+                            half,
+                            net.use_threats,
+                        );
                     }
                 } else {
                     for j in 0..half {
@@ -2762,18 +2765,18 @@ pub fn ensure_sfnn16_fresh(board: &mut BoardState, pos: &SfnnPosition) {
                     let psqt = &mut board.history.sfnn16[k].psqt[p];
 
                     for &ev in &pending.dels[..pending.n_dels] {
-                        if let Some((sq_sf, side, piece)) = ev {
-                            if let Some(f) = halfka_index(perspective, side, piece, sq_sf, ksq) {
-                                scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, -1);
-                            }
+                        if let Some((sq_sf, side, piece)) = ev
+                            && let Some(f) = halfka_index(perspective, side, piece, sq_sf, ksq)
+                        {
+                            scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, -1);
                         }
                     }
 
                     for &ev in &pending.adds[..pending.n_adds] {
-                        if let Some((sq_sf, side, piece)) = ev {
-                            if let Some(f) = halfka_index(perspective, side, piece, sq_sf, ksq) {
-                                scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, 1);
-                            }
+                        if let Some((sq_sf, side, piece)) = ev
+                            && let Some(f) = halfka_index(perspective, side, piece, sq_sf, ksq)
+                        {
+                            scatter_halfka(&nets.net.transformer, L1, &[f], slot, psqt, 1);
                         }
                     }
 
@@ -3187,7 +3190,8 @@ mod tests {
             return;
         }
         load_net("v16/nn-1a298aa575a0.nnue").unwrap();
-        let board = BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
+        let board =
+            BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let pos = SfnnPosition::from_board(&board);
         let mut accs = Sfnn16Accs::empty();
         refresh_all(&pos, &mut accs);

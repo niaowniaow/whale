@@ -236,7 +236,10 @@ impl UciClient {
             output_best_move(best_move, ponder_move);
             drop(search_state_guard);
 
-            if best_move != Move::NO_MOVE && !is_pondering_search.load(Ordering::Relaxed) && ponder_option {
+            if best_move != Move::NO_MOVE
+                && !is_pondering_search.load(Ordering::Relaxed)
+                && ponder_option
+            {
                 crate::search::smp_precompute::run_precomputation(
                     board,
                     best_move,

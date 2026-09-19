@@ -193,17 +193,34 @@ fn test_game_position_depth_8() {
     for m_str in moves.split_whitespace() {
         let mut list = whale::common::move_list::MoveList::new();
         board.generate_moves(&mut list);
-        let m = list.iter().map(|e| e.mv).find(|mv| {
-            let promo = mv.promotion_char().map(|c| c.to_string()).unwrap_or_default();
-            format!("{}{}{}", mv.source, mv.target, promo) == m_str
-        }).expect("move must be legal");
+        let m = list
+            .iter()
+            .map(|e| e.mv)
+            .find(|mv| {
+                let promo = mv
+                    .promotion_char()
+                    .map(|c| c.to_string())
+                    .unwrap_or_default();
+                format!("{}{}{}", mv.source, mv.target, promo) == m_str
+            })
+            .expect("move must be legal");
         board.make_move(m);
     }
     let cancellation_token = AtomicBool::new(false);
     let mut debug_mode = true;
     let mut search_state = SearchState::new();
     let start = std::time::Instant::now();
-    let best = board.find_best_move(12, &cancellation_token, &mut debug_mode, &mut search_state, 4);
-    println!("Elapsed: {:?}, best: {:?}, nodes: {}", start.elapsed(), best, search_state.nodes);
+    let best = board.find_best_move(
+        12,
+        &cancellation_token,
+        &mut debug_mode,
+        &mut search_state,
+        4,
+    );
+    println!(
+        "Elapsed: {:?}, best: {:?}, nodes: {}",
+        start.elapsed(),
+        best,
+        search_state.nodes
+    );
 }
-

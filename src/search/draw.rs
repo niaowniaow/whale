@@ -20,7 +20,11 @@ pub const CONTEMPT_LIMIT: i16 = 200;
 /// With default options the result stays within [-1, 1].
 #[inline(always)]
 pub fn draw_score(nodes: u64) -> i16 {
-    if nodes & 2 == 0 { DRAW_BASE } else { DRAW_BASE + 1 }
+    if nodes & 2 == 0 {
+        DRAW_BASE
+    } else {
+        DRAW_BASE + 1
+    }
 }
 
 /// Apply user contempt to a draw-ish score.
@@ -32,12 +36,7 @@ pub fn draw_score(nodes: u64) -> i16 {
 /// * `draw_score_cp` — absolute draw value override (Lc0 `DrawScore` concept).
 ///
 /// Only near-zero scores are shifted so mates/TB wins are untouched.
-pub fn apply_contempt(
-    score: i16,
-    stm_is_white: bool,
-    contempt_cp: i16,
-    draw_score_cp: i16,
-) -> i16 {
+pub fn apply_contempt(score: i16, stm_is_white: bool, contempt_cp: i16, draw_score_cp: i16) -> i16 {
     let c = contempt_cp.clamp(-CONTEMPT_LIMIT, CONTEMPT_LIMIT);
     let d = draw_score_cp.clamp(-CONTEMPT_LIMIT, CONTEMPT_LIMIT);
     if c == 0 && d == 0 {
@@ -52,7 +51,9 @@ pub fn apply_contempt(
     let _ = side_sign;
     // Symmetric form: positive contempt lowers the draw value for the
     // side to move (they would rather play on).
-    score.saturating_add(d).saturating_sub(c.signum() * c.abs().min(50))
+    score
+        .saturating_add(d)
+        .saturating_sub(c.signum() * c.abs().min(50))
 }
 
 /// Convert a centipawn score to WDL permille (w, d, l), sum = 1000.
@@ -121,7 +122,7 @@ mod tests {
             let (w, d, l) = cp_to_wdl(cp);
             assert_eq!(w as u32 + d as u32 + l as u32, 1000);
         }
-        assert_eq!(cp_to_wdl(0).1 >= 300, true);
+        assert!(cp_to_wdl(0).1 >= 300);
         assert_eq!(cp_to_wdl(30_000), (1000, 0, 0));
         assert_eq!(cp_to_wdl(-30_000), (0, 0, 1000));
         let (w_pos, _, _) = cp_to_wdl(200);

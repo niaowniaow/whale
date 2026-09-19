@@ -65,11 +65,8 @@ impl History {
             accumulators: vec![Accumulators::default(); HISTORY_SIZE].into_boxed_slice(),
             sfnn16: vec![Sfnn16Accs::empty(); HISTORY_SIZE].into_boxed_slice(),
             sfnn16_computed,
-            sfnn16_pending: vec![
-                crate::eval::nnue::v16::SfnnPending::default();
-                HISTORY_SIZE
-            ]
-            .into_boxed_slice(),
+            sfnn16_pending: vec![crate::eval::nnue::v16::SfnnPending::default(); HISTORY_SIZE]
+                .into_boxed_slice(),
             dirty_updates: vec![DirtyUpdate::default(); HISTORY_SIZE].into_boxed_slice(),
             computed,
             index: 0,

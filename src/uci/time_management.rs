@@ -24,15 +24,30 @@ pub fn calculate_optimum_with_ply(
 
     let available_clock = (clock - move_overhead).max(10);
     let (format_opt_cap, format_max_cap) = if available_clock <= 15_000 {
-        (available_clock / 15 + increment / 2, available_clock / 8 + increment)
+        (
+            available_clock / 15 + increment / 2,
+            available_clock / 8 + increment,
+        )
     } else if available_clock <= 60_000 {
-        (1_500.min(available_clock / 20) + increment / 2, 3_000.min(available_clock / 10) + increment)
+        (
+            1_500.min(available_clock / 20) + increment / 2,
+            3_000.min(available_clock / 10) + increment,
+        )
     } else if available_clock <= 300_000 {
-        (4_500.min(available_clock / 30) + increment / 2, 8_000.min(available_clock / 15) + increment)
+        (
+            4_500.min(available_clock / 30) + increment / 2,
+            8_000.min(available_clock / 15) + increment,
+        )
     } else if available_clock <= 900_000 {
-        (10_000.min(available_clock / 35) + increment / 2, 18_000.min(available_clock / 20) + increment)
+        (
+            10_000.min(available_clock / 35) + increment / 2,
+            18_000.min(available_clock / 20) + increment,
+        )
     } else {
-        (20_000.min(available_clock / 40) + increment / 2, 35_000.min(available_clock / 25) + increment)
+        (
+            20_000.min(available_clock / 40) + increment / 2,
+            35_000.min(available_clock / 25) + increment,
+        )
     };
 
     let scaled_time = clock.max(1);

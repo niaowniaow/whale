@@ -5,7 +5,9 @@ use std::time::Instant;
 
 use whale::bitboard::magics::generate_all_magic_numbers;
 use whale::board::state::BoardState;
-use whale::common::helpers::{ADVANCED_MOVE_FEN, BENCH_FENS, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
+use whale::common::helpers::{
+    ADVANCED_MOVE_FEN, BENCH_FENS, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN,
+};
 use whale::init;
 use whale::search::search_state::SearchState;
 use whale::train::{run as train_run, run_smoke as train_smoke_run};
