@@ -21,6 +21,9 @@ scratch/
 /checkpoints/
 /data/
 **/nnue.bin
+# Best-so-far big checkpoint written by `train::copy_trained_weights`
+# (BIG_KEEPER_PATH) — never commit a ~100 MB training artifact.
+resources/sfnn16-big-checkpoint.bin
 *.epd
 *.binpack
 *.binpack.meta

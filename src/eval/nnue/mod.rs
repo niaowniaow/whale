@@ -91,6 +91,28 @@ pub fn evaluate_with_depth(board: &mut BoardState, optimism: i32, depth: u8) -> 
     dcn::DcnModel::condition_evaluation(base_score, depth, board, dcn::DcnConfig::default())
 }
 
+/// Same as [`evaluate_with_depth`] but reuses threat counts from a
+/// per-node [`crate::board::node_threats::NodeThreats`] snapshot instead of
+/// recomputing them inside DCN. Bit-identical results.
+#[inline(always)]
+pub fn evaluate_with_depth_cached(
+    board: &mut BoardState,
+    optimism: i32,
+    depth: u8,
+    nt: &crate::board::node_threats::NodeThreats,
+) -> i16 {
+    let base_score = evaluate_with_optimism(board, optimism);
+    dcn::DcnModel::condition_evaluation_cached(
+        base_score,
+        depth,
+        board,
+        nt.checks(),
+        nt.queen_threat_us(board),
+        nt.queen_threat_them(board),
+        dcn::DcnConfig::default(),
+    )
+}
+
 #[inline(always)]
 pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
     let board_hash = board.board_hash;

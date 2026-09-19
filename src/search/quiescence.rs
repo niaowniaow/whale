@@ -53,10 +53,9 @@ pub fn search(
         );
     }
 
-    // PERF: same once-per-node checkers/pinners cache as negamax.
-    let node_checkers = board_state.checkers(board_state.side_to_move).0;
-    let node_pinned = board_state.pinned_pieces(board_state.side_to_move).0;
-    let in_check = node_checkers != 0;
+    // PERF: same once-per-node threat snapshot as negamax.
+    let nt = crate::board::node_threats::NodeThreats::compute(board_state);
+    let in_check = nt.in_check();
     if board_state.occupancy().count_ones() <= 10 && !has_legal_move(board_state) {
         return if in_check {
             -MAX_CENTIPAWN_EVAL + ply as i16
@@ -131,7 +130,14 @@ pub fn search(
             evaluate_with_optimism(&mut *board_state, optimism)
         };
         let continue_qs = search_state.params.lqt_enabled
-            && crate::search::lqt::should_continue_quiescence(board_state, eval, alpha, beta, ply);
+            && crate::search::lqt::should_continue_quiescence(
+                board_state,
+                &nt,
+                eval,
+                alpha,
+                beta,
+                ply,
+            );
         // FIX QSEARCH-TT: stand-pat fail-high stores LOWER before returning.
         if eval >= beta && !continue_qs {
             let mut stand_pat = beta;
@@ -180,17 +186,18 @@ pub fn search(
         &search_state.move_ordering,
         &mut search_state.captures_stack[ply as usize],
         &mut search_state.quiets_stack[ply as usize],
+        &nt,
     ) {
         if cancellation_token.load(Ordering::Relaxed) {
             break;
         }
 
-        if !board_state.is_legal_with(move_obj, node_checkers, node_pinned) {
+        if !board_state.is_legal_with(move_obj, nt.checkers, nt.pinned) {
             continue;
         }
 
         if !in_check {
-            if board_state.see(move_obj) < -74 {
+            if !board_state.see_ge(move_obj, -74) {
                 continue;
             }
 
@@ -210,7 +217,7 @@ pub fn search(
                     best_value = best_value.max(futility_val);
                     continue;
                 }
-                if board_state.see(move_obj) < alpha.saturating_sub(futility_base) {
+                if !board_state.see_ge(move_obj, alpha.saturating_sub(futility_base)) {
                     best_value = best_value.max(alpha.min(futility_base));
                     continue;
                 }
@@ -277,7 +284,7 @@ pub fn search(
             }
         }
         for &move_obj in promos.iter().take(promo_count) {
-            if !board_state.is_legal_with(move_obj, node_checkers, node_pinned) {
+            if !board_state.is_legal_with(move_obj, nt.checkers, nt.pinned) {
                 continue;
             }
             board_state.make_move(move_obj);

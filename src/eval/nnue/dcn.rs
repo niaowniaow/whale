@@ -71,23 +71,41 @@ impl DcnModel {
             return raw_eval;
         }
 
+        let us = board.side_to_move;
+        let checks = board.checkers(us).0.count_ones();
+        let qt_us = (board.threat_by_lesser(us)[Piece::Queen as usize]
+            & board.get_pieces(us, Piece::Queen).0)
+            .count_ones();
+        let qt_them = (board.threat_by_lesser(us.other())[Piece::Queen as usize]
+            & board.get_pieces(us.other(), Piece::Queen).0)
+            .count_ones();
+        Self::condition_evaluation_cached(raw_eval, depth, board, checks, qt_us, qt_them, config)
+    }
+
+    /// Same as [`Self::condition_evaluation`] but reuses caller-provided
+    /// threat counts (from [`crate::board::node_threats::NodeThreats`])
+    /// instead of recomputing `checkers()` + 2x `threat_by_lesser()`.
+    /// Bit-identical results.
+    pub fn condition_evaluation_cached(
+        raw_eval: i16,
+        depth: u8,
+        board: &BoardState,
+        checks: u32,
+        queen_threat_us: u32,
+        queen_threat_them: u32,
+        config: DcnConfig,
+    ) -> i16 {
+        if !config.enabled {
+            return raw_eval;
+        }
+
         let (gamma, beta) = Self::compute_film_params(depth);
         let modulated = (raw_eval as i64 * gamma as i64) / 256 + beta as i64;
 
         let regime = Self::get_regime(depth);
         let positional_adjustment = match regime {
             DepthRegime::Tactical => {
-                let us = board.side_to_move;
-                let them = us.other();
-                let checks = board.checkers(us).0.count_ones() as i64;
-                let threats = (board.threat_by_lesser(us)[Piece::Queen as usize]
-                    & board.get_pieces(us, Piece::Queen).0)
-                    .count_ones() as i64;
-                let enemy_threats = (board.threat_by_lesser(them)[Piece::Queen as usize]
-                    & board.get_pieces(them, Piece::Queen).0)
-                    .count_ones() as i64;
-
-                (enemy_threats - threats) * 28 - checks * 32
+                (queen_threat_them as i64 - queen_threat_us as i64) * 28 - checks as i64 * 32
             }
             DepthRegime::Strategic => {
                 let us = board.side_to_move;

@@ -28,6 +28,45 @@ impl Piece {
 }
 
 impl BoardState {
+    /// Exact boolean SEE (Reckless `see(bool)` concept, Whale's own proof):
+    /// returns exactly `self.see(mv) >= threshold`, but short-circuits when
+    /// the worst case is already decided. Proof: the swap loop backs up with
+    /// `gain[i-1] -= max(0, gain[i])`, so the final result is always
+    /// `>= gain[0] - gain[1]`, where `gain[1]` is the enemy recapture value.
+    /// The enemy recapture promotes (at most +800) only when the target
+    /// square lies on their promotion rank, so excluding that rare case,
+    /// `gain[0] - attacker_value` is a strict floor. If the floor already
+    /// clears `threshold`, the full loop cannot change the verdict.
+    pub fn see_ge(&self, mv: Move, threshold: i16) -> bool {
+        let captured = self.get_initial_captured_piece(mv);
+        let mut initial = captured.see_value() as i32;
+        let attacker_val = if mv.is_promotion() {
+            let promo = mv.move_type.promotion_piece();
+            initial += promo.see_value() as i32 - Piece::Pawn.see_value() as i32;
+            promo.see_value() as i32
+        } else {
+            let piece = self.piece_mapping[mv.source as usize];
+            if piece == Piece::None {
+                // No piece to move (only possible for pseudo-moves): the
+                // floor argument does not apply, run the full algorithm.
+                return self.see(mv) >= threshold;
+            }
+            piece.see_value() as i32
+        };
+        // Enemy promotion by recapture needs the target on their back
+        // rank (index 0 for Black, 7 for White).
+        let target_rank = mv.target as usize / 8;
+        let enemy_promo_rank = if self.side_to_move == Side::White {
+            target_rank == 0
+        } else {
+            target_rank == 7
+        };
+        if !enemy_promo_rank && initial - attacker_val >= threshold as i32 {
+            return true;
+        }
+        self.see(mv) >= threshold
+    }
+
     // impl - https://www.chessprogramming.org/SEE_-_The_Swap_Algorithm
     pub fn see(&self, mv: Move) -> i16 {
         let (source, target) = (mv.source, mv.target);
@@ -247,6 +286,41 @@ mod tests {
 
         let mv_knight = Move::new(Square::A7, Square::B8, MoveType::KnightPromotionCapture);
         assert_eq!(board.see(mv_knight), 400); // 500 (Rook) + (300 - 100) (Knight promo) - 300 (recapture) = 400
+    }
+
+    #[test]
+    fn see_ge_matches_threshold_compare_everywhere() {
+        use crate::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
+        use crate::common::move_list::MoveList;
+
+        // Thresholds mirroring every production call site: qsearch -74 and
+        // futility deltas, SEE-prune gates, picker partition gates, -75.
+        let thresholds: [i16; 9] = [-600, -400, -200, -100, -75, -74, -38, 0, 100];
+        for fen in [
+            STARTING_FEN,
+            KIWI_PETE_FEN,
+            ENDGAME_FEN,
+            ADVANCED_MOVE_FEN,
+            "7k/8/2b2b2/3pp3/8/8/8/K2RQ3 w - - 0 1",
+            "7k/8/8/8/3p4/8/3R4/K7 w - - 0 1",
+            "rr6/P7/k7/8/8/8/8/K7 w - - 0 1",
+            "4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1",
+        ] {
+            let board = BoardState::parse_fen(fen);
+            let mut moves = MoveList::new();
+            board.generate_moves(&mut moves);
+            assert!(!moves.is_empty());
+            for entry in moves.iter() {
+                for &t in &thresholds {
+                    assert_eq!(
+                        board.see_ge(entry.mv, t),
+                        board.see(entry.mv) >= t,
+                        "see_ge mismatch {:?} thr={t} in {fen}",
+                        entry.mv
+                    );
+                }
+            }
+        }
     }
 
     #[test]

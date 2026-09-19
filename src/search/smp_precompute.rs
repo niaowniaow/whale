@@ -1,3 +1,4 @@
+use crate::board::node_threats::NodeThreats;
 use crate::board::state::BoardState;
 use crate::common::constants::ASPIRATION_WINDOW_MARGIN;
 use crate::common::move_list::MoveList;
@@ -17,13 +18,16 @@ pub fn select_speculative_replies(
 ) -> Vec<Move> {
     let mut move_list = MoveList::new();
     board.generate_moves(&mut move_list);
+    // PERF: one threat snapshot for the whole root list instead of
+    // recomputing checkers/pinners inside `is_legal` for every move.
+    let nt = NodeThreats::compute(board);
 
     let mut scored_moves: Vec<(Move, i32)> = Vec::with_capacity(move_list.len());
     let tt_move = tt.probe(board.board_hash).map(|e| e.best_move);
 
     for i in 0..move_list.len() {
         let m = move_list[i].mv;
-        if !board.is_legal(m) {
+        if !board.is_legal_with(m, nt.checkers, nt.pinned) {
             continue;
         }
 
@@ -61,7 +65,8 @@ pub fn run_precomputation(
     cancel_token: Arc<AtomicBool>,
     max_depth: u8,
 ) {
-    if !board.is_legal(best_move) {
+    let nt = NodeThreats::compute(&board);
+    if !board.is_legal_with(best_move, nt.checkers, nt.pinned) {
         return;
     }
 

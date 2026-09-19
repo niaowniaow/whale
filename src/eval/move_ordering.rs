@@ -164,6 +164,8 @@ impl MoveOrdering {
         board_state: &BoardState,
         ply: usize,
         previous_move: Option<Move>,
+        threats: &[u64; 6],
+        check_squares: &[u64; 6],
     ) {
         let counter_move = if let Some(prev_mv) = previous_move {
             let prev_side = board_state.side_to_move.other();
@@ -176,10 +178,6 @@ impl MoveOrdering {
         } else {
             Move::NO_MOVE
         };
-
-        let them = board_state.side_to_move.other();
-        let check_squares = board_state.check_squares(them);
-        let threats = board_state.threat_by_lesser(board_state.side_to_move);
 
         for move_obj in moves.iter_mut() {
             let prom_piece = move_obj.mv.move_type.promotion_piece();
@@ -217,7 +215,7 @@ impl MoveOrdering {
                     let to_mask = 1u64 << (move_obj.mv.target as usize);
                     let from_mask = 1u64 << (move_obj.mv.source as usize);
 
-                    if (check_squares[pt] & to_mask) != 0 && board_state.see(move_obj.mv) >= -75 {
+                    if (check_squares[pt] & to_mask) != 0 && board_state.see_ge(move_obj.mv, -75) {
                         score += 16384;
                     }
 
@@ -462,7 +460,15 @@ mod tests {
             },
         ];
 
-        move_ordering.populate_quiet_scores(&mut quiet_moves, &board, 0, None);
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        move_ordering.populate_quiet_scores(
+            &mut quiet_moves,
+            &board,
+            0,
+            None,
+            &nt.threats_us,
+            &nt.check_squares,
+        );
 
         assert_eq!(quiet_moves[0].score, 25000);
         assert_eq!(quiet_moves[1].score, -20000);
@@ -479,7 +485,14 @@ mod tests {
             mv: under_prom,
             score: 0,
         }];
-        move_ordering.populate_quiet_scores(&mut killer_quiet_moves, &board, 0, None);
+        move_ordering.populate_quiet_scores(
+            &mut killer_quiet_moves,
+            &board,
+            0,
+            None,
+            &nt.threats_us,
+            &nt.check_squares,
+        );
         assert_eq!(killer_quiet_moves[0].score, 22000);
 
         let mut capture_moves = vec![
@@ -600,7 +613,15 @@ mod tests {
                 score: 0,
             },
         ];
-        ordering.populate_quiet_scores(&mut moves, &board, 0, None);
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        ordering.populate_quiet_scores(
+            &mut moves,
+            &board,
+            0,
+            None,
+            &nt.threats_us,
+            &nt.check_squares,
+        );
         assert_eq!(moves[0].score, 21000);
         assert_eq!(moves[1].score, 22000);
         let _ = MoveOrdering::default();
@@ -645,7 +666,15 @@ mod tests {
             mv: reply,
             score: 0,
         }];
-        ordering2.populate_quiet_scores(&mut scored, &board, 0, Some(e4));
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        ordering2.populate_quiet_scores(
+            &mut scored,
+            &board,
+            0,
+            Some(e4),
+            &nt.threats_us,
+            &nt.check_squares,
+        );
         assert_eq!(scored[0].score, 20000);
     }
 

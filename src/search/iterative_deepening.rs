@@ -1,3 +1,4 @@
+use crate::board::node_threats::NodeThreats;
 use crate::board::state::BoardState;
 use crate::common::constants::{ASPIRATION_WINDOW_MARGIN, MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_list::MoveList;
@@ -337,13 +338,16 @@ pub fn search(
     {
         let mut root_moves = MoveList::new();
         board_state.generate_moves(&mut root_moves);
+        // PERF: one threat snapshot for the whole root list, matching the
+        // per-node snapshot used by the search itself.
+        let root_threats = NodeThreats::compute(board_state);
         let filter = !search_state.searchmoves.is_empty();
         for i in 0..root_moves.len() {
             let m = root_moves[i].mv;
             if filter && !search_state.searchmoves.contains(&m) {
                 continue;
             }
-            if board_state.is_legal(m) {
+            if board_state.is_legal_with(m, root_threats.checkers, root_threats.pinned) {
                 legal_root_moves += 1;
                 if legal_root_moves > 1 {
                     break;
@@ -354,7 +358,7 @@ pub fn search(
         if filter && legal_root_moves == 0 {
             for i in 0..root_moves.len() {
                 let m = root_moves[i].mv;
-                if board_state.is_legal(m) {
+                if board_state.is_legal_with(m, root_threats.checkers, root_threats.pinned) {
                     legal_root_moves += 1;
                     if legal_root_moves > 1 {
                         break;

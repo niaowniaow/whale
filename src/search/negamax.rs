@@ -1,3 +1,4 @@
+use crate::board::node_threats::NodeThreats;
 use crate::board::state::BoardState;
 use crate::common::castle::Castle;
 use crate::common::constants::{self, MAX_CENTIPAWN_EVAL, MAX_PLY};
@@ -5,7 +6,6 @@ use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::common::tt::{self, TranspositionEntryType};
-use crate::eval::evaluate_with_depth;
 use crate::search::move_picker::MovePicker;
 use crate::search::pv_table::PvTable;
 use crate::search::search_state::{SearchState, stm_is_white};
@@ -61,12 +61,10 @@ fn search_internal(
     }
 
     let is_pv_node = beta > 1 + alpha;
-    // PERF (Stockfish st->checkersBB concept): checkers/pinners computed once
-    // per node and reused for every legality test below. `in_check` is exactly
-    // `checkers != 0` (both false when the king is missing).
-    let node_checkers = board_state.checkers(board_state.side_to_move).0;
-    let node_pinned = board_state.pinned_pieces(board_state.side_to_move).0;
-    let in_check = node_checkers != 0;
+    // PERF (Stockfish StateInfo / Reckless cached-threats concept): one
+    // threat snapshot per node shared by legality, eval, ordering and TCE.
+    let nt = NodeThreats::compute(board_state);
+    let in_check = nt.in_check();
     let cut_node = ctx.cut_node;
     let halfmove = board_state.half_move_clock;
 
@@ -236,7 +234,8 @@ fn search_internal(
         }
     } else {
         let optimism = ctx.search_state.optimism[board_state.side_to_move as usize];
-        let raw_static_eval = evaluate_with_depth(&mut *board_state, optimism, depth);
+        let raw_static_eval =
+            crate::eval::evaluate_with_depth_cached(&mut *board_state, optimism, depth, &nt);
         let correction = ctx
             .search_state
             .correction_history
@@ -416,10 +415,10 @@ fn search_internal(
                     }
                     let mv = prob_captures[i].mv;
                     let see_threshold = prob_beta.saturating_sub(static_eval);
-                    if board_state.see(mv) < see_threshold {
+                    if !board_state.see_ge(mv, see_threshold) {
                         continue;
                     }
-                    if !board_state.is_legal_with(mv, node_checkers, node_pinned) {
+                    if !board_state.is_legal_with(mv, nt.checkers, nt.pinned) {
                         continue;
                     }
                     board_state.make_move(mv);
@@ -658,6 +657,7 @@ fn search_internal(
         &ctx.search_state.move_ordering,
         &mut ctx.search_state.captures_stack[ply as usize],
         &mut ctx.search_state.quiets_stack[ply as usize],
+        &nt,
     ) {
         if is_cancelled(ctx) {
             break;
@@ -707,12 +707,12 @@ fn search_internal(
             } else {
                 i16::MIN
             };
-            if see_threshold > i16::MIN && board_state.see(move_obj) < see_threshold {
+            if see_threshold > i16::MIN && !board_state.see_ge(move_obj, see_threshold) {
                 continue;
             }
         }
 
-        if !board_state.is_legal_with(move_obj, node_checkers, node_pinned) {
+        if !board_state.is_legal_with(move_obj, nt.checkers, nt.pinned) {
             continue;
         }
 
@@ -746,11 +746,19 @@ fn search_internal(
         // evaluated for tactical moves (captures/promotions/checks) — its
         // feature extraction (pins x2, threats, checkers) is too costly
         // to run on every quiet move.
+        //
+        // CORRECTNESS (post-make snapshot): this runs AFTER make_move, so
+        // the threat features must describe the post-make position (as the
+        // original fresh computation did). Reusing the pre-make `nt` here
+        // mixes both sides' data and explodes the tree (observed 60x on
+        // Kiwi Pete). Depth>=6 keeps this rare path affordable.
         let is_tactical_move = cap_or_promo || gives_check;
         let tce_ext =
             if current_depth >= 6 && is_tactical_move && ctx.search_state.params.tce_enabled {
+                let nt_child = NodeThreats::compute(board_state);
                 tce::compute_extension(
                     board_state,
+                    &nt_child,
                     move_obj,
                     current_depth,
                     in_check,

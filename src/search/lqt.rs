@@ -120,6 +120,7 @@ const LQT_B3: i32 = -30;
 
 pub fn extract_lqt_features(
     board: &BoardState,
+    nt: &crate::board::node_threats::NodeThreats,
     stand_pat: i16,
     alpha: i16,
     beta: i16,
@@ -128,20 +129,11 @@ pub fn extract_lqt_features(
     let us = board.side_to_move;
     let them = us.other();
 
-    let num_pinned_pieces = board.pinned_pieces(us).0.count_ones() as i32;
+    let num_pinned_pieces = nt.pinned.count_ones() as i32;
 
-    let threats = board.threat_by_lesser(us);
     let mut num_discovered_attacks = 0i32;
-    for (piece_idx, &threat) in threats.iter().enumerate().take(5).skip(1) {
-        let piece = match piece_idx {
-            1 => Piece::Knight,
-            2 => Piece::Bishop,
-            3 => Piece::Rook,
-            4 => Piece::Queen,
-            _ => Piece::None,
-        };
-        let pieces_bb = board.get_pieces(us, piece).0;
-        num_discovered_attacks += (pieces_bb & threat).count_ones() as i32;
+    for piece in [Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen] {
+        num_discovered_attacks += nt.threatened_count(board, piece) as i32;
     }
 
     let mobility_delta =
@@ -174,6 +166,7 @@ pub fn extract_lqt_features(
 
 pub fn should_continue_quiescence(
     board: &BoardState,
+    nt: &crate::board::node_threats::NodeThreats,
     stand_pat: i16,
     alpha: i16,
     beta: i16,
@@ -183,7 +176,7 @@ pub fn should_continue_quiescence(
         return false;
     }
 
-    let features = extract_lqt_features(board, stand_pat, alpha, beta, depth_in_qs);
+    let features = extract_lqt_features(board, nt, stand_pat, alpha, beta, depth_in_qs);
     let prob = LqtModel::predict_probability(&features);
 
     prob >= 620
@@ -197,15 +190,17 @@ mod tests {
     #[test]
     fn test_starting_position_quiescence_terminates() {
         let board = BoardState::parse_fen(STARTING_FEN);
-        let should_continue = should_continue_quiescence(&board, 0, -50, 50, 0);
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        let should_continue = should_continue_quiescence(&board, &nt, 0, -50, 50, 0);
         assert!(!should_continue);
     }
 
     #[test]
     fn test_deep_in_qs_always_terminates() {
         let board = BoardState::parse_fen(STARTING_FEN);
-        assert!(!should_continue_quiescence(&board, 0, -50, 50, 4));
-        assert!(!should_continue_quiescence(&board, 0, -50, 50, 10));
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        assert!(!should_continue_quiescence(&board, &nt, 0, -50, 50, 4));
+        assert!(!should_continue_quiescence(&board, &nt, 0, -50, 50, 10));
     }
 
     #[test]

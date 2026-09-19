@@ -79,9 +79,10 @@ impl MovePicker {
         move_ordering: &MoveOrdering,
         captures: &mut MoveList,
         quiets: &mut MoveList,
+        nt: &crate::board::node_threats::NodeThreats,
     ) -> Option<Move> {
         loop {
-            let m = self.next_internal(board_state, move_ordering, captures, quiets);
+            let m = self.next_internal(board_state, move_ordering, captures, quiets, nt);
             if let Some(mv) = m
                 && Some(mv) == self.excluded_move
             {
@@ -97,6 +98,7 @@ impl MovePicker {
         move_ordering: &MoveOrdering,
         captures: &mut MoveList,
         quiets: &mut MoveList,
+        nt: &crate::board::node_threats::NodeThreats,
     ) -> Option<Move> {
         loop {
             match self.phase {
@@ -151,7 +153,7 @@ impl MovePicker {
                         };
                         let cap_val = target_piece.see_value() as i32;
                         let threshold = -((7 * cap_val + hist) / 18) as i16;
-                        if board_state.see(captures[left as usize].mv) >= threshold {
+                        if board_state.see_ge(captures[left as usize].mv, threshold) {
                             left += 1;
                         } else {
                             captures.swap(left as usize, right as usize);
@@ -188,6 +190,8 @@ impl MovePicker {
                         board_state,
                         self.ply,
                         self.previous_move,
+                        &nt.threats_us,
+                        &nt.check_squares,
                     );
                     self.phase = SearchPhase::GoodQuiets;
                 }
@@ -298,7 +302,10 @@ mod tests {
         let mut quiets = MoveList::new();
         let mut good_captures = Vec::new();
         let move_ordering = MoveOrdering::new();
-        while let Some(mv) = picker.next(&mut board, &move_ordering, &mut captures, &mut quiets) {
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        while let Some(mv) =
+            picker.next(&mut board, &move_ordering, &mut captures, &mut quiets, &nt)
+        {
             good_captures.push(mv);
         }
         assert!(!good_captures.is_empty());
@@ -325,7 +332,10 @@ mod tests {
         let mut quiets = MoveList::new();
         let mut returned_moves = Vec::new();
         let move_ordering = MoveOrdering::new();
-        while let Some(mv) = picker.next(&mut board, &move_ordering, &mut captures, &mut quiets) {
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        while let Some(mv) =
+            picker.next(&mut board, &move_ordering, &mut captures, &mut quiets, &nt)
+        {
             returned_moves.push(mv);
         }
 
@@ -369,7 +379,10 @@ mod tests {
         let mut quiets = MoveList::new();
         let mut returned_moves = Vec::new();
         let move_ordering = MoveOrdering::new();
-        while let Some(mv) = picker.next(&mut board, &move_ordering, &mut captures, &mut quiets) {
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        while let Some(mv) =
+            picker.next(&mut board, &move_ordering, &mut captures, &mut quiets, &nt)
+        {
             returned_moves.push(mv);
         }
 
@@ -405,7 +418,10 @@ mod tests {
         move_ordering.update_quiet_history(board.side_to_move, quiet_to_penalize, -16384);
 
         let mut returned_moves = Vec::new();
-        while let Some(mv) = picker.next(&mut board, &move_ordering, &mut captures, &mut quiets) {
+        let nt = crate::board::node_threats::NodeThreats::compute(&board);
+        while let Some(mv) =
+            picker.next(&mut board, &move_ordering, &mut captures, &mut quiets, &nt)
+        {
             returned_moves.push(mv);
         }
 

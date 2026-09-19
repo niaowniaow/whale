@@ -834,7 +834,8 @@ pub fn network_hash(use_threats: bool, l1: u32) -> u32 {
 }
 
 // De-scramble table for SSSE3ChunkSize=4 fully-connected weights.
-#[allow(dead_code)]
+// Reference implementation: exercised only by `unscramble_table_is_permutation`.
+#[cfg(test)]
 fn unscramble_table(out_dims: usize, padded_in: usize) -> Vec<usize> {
     let n = out_dims * padded_in;
     let mut inv = vec![0usize; n];
@@ -1628,7 +1629,9 @@ pub fn active_loaded_net() -> Option<&'static LoadedNets> {
     }
 }
 
-#[allow(dead_code)]
+/// Test-only handle on the active network. Production reads `ACTIVE_NET`
+/// directly, so this stays out of non-test builds.
+#[cfg(test)]
 fn loaded_nets() -> Option<Arc<LoadedNets>> {
     NETS.read().ok().and_then(|guard| guard.clone())
 }
@@ -1637,6 +1640,15 @@ pub fn try_load_default_path() -> Option<&'static str> {
     if maintenance_active() {
         return Some("active");
     }
+    // Precedence matches the other entry points so startup and `Model`/
+    // `EvalFile` resolve to the same file:
+    //   1. the Whale family in `models/` (the `Model` combo values, see
+    //      `resolve_model_path`),
+    //   2. the same files dropped next to the binary (the Makefile `all`
+    //      target copies the binary into the repo root),
+    //   3. raw/vendored checkpoint files.
+    // Legacy `rudim*.nnue` names were dropped together with the files
+    // themselves; `EvalFile` still accepts any explicit path.
     let candidates = [
         "models/whale_big.nnue",
         "models/whale_medium.nnue",
@@ -1644,22 +1656,9 @@ pub fn try_load_default_path() -> Option<&'static str> {
         "whale_big.nnue",
         "whale_medium.nnue",
         "whale_small.nnue",
-        "whale_farseer_final.nnue",
-        "v16/whale_farseer_final.nnue",
-        "whale_farseerT76.nnue",
-        "v16/whale_farseerT76.nnue",
-        "v16/nn-1a298aa575a0.nnue",
-        "v16/whale.nnue",
         "v16/quantised.bin",
-        "whale.nnue",
         "quantised.bin",
-        // Legacy Rudim names (backward compat)
-        "rudim_farseer_final.nnue",
-        "v16/rudim_farseer_final.nnue",
-        "rudim_farseerT76.nnue",
-        "v16/rudim_farseerT76.nnue",
-        "v16/rudim.nnue",
-        "rudim.nnue",
+        // Written by `train::copy_trained_weights` (BIG_KEEPER_PATH).
         "resources/sfnn16-big-checkpoint.bin",
     ];
     candidates
@@ -2320,8 +2319,9 @@ unsafe fn accumulate_psqt_avx2(
     }
 }
 
-#[allow(dead_code)]
-#[cfg(target_arch = "x86_64")]
+// Non-tiled AVX2 kernel: kept as the reference implementation the tiled
+// production path is checked against, so it is compiled for tests only.
+#[cfg(all(test, target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
 unsafe fn pairwise_transform_threats_avx2(
     base_acc: &[i16],

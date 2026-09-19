@@ -116,6 +116,7 @@ const TCE_BIAS_2: [i32; TceModel::OUTPUT_DIM] = [40, -10, -90];
 
 pub fn extract_threat_features(
     board: &BoardState,
+    nt: &crate::board::node_threats::NodeThreats,
     move_obj: Move,
     depth: u8,
     in_check: bool,
@@ -124,28 +125,14 @@ pub fn extract_threat_features(
     let us = board.side_to_move;
     let them = us.other();
 
-    let num_pins = board.pinned_pieces(us).0.count_ones() as i32
-        + board.pinned_pieces(them).0.count_ones() as i32;
+    let num_pins = nt.pinned.count_ones() as i32 + nt.pinned_them.count_ones() as i32;
 
-    let threats = board.threat_by_lesser(us);
     let mut num_threatened_pieces = 0i32;
-    for (piece_idx, &threat) in threats.iter().enumerate().take(5).skip(1) {
-        let piece = match piece_idx {
-            1 => Piece::Knight,
-            2 => Piece::Bishop,
-            3 => Piece::Rook,
-            4 => Piece::Queen,
-            _ => Piece::None,
-        };
-        let pieces_bb = board.get_pieces(us, piece).0;
-        num_threatened_pieces += (pieces_bb & threat).count_ones() as i32;
+    for piece in [Piece::Knight, Piece::Bishop, Piece::Rook, Piece::Queen] {
+        num_threatened_pieces += nt.threatened_count(board, piece) as i32;
     }
 
-    let num_checkers = if in_check {
-        board.checkers(us).0.count_ones() as i32
-    } else {
-        0
-    };
+    let num_checkers = if in_check { nt.checks() as i32 } else { 0 };
 
     let material_imbalance = board.occupancies[Side::White].count_ones() as i32
         - board.occupancies[Side::Black].count_ones() as i32;
@@ -191,6 +178,7 @@ pub fn extract_threat_features(
 
 pub fn compute_extension(
     board: &BoardState,
+    nt: &crate::board::node_threats::NodeThreats,
     move_obj: Move,
     depth: u8,
     in_check: bool,
@@ -201,7 +189,7 @@ pub fn compute_extension(
         return 0;
     }
 
-    let features = extract_threat_features(board, move_obj, depth, in_check, previous_move);
+    let features = extract_threat_features(board, nt, move_obj, depth, in_check, previous_move);
     let ext = TceModel::predict_extension(&features);
 
     if ext == 2 {
@@ -220,15 +208,20 @@ pub fn compute_extension(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::board::node_threats::NodeThreats;
     use crate::common::helpers::STARTING_FEN;
     use crate::common::move_type::MoveType;
     use crate::common::square::Square;
+
+    fn snapshot(board: &BoardState) -> NodeThreats {
+        NodeThreats::compute(board)
+    }
 
     #[test]
     fn test_starting_position_no_extension() {
         let board = BoardState::parse_fen(STARTING_FEN);
         let m = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
-        let ext = compute_extension(&board, m, 5, false, 0, None);
+        let ext = compute_extension(&board, &snapshot(&board), m, 5, false, 0, None);
         assert_eq!(ext, 0);
     }
 
@@ -272,7 +265,7 @@ mod tests {
     fn test_tce_near_leaf_returns_zero() {
         let board = BoardState::parse_fen(STARTING_FEN);
         let m = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
-        let ext = compute_extension(&board, m, 1, true, 0, None);
+        let ext = compute_extension(&board, &snapshot(&board), m, 1, true, 0, None);
         assert_eq!(ext, 0);
     }
 
@@ -281,7 +274,10 @@ mod tests {
         let board = BoardState::parse_fen(STARTING_FEN);
         let m = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
         let ply = (MAX_PLY.saturating_sub(4)) as u8;
-        assert_eq!(compute_extension(&board, m, 8, true, ply, None), 0);
+        assert_eq!(
+            compute_extension(&board, &snapshot(&board), m, 8, true, ply, None),
+            0
+        );
     }
 
     #[test]
@@ -289,23 +285,37 @@ mod tests {
         // Pawn-advance follows the raw target-rank rule (white target rank >= 6).
         let board = BoardState::parse_fen("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1");
         let back = Move::new(Square::E3, Square::E2, MoveType::Quiet);
-        let f = extract_threat_features(&board, back, 6, false, None);
+        let f = extract_threat_features(&board, &snapshot(&board), back, 6, false, None);
         assert!(f.is_pawn_advance);
         assert!(!f.is_capture);
 
         let recapture_board = BoardState::parse_fen("4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1");
         let prev = Move::new(Square::D5, Square::E4, MoveType::Capture);
         let cur = Move::new(Square::D5, Square::E4, MoveType::Capture);
-        let g = extract_threat_features(&recapture_board, cur, 6, false, Some(prev));
+        let g = extract_threat_features(
+            &recapture_board,
+            &snapshot(&recapture_board),
+            cur,
+            6,
+            false,
+            Some(prev),
+        );
         assert!(g.is_recapture);
         let other = Move::new(Square::E4, Square::D5, MoveType::Capture);
-        let h = extract_threat_features(&recapture_board, other, 6, false, Some(prev));
+        let h = extract_threat_features(
+            &recapture_board,
+            &snapshot(&recapture_board),
+            other,
+            6,
+            false,
+            Some(prev),
+        );
         assert!(!h.is_recapture);
 
         let check_board = BoardState::parse_fen("4k3/8/8/8/8/8/4Q3/4K3 b - - 0 1");
         assert!(check_board.is_in_check(check_board.side_to_move));
         let any = Move::new(Square::E8, Square::D8, MoveType::Quiet);
-        let c = extract_threat_features(&check_board, any, 6, true, None);
+        let c = extract_threat_features(&check_board, &snapshot(&check_board), any, 6, true, None);
         assert!(c.is_check);
         assert!(c.num_checkers >= 1);
     }
@@ -349,11 +359,14 @@ mod tests {
         let board = BoardState::parse_fen(STARTING_FEN);
         let m = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
         for depth in [0u8, 1] {
-            assert_eq!(compute_extension(&board, m, depth, true, 0, None), 0);
+            assert_eq!(
+                compute_extension(&board, &snapshot(&board), m, depth, true, 0, None),
+                0
+            );
         }
         let board2 = BoardState::parse_fen("4k3/8/8/8/8/8/4Q3/4K3 b - - 0 1");
         let mv = Move::new(Square::E8, Square::D8, MoveType::Quiet);
-        let ext = compute_extension(&board2, mv, 6, true, 0, None);
+        let ext = compute_extension(&board2, &snapshot(&board2), mv, 6, true, 0, None);
         assert!((0..=2).contains(&ext));
     }
 }

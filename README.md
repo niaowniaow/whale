@@ -20,6 +20,7 @@ We're training evaluation networks with [nnue-pytorch](https://github.com/offici
 
   * Gradually generate candidates: Hash/PV Move → Good Captures (SEE ≥ 0) → Killer Moves → Counter Moves → Quiet Moves → Bad Captures.
   * Check for legality directly in the search loop to skip illegal moves.
+  * **Exact Boolean SEE:** `see_ge()` returns exactly `see() >= threshold`, short-circuiting as soon as the worst case (the opponent's recapture) already clears the bound, so pruning and ordering gates no longer pay for a full exchange evaluation.
 * **Fast Zobrist Hashing & History:** Updates hash states quickly during moves, captures, promotions, castling, and en-passant; includes a check for three-fold repetition.
 * **Syzygy Tablebase Support:** Endgame tablebase probing using `shakmaty-syzygy` (WDL bounds and optimal move extraction).
 
@@ -53,6 +54,7 @@ The search engine uses a multi-threaded Principal Variation Search (PVS) with it
   * **Coarse-to-Fine Selective Search (CFSS):** Filters out unpromising moves before detailed expansion.
   * **Runtime Annealing Search (RAS):** Dynamically adjusts search parameters.
   * **Speculative Move Pre-computation (SMP):** Prepares responses to expected opponent moves.
+  * **Per-Node Threat Snapshot:** Checkers, pinners, lesser-piece threat maps and check squares are computed once per node and shared by legality tests, DCN evaluation, quiet-move scoring, TCE and LQT.
   * **Transposition Table:** Two-tiered design for efficient storage.
   * **Multi-Level History:** Tracks various move histories.
 
@@ -185,7 +187,10 @@ cargo run --release -- --generate-magics
 
 ## Testing
 
-To run the full verification suite (233 unit tests, search integration, movegen, and perft validation):
+To run the full verification suite — 675 unit tests (bitboards, movegen, board
+state, eval, search, UCI) plus the perft, search and equivalence integration
+suites (`eval_equiv`, `tce_equiv`), i.e. 711 tests total (5 long-running search
+cases are `#[ignore]`d):
 
 ```bash
 cargo test --release
