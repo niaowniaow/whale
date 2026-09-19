@@ -156,6 +156,13 @@ impl UciClient {
         cli::write_line("option name PSM_Enabled type check default true");
         cli::write_line("option name GTP_Enabled type check default true");
         cli::write_line("option name GTP_Threshold type spin default 15 min 5 max 50");
+        cli::write_line("option name CFSS_Enabled type check default true");
+        cli::write_line("option name RAS_Enabled type check default true");
+        cli::write_line("option name BMO_Enabled type check default true");
+        cli::write_line("option name TCE_Enabled type check default true");
+        cli::write_line("option name LQT_Enabled type check default true");
+        cli::write_line("option name SPS_Enabled type check default true");
+        cli::write_line("option name DAD_Enabled type check default true");
 
         if let Some(path) = crate::eval::nnue::v16::try_load_default_path() {
             cli::write_line(&format!("info string SFNNv16 network loaded: {path}"));

@@ -22,6 +22,15 @@ pub struct SearchParameters {
     pub psm_enabled: bool,
     pub gtp_enabled: bool,
     pub gtp_threshold: u8,
+    /// One UCI switch per experimental heuristic so A/B tuning never needs
+    /// code changes (all default to current behavior = true).
+    pub cfss_enabled: bool,
+    pub ras_enabled: bool,
+    pub bmo_enabled: bool,
+    pub tce_enabled: bool,
+    pub lqt_enabled: bool,
+    pub sps_enabled: bool,
+    pub dad_enabled: bool,
 }
 
 impl Default for SearchParameters {
@@ -46,6 +55,13 @@ impl Default for SearchParameters {
             psm_enabled: true,
             gtp_enabled: true,
             gtp_threshold: 15,
+            cfss_enabled: true,
+            ras_enabled: true,
+            bmo_enabled: true,
+            tce_enabled: true,
+            lqt_enabled: true,
+            sps_enabled: true,
+            dad_enabled: true,
         }
     }
 }
@@ -147,7 +163,14 @@ impl SearchState {
         // preserves bound validity, while optimism — the one knob that shifts
         // stored scores — stays uniform across all threads (see sps.rs).
         // The TT itself stays shared so helpers keep warming it for primary.
-        let persona = crate::search::sps::persona_for_thread(thread_id);
+        // SPS personas only reshape pruning/LMR when the switch is on;
+        // otherwise every helper searches like the primary (depth stagger
+        // alone still diversifies, TT stays shared either way).
+        let persona = if self.params.sps_enabled {
+            crate::search::sps::persona_for_thread(thread_id)
+        } else {
+            crate::search::sps::SearchPersona::Standard
+        };
         let mut params = self.params.clone();
         let mut lmr_table = self.lmr_table.clone();
         crate::search::sps::apply_persona(persona, &mut params, &mut lmr_table);

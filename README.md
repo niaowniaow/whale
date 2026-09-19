@@ -172,6 +172,13 @@ cargo run --release -- --generate-magics
 | `Contempt`      |  spin  |       0      | Draw aversion in cp (-200 to 200, Lc0-inspired).       |
 | `DrawScore`     |  spin  |       0      | Absolute draw value override in cp.                    |
 | `ShowWDL`       | check  |     true     | Emit `wdl w d l` on search info lines.                 |
+| `CFSS_Enabled`  | check  |     true     | Coarse-to-fine selective search.                       |
+| `RAS_Enabled`   | check  |     true     | Runtime annealing LMR perturbation.                    |
+| `BMO_Enabled`   | check  |     true     | Bandit move ordering arm selection.                    |
+| `TCE_Enabled`   | check  |     true     | Threat-conditioned extensions.                         |
+| `LQT_Enabled`   | check  |     true     | Learned quiescence termination.                        |
+| `SPS_Enabled`   | check  |     true     | Speculative persona search (helper threads).           |
+| `DAD_Enabled`   | check  |     true     | Disagreement-allocated depth time factor.              |
 | `Clear Hash`    | button |       -      | Clears all entries in the Transposition Table.         |
 
 ---

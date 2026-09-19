@@ -141,6 +141,30 @@ impl UciClient {
             {
                 state.params.gtp_threshold = v.clamp(5, 50);
             }
+            // One switch per experimental heuristic (all default true).
+            // `value` follows the Ponder convention: "true"/"1" = on.
+            let flag_on = value.eq_ignore_ascii_case("true") || value == "1";
+            if name.eq_ignore_ascii_case("CFSS_Enabled") {
+                state.params.cfss_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("RAS_Enabled") {
+                state.params.ras_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("BMO_Enabled") {
+                state.params.bmo_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("TCE_Enabled") {
+                state.params.tce_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("LQT_Enabled") {
+                state.params.lqt_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("SPS_Enabled") {
+                state.params.sps_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("DAD_Enabled") {
+                state.params.dad_enabled = flag_on;
+            }
             // Draw aversion (Lc0 Contempt/DrawScore concepts, Whale's own use).
             if name.eq_ignore_ascii_case("Contempt")
                 && let Ok(v) = value.parse::<i16>()
@@ -274,6 +298,34 @@ mod tests {
         assert_eq!(state.params.nmp_base, 1);
         assert_eq!(state.params.nmp_depth_div, 8);
         assert_eq!(state.params.history_weight_mult, 4);
+    }
+
+    #[test]
+    fn should_toggle_experimental_heuristics() {
+        let mut client = UciClient::new();
+        for name in [
+            "CFSS_Enabled",
+            "RAS_Enabled",
+            "BMO_Enabled",
+            "TCE_Enabled",
+            "LQT_Enabled",
+            "SPS_Enabled",
+            "DAD_Enabled",
+        ] {
+            client.run_setoption(&["name", name, "value", "false"]);
+        }
+        {
+            let state = client.search_state.lock().unwrap();
+            assert!(!state.params.cfss_enabled);
+            assert!(!state.params.ras_enabled);
+            assert!(!state.params.bmo_enabled);
+            assert!(!state.params.tce_enabled);
+            assert!(!state.params.lqt_enabled);
+            assert!(!state.params.sps_enabled);
+            assert!(!state.params.dad_enabled);
+        }
+        client.run_setoption(&["name", "CFSS_Enabled", "value", "1"]);
+        assert!(client.search_state.lock().unwrap().params.cfss_enabled);
     }
 
     #[test]

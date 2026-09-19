@@ -236,7 +236,7 @@ fn search_primary(
             let best_move_instability = (1.0 + 0.35 * (tot_best_move_changes as f64)).min(1.6);
 
             let disagreement = (prev_score as i32 - current_score as i32).abs();
-            let dad_time_factor = if current_depth >= 6 {
+            let dad_time_factor = if current_depth >= 6 && search_state.params.dad_enabled {
                 if disagreement > 60 {
                     1.25
                 } else if disagreement < 15 {
@@ -472,6 +472,32 @@ mod tests {
         let mut state = SearchState::new();
         search(&mut board, 4, &token, &mut debug, &mut state, 4);
         assert_ne!(state.best_move, Move::NO_MOVE);
+    }
+
+    #[test]
+    fn all_experimentals_off_still_finds_legal_move() {
+        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
+        let token = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        for flag in [
+            &mut state.params.cfss_enabled,
+            &mut state.params.ras_enabled,
+            &mut state.params.bmo_enabled,
+            &mut state.params.tce_enabled,
+            &mut state.params.lqt_enabled,
+            &mut state.params.sps_enabled,
+            &mut state.params.dad_enabled,
+            &mut state.params.alp_enabled,
+            &mut state.params.psm_enabled,
+            &mut state.params.gtp_enabled,
+        ] {
+            *flag = false;
+        }
+        search(&mut board, 3, &token, &mut debug, &mut state, 1);
+        assert_ne!(state.best_move, Move::NO_MOVE);
+        assert!(board.is_legal(state.best_move));
+        assert!(state.nodes > 0);
     }
 
     #[test]

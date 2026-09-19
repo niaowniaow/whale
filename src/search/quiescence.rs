@@ -119,8 +119,8 @@ pub fn search(
         } else {
             evaluate_with_optimism(&mut *board_state, optimism)
         };
-        let continue_qs =
-            crate::search::lqt::should_continue_quiescence(board_state, eval, alpha, beta, ply);
+        let continue_qs = search_state.params.lqt_enabled
+            && crate::search::lqt::should_continue_quiescence(board_state, eval, alpha, beta, ply);
         // FIX QSEARCH-TT: stand-pat fail-high stores LOWER before returning.
         if eval >= beta && !continue_qs {
             let mut stand_pat = beta;

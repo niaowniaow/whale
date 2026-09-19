@@ -575,13 +575,15 @@ fn search_internal(
     let mut coarse_failed_low = false;
     let mut current_depth = depth;
 
-    if cfss::should_run_coarse_pass(
-        current_depth,
-        is_pv_node,
-        in_check,
-        tt_best,
-        ctx.excluded_move,
-    ) {
+    if ctx.search_state.params.cfss_enabled
+        && cfss::should_run_coarse_pass(
+            current_depth,
+            is_pv_node,
+            in_check,
+            tt_best,
+            ctx.excluded_move,
+        )
+    {
         let coarse_depth = cfss::get_coarse_depth(current_depth);
         // FIX PV-TABLE: coarse pass must not clobber the shared PV line.
         let mut coarse_pv_table = PvTable::new();
@@ -623,7 +625,7 @@ fn search_internal(
         }
     }
 
-    let bandit_arm = if !is_pv_node {
+    let bandit_arm = if !is_pv_node && ctx.search_state.params.bmo_enabled {
         ctx.search_state.bmo.select_arm(current_depth)
     } else {
         crate::search::bmo::BanditArm::CapturesFirst
@@ -740,19 +742,20 @@ fn search_internal(
         // feature extraction (pins x2, threats, checkers) is too costly
         // to run on every quiet move.
         let is_tactical_move = cap_or_promo || gives_check;
-        let tce_ext = if current_depth >= 6 && is_tactical_move {
-            tce::compute_extension(
-                board_state,
-                move_obj,
-                current_depth,
-                in_check,
-                ply,
-                previous_move,
-            )
-            .clamp(0, 1)
-        } else {
-            0
-        };
+        let tce_ext =
+            if current_depth >= 6 && is_tactical_move && ctx.search_state.params.tce_enabled {
+                tce::compute_extension(
+                    board_state,
+                    move_obj,
+                    current_depth,
+                    in_check,
+                    ply,
+                    previous_move,
+                )
+                .clamp(0, 1)
+            } else {
+                0
+            };
         extension = extension.max(tce_ext).clamp(-1, 2);
 
         let depth = (current_depth as i16 + extension as i16).max(1) as u8;
@@ -977,10 +980,13 @@ fn search_internal(
                 &ctx.search_state.lmr_table,
                 &ctx.search_state.params.lmr_divisor,
             );
-            let ras_perturbation =
+            let ras_perturbation = if ctx.search_state.params.ras_enabled {
                 ctx.search_state
                     .ras
-                    .lmr_perturbation(ply as usize, depth, board_state.board_hash);
+                    .lmr_perturbation(ply as usize, depth, board_state.board_hash)
+            } else {
+                0
+            };
             let reduction =
                 (base_reduction as i8 + ras_perturbation).clamp(0, depth as i8 - 1) as u8;
             score = -search_internal(
