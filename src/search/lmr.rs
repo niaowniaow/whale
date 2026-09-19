@@ -481,8 +481,22 @@ mod tests {
             tt_pv: false,
         };
         let r_base = compute_reduction(&base, &table, &divisors);
-        let r_cut = compute_reduction(&LmrQuery { cut_node: true, ..base }, &table, &divisors);
-        let r_pv = compute_reduction(&LmrQuery { tt_pv: true, ..base }, &table, &divisors);
+        let r_cut = compute_reduction(
+            &LmrQuery {
+                cut_node: true,
+                ..base
+            },
+            &table,
+            &divisors,
+        );
+        let r_pv = compute_reduction(
+            &LmrQuery {
+                tt_pv: true,
+                ..base
+            },
+            &table,
+            &divisors,
+        );
         assert!(r_cut >= r_base);
         assert!(r_pv <= r_base);
     }
