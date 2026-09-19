@@ -2,7 +2,7 @@ use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::square::Square;
-use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -134,31 +134,20 @@ pub struct Cluster {
     pub entries: [AtomicEntry; CLUSTER_SIZE],
 }
 
-struct ClusterGuard<'a>(&'a AtomicBool);
-
-impl Drop for ClusterGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::Release);
-    }
-}
-
 pub struct TranspositionTable {
     clusters: Vec<Cluster>,
-    locks: Vec<AtomicBool>,
     cluster_count: usize,
     pub capacity: usize,
     pub generation: AtomicU8,
 }
 
 // SAFETY: `TranspositionTable` is shared across Lazy SMP search threads via
-// `Arc<TranspositionTable>`. Thread safety is upheld by:
-//  1. Every read/write to `Cluster::entries` is guarded by a per-cluster
-//     `AtomicBool` spinlock (`try_lock` / `ClusterGuard` RAII).
-//  2. The `generation` field is `AtomicU8` with relaxed ordering (benign races).
-//  3. `clusters: Vec<Cluster>` and `locks: Vec<AtomicBool>` are never resized
-//     while shared — `resize` takes `&mut self`, requiring exclusive access.
-//  4. `prefetch` performs a read-only, side-effect-free CPU hint on an immutable
-//     pointer derived from the stable `Vec` backing store.
+// `Arc<TranspositionTable>`. Following Stockfish (tt.cpp) and Reckless
+// (transposition.rs), all entry access is lock-free with benign races:
+// key/data are separate atomics, so a torn read can at worst return a stale
+// but well-formed entry (same pack/unpack as a locked read). `clusters` is
+// never resized while shared — `resize` takes `&mut self`. `prefetch` is a
+// side-effect-free CPU hint.
 unsafe impl Send for TranspositionTable {}
 unsafe impl Sync for TranspositionTable {}
 
@@ -173,7 +162,6 @@ impl TranspositionTable {
         let clusters = (0..cluster_count).map(|_| Cluster::default()).collect();
         Self {
             clusters,
-            locks: (0..cluster_count).map(|_| AtomicBool::new(false)).collect(),
             cluster_count,
             capacity,
             generation: AtomicU8::new(0),
@@ -192,7 +180,6 @@ impl TranspositionTable {
         let clusters = (0..cluster_count).map(|_| Cluster::default()).collect();
         Self {
             clusters,
-            locks: (0..cluster_count).map(|_| AtomicBool::new(false)).collect(),
             cluster_count,
             capacity: cluster_count * 2,
             generation: AtomicU8::new(0),
@@ -217,14 +204,6 @@ impl TranspositionTable {
         self.cluster_count = cluster_count;
         self.capacity = cluster_count * 2;
         self.clusters = (0..cluster_count).map(|_| Cluster::default()).collect();
-        self.locks = (0..cluster_count).map(|_| AtomicBool::new(false)).collect();
-    }
-
-    fn try_lock(&self, index: usize) -> Option<ClusterGuard<'_>> {
-        self.locks[index]
-            .compare_exchange(false, true, Ordering::Acquire, Ordering::Relaxed)
-            .ok()
-            .map(|_| ClusterGuard(&self.locks[index]))
     }
 
     pub fn capacity(&self) -> usize {
@@ -232,7 +211,7 @@ impl TranspositionTable {
     }
 
     /// Permille (0..1000) of occupied slots, Stockfish `hashfull` concept.
-    /// Best-effort under contention: contended clusters are skipped.
+    /// Lock-free best-effort read; torn entries simply count or not.
     pub fn hashfull(&self) -> u32 {
         let mut used = 0u64;
         // Sample up to 1024 clusters to bound cost on huge tables.
@@ -240,16 +219,14 @@ impl TranspositionTable {
         let mut sampled = 0u64;
         let mut i = 0;
         while i < self.cluster_count {
-            if let Some(_guard) = self.try_lock(i) {
-                for entry in &self.clusters[i].entries {
-                    let k = entry.key.load(Ordering::Relaxed);
-                    let d = entry.data.load(Ordering::Relaxed);
-                    if k != 0 && unpack_entry(k, d).entry_type != TranspositionEntryType::None {
-                        used += 1;
-                    }
+            for entry in &self.clusters[i].entries {
+                let k = entry.key.load(Ordering::Relaxed);
+                let d = entry.data.load(Ordering::Relaxed);
+                if k != 0 && unpack_entry(k, d).entry_type != TranspositionEntryType::None {
+                    used += 1;
                 }
-                sampled += CLUSTER_SIZE as u64;
             }
+            sampled += CLUSTER_SIZE as u64;
             i += step;
         }
         if sampled == 0 {
@@ -259,13 +236,7 @@ impl TranspositionTable {
     }
 
     pub fn clear(&self) {
-        for (index, cluster) in self.clusters.iter().enumerate() {
-            let _guard = loop {
-                if let Some(guard) = self.try_lock(index) {
-                    break guard;
-                }
-                std::hint::spin_loop();
-            };
+        for cluster in &self.clusters {
             for entry in &cluster.entries {
                 entry.key.store(0, Ordering::Relaxed);
                 entry.data.store(0, Ordering::Relaxed);
@@ -294,7 +265,6 @@ impl TranspositionTable {
     #[inline(always)]
     pub fn probe(&self, hash: u64) -> Option<TranspositionTableEntry> {
         let index = (hash as usize) & (self.cluster_count - 1);
-        let _guard = self.try_lock(index)?;
         let cluster = &self.clusters[index];
         for entry in &cluster.entries {
             let k = entry.key.load(Ordering::Relaxed);
@@ -358,9 +328,6 @@ impl TranspositionTable {
         entry_type: TranspositionEntryType,
     ) {
         let index = (hash as usize) & (self.cluster_count - 1);
-        let Some(_guard) = self.try_lock(index) else {
-            return;
-        };
         let cluster = &self.clusters[index];
         let cur_gen = self.generation.load(Ordering::Relaxed);
 
@@ -511,6 +478,9 @@ mod tests {
 
     #[test]
     fn test_tt_concurrent_colliding_entries() {
+        // Lock-free semantics (Stockfish/Reckless): under contention an entry
+        // may belong to a colliding hash, but its packed data must always be
+        // internally consistent (score/depth/type come from one atomic pack).
         let tt = TranspositionTable::new(1024);
         std::thread::scope(|scope| {
             for worker in 0..8u64 {
@@ -526,11 +496,12 @@ mod tests {
                             Move::NO_MOVE,
                             TranspositionEntryType::Exact,
                         );
-                        for expected in 0..8u64 {
-                            if let Some(entry) = tt.probe(expected * tt.cluster_count as u64) {
-                                assert_eq!(entry.score, expected as i16 * 101);
-                                assert_eq!(entry.depth, expected as u8 + 1);
+                        for probe_id in 0..8u64 {
+                            if let Some(entry) = tt.probe(probe_id * tt.cluster_count as u64) {
                                 assert_eq!(entry.entry_type, TranspositionEntryType::Exact);
+                                let got = entry.score / 101;
+                                assert!((0..8).contains(&got));
+                                assert_eq!(entry.depth, got as u8 + 1);
                             }
                         }
                     }

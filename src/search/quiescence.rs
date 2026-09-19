@@ -13,13 +13,21 @@ use crate::{board::state::BoardState, common::constants::MAX_CENTIPAWN_EVAL};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 fn has_legal_move(board_state: &BoardState) -> bool {
+    let stm = board_state.side_to_move;
+    let checkers = board_state.checkers(stm).0;
+    let pinned = board_state.pinned_pieces(stm).0;
     let mut moves = MoveList::new();
     board_state.generate_captures(&mut moves);
-    if moves.iter().any(|entry| board_state.is_legal(entry.mv)) {
+    if moves
+        .iter()
+        .any(|entry| board_state.is_legal_with(entry.mv, checkers, pinned))
+    {
         return true;
     }
     board_state.generate_quiets(&mut moves);
-    moves.iter().any(|entry| board_state.is_legal(entry.mv))
+    moves
+        .iter()
+        .any(|entry| board_state.is_legal_with(entry.mv, checkers, pinned))
 }
 
 pub fn search(
@@ -45,7 +53,10 @@ pub fn search(
         );
     }
 
-    let in_check = board_state.is_in_check(board_state.side_to_move);
+    // PERF: same once-per-node checkers/pinners cache as negamax.
+    let node_checkers = board_state.checkers(board_state.side_to_move).0;
+    let node_pinned = board_state.pinned_pieces(board_state.side_to_move).0;
+    let in_check = node_checkers != 0;
     if board_state.occupancy().count_ones() <= 10 && !has_legal_move(board_state) {
         return if in_check {
             -MAX_CENTIPAWN_EVAL + ply as i16
@@ -174,7 +185,7 @@ pub fn search(
             break;
         }
 
-        if !board_state.is_legal(move_obj) {
+        if !board_state.is_legal_with(move_obj, node_checkers, node_pinned) {
             continue;
         }
 
@@ -266,7 +277,7 @@ pub fn search(
             }
         }
         for &move_obj in promos.iter().take(promo_count) {
-            if !board_state.is_legal(move_obj) {
+            if !board_state.is_legal_with(move_obj, node_checkers, node_pinned) {
                 continue;
             }
             board_state.make_move(move_obj);

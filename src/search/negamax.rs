@@ -61,7 +61,12 @@ fn search_internal(
     }
 
     let is_pv_node = beta > 1 + alpha;
-    let in_check = board_state.is_in_check(board_state.side_to_move);
+    // PERF (Stockfish st->checkersBB concept): checkers/pinners computed once
+    // per node and reused for every legality test below. `in_check` is exactly
+    // `checkers != 0` (both false when the king is missing).
+    let node_checkers = board_state.checkers(board_state.side_to_move).0;
+    let node_pinned = board_state.pinned_pieces(board_state.side_to_move).0;
+    let in_check = node_checkers != 0;
     let cut_node = ctx.cut_node;
     let halfmove = board_state.half_move_clock;
 
@@ -414,7 +419,7 @@ fn search_internal(
                     if board_state.see(mv) < see_threshold {
                         continue;
                     }
-                    if !board_state.is_legal(mv) {
+                    if !board_state.is_legal_with(mv, node_checkers, node_pinned) {
                         continue;
                     }
                     board_state.make_move(mv);
@@ -707,7 +712,7 @@ fn search_internal(
             }
         }
 
-        if !board_state.is_legal(move_obj) {
+        if !board_state.is_legal_with(move_obj, node_checkers, node_pinned) {
             continue;
         }
 

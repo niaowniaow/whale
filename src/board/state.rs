@@ -686,6 +686,16 @@ impl BoardState {
     }
 
     pub fn is_legal(&self, m: Move) -> bool {
+        let us = self.side_to_move;
+        self.is_legal_with(m, self.checkers(us).0, self.pinned_pieces(us).0)
+    }
+
+    /// Legality with caller-provided `checkers`/`pinned` bitboards for the
+    /// side to move (Stockfish `st->checkersBB` / `blockers_for_king` caching
+    /// concept, Reckless cached-threats concept). Compute both once per
+    /// search node and reuse for every move instead of recomputing per move.
+    /// Behavior is identical to [`Self::is_legal`].
+    pub fn is_legal_with(&self, m: Move, checkers: u64, pinned: u64) -> bool {
         if !self.is_pseudo_legal(m) {
             return false;
         }
@@ -792,9 +802,6 @@ impl BoardState {
             }
             return true;
         }
-
-        let checkers = self.checkers(us).0;
-        let pinned = self.pinned_pieces(us).0;
 
         if checkers == 0 {
             if (pinned & (1u64 << from as usize)) == 0 {
@@ -1109,9 +1116,16 @@ mod tests {
             let mut moves = MoveList::new();
             board.generate_moves(&mut moves);
 
+            // Node-cached checkers/pinners, exactly as search uses them.
+            let stm = board.side_to_move;
+            let node_checkers = board.checkers(stm).0;
+            let node_pinned = board.pinned_pieces(stm).0;
+            assert_eq!(board.is_in_check(stm), node_checkers != 0);
+
             for m_entry in moves.iter() {
                 let m = m_entry.mv;
                 let fast_legal = board.is_legal(m);
+                let cached_legal = board.is_legal_with(m, node_checkers, node_pinned);
 
                 board.make_move(m);
                 let slow_legal = !board.is_in_check(board.side_to_move.other());
@@ -1120,6 +1134,11 @@ mod tests {
                 assert_eq!(
                     fast_legal, slow_legal,
                     "Legality mismatch for move {:?} in FEN: {}",
+                    m, fen
+                );
+                assert_eq!(
+                    cached_legal, slow_legal,
+                    "Cached-legality mismatch for move {:?} in FEN: {}",
                     m, fen
                 );
             }
