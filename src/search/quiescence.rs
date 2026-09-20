@@ -4,7 +4,7 @@ use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::common::tt::{self, TranspositionEntryType};
-use crate::eval::evaluate_with_optimism;
+use crate::eval::{evaluate_qsearch, evaluate_with_optimism};
 use crate::search::bmo::BanditArm;
 use crate::search::draw;
 use crate::search::move_picker::MovePicker;
@@ -53,9 +53,7 @@ pub fn search(
         );
     }
 
-    // PERF: same once-per-node threat snapshot as negamax.
-    let nt = crate::board::node_threats::NodeThreats::compute(board_state);
-    let in_check = nt.in_check();
+    let in_check = board_state.checkers(board_state.side_to_move).0 != 0;
     if board_state.occupancy().count_ones() <= 10 && !has_legal_move(board_state) {
         return if in_check {
             -MAX_CENTIPAWN_EVAL + ply as i16
@@ -72,15 +70,12 @@ pub fn search(
 
     let optimism = search_state.optimism[board_state.side_to_move as usize];
     let halfmove = board_state.half_move_clock;
-    // PV-ness derived from the window (negamax passes no explicit flag).
     let is_pv = beta > alpha + 1;
 
     if ply as usize >= MAX_PLY {
         return evaluate_with_optimism(&mut *board_state, optimism);
     }
 
-    // FIX NODES-SELDEPTH: single count per node (removed double count on TT
-    // cutoff); seldepth tracks deepest PV ply including qsearch.
     search_state.nodes += 1;
     if is_pv {
         let sd = ply as u32 + 1;
@@ -91,9 +86,6 @@ pub fn search(
 
     let original_alpha = alpha;
     let tt_entry = search_state.tt.probe(board_state.board_hash);
-    // FIX QSEARCH-TT: cut only outside PV (Stockfish search.cpp:1723-1726;
-    // qsearch entries live at depth 0 so any stored depth suffices, but PV
-    // nodes must never cut).
     if let Some(entry) = tt_entry
         && !is_pv
     {
@@ -110,60 +102,60 @@ pub fn search(
     }
 
     let mut futility_base = -MAX_CENTIPAWN_EVAL;
-    // FIX QSEARCH-TT: best move/value tracked so fail-high stores carry the
-    // move (never NO_MOVE once a move improved the score) and fail-low stores
-    // carry the most accurate bound (Stockfish-style bestValue).
     let mut best_move = Move::NO_MOVE;
     let mut best_value: i16 = -MAX_CENTIPAWN_EVAL;
 
     if !in_check {
-        // FIX QSEARCH-LERP: single eval path (removed fast_eval +/-200/1200
-        // prunes that used a different eval than the stand-pat below).
         let eval = if let Some(entry) = tt_entry {
             let s = tt::TranspositionTable::retrieve_score(entry.score, ply as i32, halfmove);
             match entry.entry_type {
                 TranspositionEntryType::Exact => s,
                 TranspositionEntryType::Beta if s >= beta => s,
-                _ => evaluate_with_optimism(&mut *board_state, optimism),
+                _ => evaluate_qsearch(&mut *board_state, optimism, alpha, beta),
             }
         } else {
-            evaluate_with_optimism(&mut *board_state, optimism)
+            evaluate_qsearch(&mut *board_state, optimism, alpha, beta)
         };
-        let continue_qs = search_state.params.lqt_enabled
-            && crate::search::lqt::should_continue_quiescence(
-                board_state,
-                &nt,
-                eval,
-                alpha,
-                beta,
-                ply,
-            );
-        // FIX QSEARCH-TT: stand-pat fail-high stores LOWER before returning.
-        if eval >= beta && !continue_qs {
-            let mut stand_pat = beta;
-            if eval.abs() < MAX_CENTIPAWN_EVAL - 200 {
-                stand_pat = ((441 * eval as i32 + 583 * beta as i32) / 1024) as i16;
-            }
-            if !cancellation_token.load(Ordering::Relaxed) {
-                search_state.tt.submit_entry(
-                    board_state.board_hash,
-                    tt::TranspositionTable::adjust_score(stand_pat, ply as i32, halfmove),
-                    0,
-                    best_move,
-                    TranspositionEntryType::Beta,
+        if eval >= beta {
+            let continue_qs = search_state.params.lqt_enabled
+                && ply < 4
+                && crate::search::lqt::should_continue_quiescence(
+                    board_state,
+                    &crate::board::node_threats::NodeThreats::compute_for_qsearch(board_state),
+                    eval,
+                    alpha,
+                    beta,
+                    ply,
                 );
+            if !continue_qs {
+                let mut stand_pat = beta;
+                if eval.abs() < MAX_CENTIPAWN_EVAL - 200 {
+                    stand_pat = ((441 * eval as i32 + 583 * beta as i32) / 1024) as i16;
+                }
+                if !cancellation_token.load(Ordering::Relaxed) {
+                    search_state.tt.submit_entry(
+                        board_state.board_hash,
+                        tt::TranspositionTable::adjust_score(stand_pat, ply as i32, halfmove),
+                        0,
+                        best_move,
+                        TranspositionEntryType::Beta,
+                    );
+                }
+                return stand_pat;
             }
-            return stand_pat;
         }
         if eval > alpha {
             alpha = eval;
         }
-        // FIX QSEARCH-LERP: top-level delta prune removed — reaching alpha by
-        // queen-win alone is handled per-move below via futility_base, which
-        // updates bestValue instead of returning alpha early.
         futility_base = eval + 306;
         best_value = eval;
     }
+
+    let nt = if !in_check {
+        crate::board::node_threats::NodeThreats::compute_for_legality(board_state)
+    } else {
+        crate::board::node_threats::NodeThreats::compute_for_qsearch(board_state)
+    };
 
     let mut move_picker = if !in_check {
         MovePicker::new_qsearch(ply as usize)

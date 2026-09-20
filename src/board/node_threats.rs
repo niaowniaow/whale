@@ -42,6 +42,38 @@ impl NodeThreats {
         }
     }
 
+    /// Reduced snapshot for quiescence nodes ONLY. Qsearch reads exactly
+    /// three fields: `checkers`/`pinned` (legality), `threats_us` (LQT
+    /// discovered-attacks). It never touches `pinned_them` (TCE-only),
+    /// `threats_them` (DCN-only; qsearch eval skips DCN) or `check_squares`
+    /// (quiet scoring; qsearch never generates quiets). The skipped fields
+    /// are zero — do NOT use this snapshot outside `quiescence.rs`.
+    #[inline(always)]
+    pub fn compute_for_qsearch(board: &BoardState) -> Self {
+        let stm = board.side_to_move;
+        Self {
+            checkers: board.checkers(stm).0,
+            pinned: board.pinned_pieces(stm).0,
+            pinned_them: 0,
+            threats_us: board.threat_by_lesser(stm),
+            threats_them: [0; 6],
+            check_squares: [0; 6],
+        }
+    }
+
+    #[inline(always)]
+    pub fn compute_for_legality(board: &BoardState) -> Self {
+        let stm = board.side_to_move;
+        Self {
+            checkers: 0,
+            pinned: board.pinned_pieces(stm).0,
+            pinned_them: 0,
+            threats_us: [0; 6],
+            threats_them: [0; 6],
+            check_squares: [0; 6],
+        }
+    }
+
     #[inline(always)]
     pub fn in_check(&self) -> bool {
         self.checkers != 0
@@ -99,6 +131,26 @@ mod tests {
         assert_eq!(nt.check_squares, board.check_squares(stm.other()));
         assert!(!nt.in_check());
         assert_eq!(nt.checks(), 0);
+    }
+
+    #[test]
+    fn qsearch_snapshot_matches_full_on_qsearch_fields() {
+        let fens = [
+            STARTING_FEN,
+            "r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq - 0 1",
+            "8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - - 0 1",
+            "4k3/8/8/8/8/8/4Q3/4K3 b - - 0 1",
+            "7k/8/2b2b2/3pp3/8/8/8/K2RQ3 w - - 0 1",
+            "rnbqkb1r/pp1p1pPp/8/2p1pP2/1P1P4/3P3P/P1P1P3/RNBQKBNR w KQkq e6 0 1",
+        ];
+        for fen in fens {
+            let board = BoardState::parse_fen(fen);
+            let full = NodeThreats::compute(&board);
+            let light = NodeThreats::compute_for_qsearch(&board);
+            assert_eq!(light.checkers, full.checkers, "{fen}");
+            assert_eq!(light.pinned, full.pinned, "{fen}");
+            assert_eq!(light.threats_us, full.threats_us, "{fen}");
+        }
     }
 
     #[test]

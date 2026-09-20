@@ -31,6 +31,7 @@ pub struct SearchParameters {
     pub lqt_enabled: bool,
     pub sps_enabled: bool,
     pub dad_enabled: bool,
+    pub extension_cap_enabled: bool,
 }
 
 impl Default for SearchParameters {
@@ -62,6 +63,7 @@ impl Default for SearchParameters {
             lqt_enabled: true,
             sps_enabled: true,
             dad_enabled: true,
+            extension_cap_enabled: true,
         }
     }
 }
@@ -106,6 +108,12 @@ pub struct SearchState {
     pub captures_stack: Box<[MoveList; MAX_PLY]>,
     pub quiets_stack: Box<[MoveList; MAX_PLY]>,
     pub eval_stack: Box<[i16; MAX_PLY]>,
+    /// Consecutive extension count per ply (Stockfish extension-cap concept):
+    /// slot `ply` holds the streak of the path reaching the node AT `ply`
+    /// (0 = arrived without extension). Written by the parent before each
+    /// child search, read by the child. Same single-writer pattern as
+    /// `eval_stack`, so no save/restore is needed across make/unmake.
+    pub extension_streak: Box<[u8; MAX_PLY]>,
 
     pub lmr_table: crate::search::lmr::LmrTable,
     pub correction_history: crate::search::correction_history::CorrectionHistory,
@@ -147,6 +155,7 @@ impl SearchState {
             captures_stack: Box::new([MoveList::new(); MAX_PLY]),
             quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
             eval_stack: Box::new([i16::MIN; MAX_PLY]),
+            extension_streak: Box::new([0u8; MAX_PLY]),
             lmr_table,
             correction_history: crate::search::correction_history::CorrectionHistory::new(),
             bmo: crate::search::bmo::BanditMoveOrdering::new(),
@@ -200,6 +209,7 @@ impl SearchState {
             captures_stack: Box::new([MoveList::new(); MAX_PLY]),
             quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
             eval_stack: Box::new([i16::MIN; MAX_PLY]),
+            extension_streak: Box::new([0u8; MAX_PLY]),
             lmr_table,
             correction_history: crate::search::correction_history::CorrectionHistory::new(),
             bmo: self.bmo.clone(),
@@ -221,6 +231,7 @@ impl SearchState {
         self.optimism = [0; 2];
         // contempt/draw_score/show_wdl persist across searches (UCI options).
         *self.eval_stack = [i16::MIN; MAX_PLY];
+        *self.extension_streak = [0u8; MAX_PLY];
         self.bmo.reset();
         self.psm_stack.reset();
     }
@@ -303,6 +314,10 @@ mod tests {
             if worker.persona == SearchPersona::Standard {
                 assert_eq!(worker.params.futility_margin_mult, 111);
             }
+            assert_eq!(
+                worker.params.extension_cap_enabled,
+                primary.params.extension_cap_enabled
+            );
         }
     }
 }

@@ -639,14 +639,14 @@ impl BoardState {
 
     pub fn threat_by_lesser(&self, side: Side) -> [u64; 6] {
         let them = side.other();
-        let occ = self.occupancy();
-        let mut pawns = self.get_pieces(them, Piece::Pawn);
-        let mut pawn_threats = 0u64;
-        while !pawns.is_empty() {
-            let sq = pawns.get_lsb();
-            pawns.clear_lsb();
-            pawn_threats |= pawn_attacks()[them as usize][sq as usize];
-        }
+        let pawns = self.get_pieces(them, Piece::Pawn).0;
+        let pawn_threats = if them == Side::White {
+            ((pawns >> 9) & !crate::bitboard::attacks::FILE_H)
+                | ((pawns >> 7) & !crate::bitboard::attacks::FILE_A)
+        } else {
+            ((pawns << 7) & !crate::bitboard::attacks::FILE_H)
+                | ((pawns << 9) & !crate::bitboard::attacks::FILE_A)
+        };
 
         let mut knights = self.get_pieces(them, Piece::Knight);
         let mut knight_threats = 0u64;
@@ -656,6 +656,7 @@ impl BoardState {
             knight_threats |= knight_attacks()[sq as usize];
         }
 
+        let occ = self.occupancy();
         let enemy_bq =
             self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
         let mut bishops = Bitboard(enemy_bq);

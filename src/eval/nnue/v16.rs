@@ -92,8 +92,9 @@ fn halfka_orient(ksq_sf: usize) -> usize {
 
 // Stockfish piece codes: W_PAWN..W_KING = 1..6, B_* = 9..14.
 #[inline(always)]
+#[allow(dead_code)]
 fn sf_piece_code(side: Side, piece: Piece) -> usize {
-    let base = piece as usize + 1; // Pawn=0..King=5 -> 1..6
+    let base = piece as usize + 1;
     if side == Side::Black { base + 8 } else { base }
 }
 
@@ -116,10 +117,11 @@ impl SfnnPosition {
             pieces[p as usize] = board.pieces[p].0.swap_bytes();
         }
         let mut mapping = [6u8; 64];
-        for (i, mapped_piece) in mapping.iter_mut().enumerate() {
-            let rp = board.piece_mapping[i ^ 56];
-            if rp != Piece::None {
-                *mapped_piece = rp as u8;
+        let src = board.piece_mapping.as_ptr() as *const u64;
+        let dst = mapping.as_mut_ptr() as *mut u64;
+        unsafe {
+            for r in 0..8 {
+                *dst.add(r) = *src.add(7 - r);
             }
         }
         Self {
@@ -274,22 +276,37 @@ fn pawn_attacks_sf(side: Side, sq: usize) -> u64 {
 }
 
 #[inline(always)]
-fn slider_attacks_sf(sf_piece_type: usize, sq: usize, occ: u64) -> u64 {
-    use crate::bitboard::Bitboard;
-    use crate::bitboard::lookups::{get_bishop_attacks_from_table, get_rook_attacks_from_table};
-    use crate::common::square::Square;
+fn bishop_attacks_sf(sq: usize, whale_occ: crate::bitboard::Bitboard) -> u64 {
+    let whale_sq = crate::common::square::Square::from(sq ^ 56);
+    crate::bitboard::lookups::get_bishop_attacks_from_table(whale_sq, whale_occ)
+        .0
+        .swap_bytes()
+}
 
-    let whale_sq = Square::from(sq ^ 56);
-    let whale_occ = Bitboard(occ.swap_bytes());
-    let whale_attacks = match sf_piece_type {
-        3 => get_bishop_attacks_from_table(whale_sq, whale_occ).0,
-        4 => get_rook_attacks_from_table(whale_sq, whale_occ).0,
-        _ => {
-            get_bishop_attacks_from_table(whale_sq, whale_occ).0
-                | get_rook_attacks_from_table(whale_sq, whale_occ).0
-        }
-    };
-    whale_attacks.swap_bytes()
+#[inline(always)]
+fn rook_attacks_sf(sq: usize, whale_occ: crate::bitboard::Bitboard) -> u64 {
+    let whale_sq = crate::common::square::Square::from(sq ^ 56);
+    crate::bitboard::lookups::get_rook_attacks_from_table(whale_sq, whale_occ)
+        .0
+        .swap_bytes()
+}
+
+#[inline(always)]
+fn queen_attacks_sf(sq: usize, whale_occ: crate::bitboard::Bitboard) -> u64 {
+    let whale_sq = crate::common::square::Square::from(sq ^ 56);
+    (crate::bitboard::lookups::get_bishop_attacks_from_table(whale_sq, whale_occ).0
+        | crate::bitboard::lookups::get_rook_attacks_from_table(whale_sq, whale_occ).0)
+        .swap_bytes()
+}
+
+#[inline(always)]
+fn slider_attacks_sf(sf_piece_type: usize, sq: usize, occ: u64) -> u64 {
+    let whale_occ = crate::bitboard::Bitboard(occ.swap_bytes());
+    match sf_piece_type {
+        3 => bishop_attacks_sf(sq, whale_occ),
+        4 => rook_attacks_sf(sq, whale_occ),
+        _ => queen_attacks_sf(sq, whale_occ),
+    }
 }
 
 fn pseudo_attacks_sf(piece_code: usize, sq: usize) -> u64 {
@@ -455,6 +472,7 @@ fn threat_make_index(
 /// `(attacker_code, from_sf, to_sf, attacked_code)` with SF piece codes.
 pub fn for_each_threat(pos: &SfnnPosition, mut emit: impl FnMut(usize, usize, usize, usize)) {
     let occ = pos.occupied();
+    let whale_occ = crate::bitboard::Bitboard(occ.swap_bytes());
     for color_idx in 0..2 {
         let c = if color_idx == 0 {
             Side::White
@@ -483,17 +501,8 @@ pub fn for_each_threat(pos: &SfnnPosition, mut emit: impl FnMut(usize, usize, us
                         if victim > 5 {
                             continue;
                         }
-                        let victim_side = if (pos.white >> to) & 1 == 1 {
-                            Side::White
-                        } else {
-                            Side::Black
-                        };
-                        emit(
-                            attacker,
-                            from,
-                            to,
-                            sf_piece_code(victim_side, Piece::ALL[victim]),
-                        );
+                        let attacked = victim + 1 + (1 - ((pos.white >> to) as usize & 1)) * 8;
+                        emit(attacker, from, to, attacked);
                     }
                 }
             } else {
@@ -502,7 +511,9 @@ pub fn for_each_threat(pos: &SfnnPosition, mut emit: impl FnMut(usize, usize, us
                     bb &= bb - 1;
                     let attacks = match pt {
                         1 => knight_attacks_sf(from),
-                        2..=4 => slider_attacks_sf(sf_pt, from, occ),
+                        2 => bishop_attacks_sf(from, whale_occ),
+                        3 => rook_attacks_sf(from, whale_occ),
+                        4 => queen_attacks_sf(from, whale_occ),
                         _ => king_attacks_sf(from),
                     } & occ;
                     let mut targets = attacks;
@@ -513,17 +524,8 @@ pub fn for_each_threat(pos: &SfnnPosition, mut emit: impl FnMut(usize, usize, us
                         if victim > 5 {
                             continue;
                         }
-                        let victim_side = if (pos.white >> to) & 1 == 1 {
-                            Side::White
-                        } else {
-                            Side::Black
-                        };
-                        emit(
-                            attacker,
-                            from,
-                            to,
-                            sf_piece_code(victim_side, Piece::ALL[victim]),
-                        );
+                        let attacked = victim + 1 + (1 - ((pos.white >> to) as usize & 1)) * 8;
+                        emit(attacker, from, to, attacked);
                     }
                 }
             }
@@ -2234,24 +2236,52 @@ unsafe fn pairwise_transform_threats_tiled_avx2(
         let threat_ptr = threat_w.as_ptr();
         let pair_ptr = pair_w.as_ptr();
 
-        for chunk in 0..(half / 16) {
-            let offset0 = chunk * 16;
-            let offset1 = offset0 + half;
+        for chunk in (0..(half / 16)).step_by(4) {
+            let offset0_a = chunk * 16;
+            let offset0_b = offset0_a + 16;
+            let offset0_c = offset0_a + 32;
+            let offset0_d = offset0_a + 48;
+            let offset1_a = offset0_a + half;
+            let offset1_b = offset0_b + half;
+            let offset1_c = offset0_c + half;
+            let offset1_d = offset0_d + half;
 
-            let mut sum0 = _mm256_setzero_si256();
-            let mut sum1 = _mm256_setzero_si256();
+            let mut sum0_a = _mm256_setzero_si256();
+            let mut sum0_b = _mm256_setzero_si256();
+            let mut sum0_c = _mm256_setzero_si256();
+            let mut sum0_d = _mm256_setzero_si256();
+            let mut sum1_a = _mm256_setzero_si256();
+            let mut sum1_b = _mm256_setzero_si256();
+            let mut sum1_c = _mm256_setzero_si256();
+            let mut sum1_d = _mm256_setzero_si256();
 
             for &f in threat_features {
                 let t = f - PSQ_DIMS;
                 let w_base = threat_ptr.add(t * 1024);
 
-                let raw0 = _mm_loadu_si128(w_base.add(offset0) as *const __m128i);
-                let w0 = _mm256_cvtepi8_epi16(raw0);
-                sum0 = _mm256_add_epi16(sum0, w0);
+                let raw0_ab = _mm256_loadu_si256(w_base.add(offset0_a) as *const __m256i);
+                let w0_a = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(raw0_ab));
+                let w0_b = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(raw0_ab, 1));
+                sum0_a = _mm256_add_epi16(sum0_a, w0_a);
+                sum0_b = _mm256_add_epi16(sum0_b, w0_b);
 
-                let raw1 = _mm_loadu_si128(w_base.add(offset1) as *const __m128i);
-                let w1 = _mm256_cvtepi8_epi16(raw1);
-                sum1 = _mm256_add_epi16(sum1, w1);
+                let raw0_cd = _mm256_loadu_si256(w_base.add(offset0_c) as *const __m256i);
+                let w0_c = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(raw0_cd));
+                let w0_d = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(raw0_cd, 1));
+                sum0_c = _mm256_add_epi16(sum0_c, w0_c);
+                sum0_d = _mm256_add_epi16(sum0_d, w0_d);
+
+                let raw1_ab = _mm256_loadu_si256(w_base.add(offset1_a) as *const __m256i);
+                let w1_a = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(raw1_ab));
+                let w1_b = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(raw1_ab, 1));
+                sum1_a = _mm256_add_epi16(sum1_a, w1_a);
+                sum1_b = _mm256_add_epi16(sum1_b, w1_b);
+
+                let raw1_cd = _mm256_loadu_si256(w_base.add(offset1_c) as *const __m256i);
+                let w1_c = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(raw1_cd));
+                let w1_d = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(raw1_cd, 1));
+                sum1_c = _mm256_add_epi16(sum1_c, w1_c);
+                sum1_d = _mm256_add_epi16(sum1_d, w1_d);
             }
 
             if !pair_w.is_empty() {
@@ -2259,32 +2289,83 @@ unsafe fn pairwise_transform_threats_tiled_avx2(
                     let t = f - PSQ_DIMS - THREAT_DIMS;
                     let w_base = pair_ptr.add(t * 1024);
 
-                    let raw0 = _mm_loadu_si128(w_base.add(offset0) as *const __m128i);
-                    let w0 = _mm256_cvtepi8_epi16(raw0);
-                    sum0 = _mm256_add_epi16(sum0, w0);
+                    let raw0_ab = _mm256_loadu_si256(w_base.add(offset0_a) as *const __m256i);
+                    let w0_a = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(raw0_ab));
+                    let w0_b = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(raw0_ab, 1));
+                    sum0_a = _mm256_add_epi16(sum0_a, w0_a);
+                    sum0_b = _mm256_add_epi16(sum0_b, w0_b);
 
-                    let raw1 = _mm_loadu_si128(w_base.add(offset1) as *const __m128i);
-                    let w1 = _mm256_cvtepi8_epi16(raw1);
-                    sum1 = _mm256_add_epi16(sum1, w1);
+                    let raw0_cd = _mm256_loadu_si256(w_base.add(offset0_c) as *const __m256i);
+                    let w0_c = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(raw0_cd));
+                    let w0_d = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(raw0_cd, 1));
+                    sum0_c = _mm256_add_epi16(sum0_c, w0_c);
+                    sum0_d = _mm256_add_epi16(sum0_d, w0_d);
+
+                    let raw1_ab = _mm256_loadu_si256(w_base.add(offset1_a) as *const __m256i);
+                    let w1_a = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(raw1_ab));
+                    let w1_b = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(raw1_ab, 1));
+                    sum1_a = _mm256_add_epi16(sum1_a, w1_a);
+                    sum1_b = _mm256_add_epi16(sum1_b, w1_b);
+
+                    let raw1_cd = _mm256_loadu_si256(w_base.add(offset1_c) as *const __m256i);
+                    let w1_c = _mm256_cvtepi8_epi16(_mm256_castsi256_si128(raw1_cd));
+                    let w1_d = _mm256_cvtepi8_epi16(_mm256_extracti128_si256(raw1_cd, 1));
+                    sum1_c = _mm256_add_epi16(sum1_c, w1_c);
+                    sum1_d = _mm256_add_epi16(sum1_d, w1_d);
                 }
             }
 
-            let b0 = _mm256_loadu_si256(base_ptr.add(offset0) as *const __m256i);
-            let b1 = _mm256_loadu_si256(base_ptr.add(offset1) as *const __m256i);
+            let b0_a = _mm256_loadu_si256(base_ptr.add(offset0_a) as *const __m256i);
+            let b1_a = _mm256_loadu_si256(base_ptr.add(offset1_a) as *const __m256i);
+            let s0_a = _mm256_adds_epi16(b0_a, sum0_a);
+            let s1_a = _mm256_adds_epi16(b1_a, sum1_a);
+            let s0_clamp_a = _mm256_min_epi16(_mm256_max_epi16(s0_a, zero), max_val);
+            let s0_shl_a = _mm256_slli_epi16(s0_clamp_a, 7);
+            let s1_min_a = _mm256_min_epi16(s1_a, max_val);
+            let mul_a = _mm256_mulhi_epi16(s0_shl_a, s1_min_a);
+            let lo_a = _mm256_castsi256_si128(mul_a);
+            let hi_a = _mm256_extracti128_si256(mul_a, 1);
+            let bytes_a = _mm_packus_epi16(lo_a, hi_a);
+            _mm_storeu_si128(dst.as_mut_ptr().add(offset0_a) as *mut __m128i, bytes_a);
 
-            let s0 = _mm256_adds_epi16(b0, sum0);
-            let s1 = _mm256_adds_epi16(b1, sum1);
+            let b0_b = _mm256_loadu_si256(base_ptr.add(offset0_b) as *const __m256i);
+            let b1_b = _mm256_loadu_si256(base_ptr.add(offset1_b) as *const __m256i);
+            let s0_b = _mm256_adds_epi16(b0_b, sum0_b);
+            let s1_b = _mm256_adds_epi16(b1_b, sum1_b);
+            let s0_clamp_b = _mm256_min_epi16(_mm256_max_epi16(s0_b, zero), max_val);
+            let s0_shl_b = _mm256_slli_epi16(s0_clamp_b, 7);
+            let s1_min_b = _mm256_min_epi16(s1_b, max_val);
+            let mul_b = _mm256_mulhi_epi16(s0_shl_b, s1_min_b);
+            let lo_b = _mm256_castsi256_si128(mul_b);
+            let hi_b = _mm256_extracti128_si256(mul_b, 1);
+            let bytes_b = _mm_packus_epi16(lo_b, hi_b);
+            _mm_storeu_si128(dst.as_mut_ptr().add(offset0_b) as *mut __m128i, bytes_b);
 
-            let s0_clamp = _mm256_min_epi16(_mm256_max_epi16(s0, zero), max_val);
-            let s0_shl = _mm256_slli_epi16(s0_clamp, 7);
-            let s1_min = _mm256_min_epi16(s1, max_val);
+            let b0_c = _mm256_loadu_si256(base_ptr.add(offset0_c) as *const __m256i);
+            let b1_c = _mm256_loadu_si256(base_ptr.add(offset1_c) as *const __m256i);
+            let s0_c = _mm256_adds_epi16(b0_c, sum0_c);
+            let s1_c = _mm256_adds_epi16(b1_c, sum1_c);
+            let s0_clamp_c = _mm256_min_epi16(_mm256_max_epi16(s0_c, zero), max_val);
+            let s0_shl_c = _mm256_slli_epi16(s0_clamp_c, 7);
+            let s1_min_c = _mm256_min_epi16(s1_c, max_val);
+            let mul_c = _mm256_mulhi_epi16(s0_shl_c, s1_min_c);
+            let lo_c = _mm256_castsi256_si128(mul_c);
+            let hi_c = _mm256_extracti128_si256(mul_c, 1);
+            let bytes_c = _mm_packus_epi16(lo_c, hi_c);
+            _mm_storeu_si128(dst.as_mut_ptr().add(offset0_c) as *mut __m128i, bytes_c);
 
-            let mul = _mm256_mulhi_epi16(s0_shl, s1_min);
-
-            let lo = _mm256_castsi256_si128(mul);
-            let hi = _mm256_extracti128_si256(mul, 1);
-            let bytes = _mm_packus_epi16(lo, hi);
-            _mm_storeu_si128(dst.as_mut_ptr().add(offset0) as *mut __m128i, bytes);
+            let b0_d = _mm256_loadu_si256(base_ptr.add(offset0_d) as *const __m256i);
+            let b1_d = _mm256_loadu_si256(base_ptr.add(offset1_d) as *const __m256i);
+            let s0_d = _mm256_adds_epi16(b0_d, sum0_d);
+            let s1_d = _mm256_adds_epi16(b1_d, sum1_d);
+            let s0_clamp_d = _mm256_min_epi16(_mm256_max_epi16(s0_d, zero), max_val);
+            let s0_shl_d = _mm256_slli_epi16(s0_clamp_d, 7);
+            let s1_min_d = _mm256_min_epi16(s1_d, max_val);
+            let mul_d = _mm256_mulhi_epi16(s0_shl_d, s1_min_d);
+            let lo_d = _mm256_castsi256_si128(mul_d);
+            let hi_d = _mm256_extracti128_si256(mul_d, 1);
+            let bytes_d = _mm_packus_epi16(lo_d, hi_d);
+            _mm_storeu_si128(dst.as_mut_ptr().add(offset0_d) as *mut __m128i, bytes_d);
         }
     }
 }
@@ -2459,20 +2540,28 @@ fn eval_with_net(
             }
         });
 
+        let luts = threat_luts();
         for (slot, &persp) in perspectives.iter().enumerate() {
             let ksq = pos.king_square(persp);
+            let orient = threat_orient(persp, ksq);
+            let flip_color = if persp == Side::Black { 8 } else { 0 };
             let mut len = 0;
-            for &(attacker, from, to, attacked) in &raw_threats[..n_raw_threats] {
-                if let Some(idx) = threat_make_index(
-                    persp,
-                    attacker as usize,
-                    from as usize,
-                    to as usize,
-                    attacked as usize,
-                    ksq,
-                ) && len < MAX_THREAT_ACTIVE
-                {
-                    threat_lists[slot][len] = PSQ_DIMS + idx;
+            for &(attacker_raw, from_sf, to_sf, attacked_raw) in &raw_threats[..n_raw_threats] {
+                let attacker = (attacker_raw as usize) ^ flip_color;
+                let attacked = (attacked_raw as usize) ^ flip_color;
+                let word = luts.lut1[attacker][attacked];
+                let info = (word & 0xFF) as u8;
+                let from = (from_sf as usize) ^ orient;
+                let to = (to_sf as usize) ^ orient;
+                let less_than = (from < to) as u8;
+                if (info + less_than) & 2 != 0 {
+                    continue;
+                }
+                let idx = (word >> 8)
+                    + luts.offsets[attacker][from]
+                    + luts.lut2[attacker][from][to] as u32;
+                if (idx as usize) < THREAT_DIMS && len < MAX_THREAT_ACTIVE {
+                    threat_lists[slot][len] = PSQ_DIMS + idx as usize;
                     len += 1;
                 }
             }
@@ -2491,11 +2580,29 @@ fn eval_with_net(
 
             for (slot, &persp) in perspectives.iter().enumerate() {
                 let ksq = pos.king_square(persp);
+                let flip = if persp == Side::Black { 56 } else { 0 };
+                let left_files = (ksq & 7) < 4;
+                let orient = flip ^ if left_files { 0 } else { 7 };
                 let mut len = 0;
-                for &(color, from, to, paired) in &raw_pairs[..n_raw_pairs] {
+                for &(color, from_sf, to_sf, paired) in &raw_pairs[..n_raw_pairs] {
                     if len < MAX_PAIR_ACTIVE {
-                        pair_lists[slot][len] =
-                            pair_make_index(persp, color, from as usize, to as usize, paired, ksq);
+                        let from_oriented = (from_sf as usize) ^ orient;
+                        let to_oriented = (to_sf as usize) ^ orient;
+                        let color_oriented = if persp == Side::Black {
+                            color.other()
+                        } else {
+                            color
+                        };
+                        let paired_oriented = if persp == Side::Black {
+                            paired.other()
+                        } else {
+                            paired
+                        };
+                        let p1 = make_pawn_id(color_oriented, from_oriented);
+                        let p2 = make_pawn_id(paired_oriented, to_oriented);
+                        let (a, b) = if p1 <= p2 { (p1, p2) } else { (p2, p1) };
+                        let idx = (b * (b - 1)) / 2 + a + PSQ_DIMS + THREAT_DIMS;
+                        pair_lists[slot][len] = idx;
                         len += 1;
                     }
                 }

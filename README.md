@@ -180,8 +180,10 @@ cargo run --release -- --generate-magics
 | `TCE_Enabled`   | check  |     true     | Threat-conditioned extensions.                         |
 | `LQT_Enabled`   | check  |     true     | Learned quiescence termination.                        |
 | `SPS_Enabled`   | check  |     true     | Speculative persona search (helper threads).           |
-| `DAD_Enabled`   | check  |     true     | Disagreement-allocated depth time factor.              |
-| `Clear Hash`    | button |       -      | Clears all entries in the Transposition Table.         |
+| `DAD_Enabled`           | check  |     true     | Disagreement-allocated depth time factor.              |
+| `Extension_Cap_Enabled` | check  |     true     | Consecutive extension cap (prevents tactical dive).    |
+| `DualNet`               | check  |     true     | Dual-Net optimistic evaluation gating.                 |
+| `Clear Hash`            | button |       -      | Clears all entries in the Transposition Table.         |
 
 ---
 

@@ -61,10 +61,8 @@ fn search_internal(
     }
 
     let is_pv_node = beta > 1 + alpha;
-    // PERF (Stockfish StateInfo / Reckless cached-threats concept): one
-    // threat snapshot per node shared by legality, eval, ordering and TCE.
-    let nt = NodeThreats::compute(board_state);
-    let in_check = nt.in_check();
+    // PERF: the threat snapshot is computed lazily below (after the
+    // TT/syzygy/depth-0 early returns) so cutoffs never pay for it.
     let cut_node = ctx.cut_node;
     let halfmove = board_state.half_move_clock;
 
@@ -218,6 +216,13 @@ fn search_internal(
             ctx.search_state,
         );
     }
+
+    // PERF (Stockfish StateInfo / Reckless cached-threats concept): one
+    // threat snapshot per node shared by legality, eval, ordering and TCE.
+    // Placed after every early return above so TT/syzygy cutoffs and
+    // depth-0 entries never pay for it.
+    let nt = NodeThreats::compute(board_state);
+    let in_check = nt.in_check();
 
     let mut static_eval = 0;
     let has_static_eval = !in_check;
@@ -526,6 +531,12 @@ fn search_internal(
         });
         let mut nmp_pv_table = PvTable::new();
         let (nmp_pv, nmp_state) = (&mut nmp_pv_table, &mut *ctx.search_state);
+        // EXTENSION CAP: the null path inherits (not extends) the current
+        // streak so the child reads a defined slot instead of a stale one.
+        if (ply as usize) + 1 < constants::MAX_PLY {
+            let own = nmp_state.extension_streak[ply as usize];
+            nmp_state.extension_streak[(ply as usize) + 1] = own;
+        }
         let score = -search_internal(
             board_state,
             reduced_depth,
@@ -770,6 +781,32 @@ fn search_internal(
                 0
             };
         extension = extension.max(tce_ext).clamp(-1, 2);
+
+        // EXTENSION CAP (Stockfish concept): never extend a third ply in a
+        // row — stacked singular/TCE/check extensions kept depth from
+        // decreasing and dived to MAX_PLY on tactical lines (observed ply
+        // 52-64 in Kiwi Pete). The streak of the path reaching THIS node
+        // lives in extension_streak[ply] (0 at root); the child slot is
+        // written before every search below so the child reads it on entry.
+        // Verification searches (singular/NMP/probcut/coarse) run at the
+        // same ply and never touch the child slot, so their streak is
+        // unaffected. Negative (reducing) extensions always pass through
+        // and reset the streak.
+        let parent_streak = if ply as usize >= constants::MAX_PLY {
+            2
+        } else {
+            ctx.search_state.extension_streak[ply as usize]
+        };
+        if ctx.search_state.params.extension_cap_enabled && extension > 0 && parent_streak >= 2 {
+            extension = 0;
+        }
+        if (ply as usize) + 1 < constants::MAX_PLY {
+            ctx.search_state.extension_streak[(ply as usize) + 1] = if extension > 0 {
+                parent_streak.saturating_add(1)
+            } else {
+                0
+            };
+        }
 
         let depth = (current_depth as i16 + extension as i16).max(1) as u8;
         let excluded_here = ctx.excluded_move.is_some();
@@ -1847,6 +1884,45 @@ mod tests {
         let (score, nodes) = singular_stalemate_search(0, -5, -4);
         assert!(score.abs() <= 2, "singular score {score}");
         assert!(nodes > 0);
+    }
+
+    #[test]
+    fn extension_cap_never_exceeds_two_in_a_row() {
+        // Kiwi Pete dives to ply 52-64 via stacked singular/TCE/check
+        // extensions without the cap (>15 min at depth 8, hundreds of M
+        // nodes); with the cap it finishes in seconds. Depth 8 is needed
+        // because at depth 6 the streak never reaches 3 (verified: cap
+        // on/off gives identical 27k nodes there). Bounds are generous so
+        // both the embedded test net and whale_big pass.
+        let mut board = BoardState::parse_fen(crate::common::helpers::KIWI_PETE_FEN);
+        let cancel = AtomicBool::new(false);
+        let mut debug = false;
+        let mut state = SearchState::new();
+        let best = board.find_best_move(8, &cancel, &mut debug, &mut state, 1);
+        assert!(state.score.abs() < constants::MAX_CENTIPAWN_EVAL);
+        assert!(state.nodes > 0);
+        assert_ne!(best, Move::NO_MOVE);
+        assert!(
+            state.nodes < 5_000_000,
+            "extension cap failed, visited {} nodes",
+            state.nodes
+        );
+        assert!(
+            state.seldepth <= 48,
+            "extension cap failed, seldepth {}",
+            state.seldepth
+        );
+    }
+
+    #[test]
+    fn extension_streak_slot_roundtrips() {
+        let mut state = SearchState::new();
+        state.extension_streak[3] = 2;
+        assert_eq!(state.extension_streak[3], 2);
+        state.reset_search();
+        assert_eq!(state.extension_streak[3], 0);
+        let worker = state.clone_for_worker(1);
+        assert_eq!(worker.extension_streak[3], 0);
     }
 
     #[test]

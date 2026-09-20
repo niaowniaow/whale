@@ -19,7 +19,7 @@ pub const SCALE: i32 = 400;
 // changes per iteration/side, halfmove clock is not part of the Zobrist hash —
 // so both are part of the key. Thread-local: each search thread gets its own
 // table, no locking on the hot path.
-const EVAL_CACHE_BITS: u32 = 16;
+const EVAL_CACHE_BITS: u32 = 18;
 const EVAL_CACHE_SIZE: usize = 1 << EVAL_CACHE_BITS;
 const EVAL_CACHE_MASK: u64 = (EVAL_CACHE_SIZE as u64) - 1;
 
@@ -80,6 +80,44 @@ pub fn clear_eval_cache() {
     });
 }
 
+static DUAL_NET_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+#[inline(always)]
+pub fn set_dual_net(enabled: bool) {
+    DUAL_NET_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub fn is_dual_net_enabled() -> bool {
+    DUAL_NET_ENABLED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[inline(always)]
+pub fn evaluate_qsearch(board: &mut BoardState, optimism: i32, alpha: i16, beta: i16) -> i16 {
+    let board_hash = board.board_hash;
+    let halfmove = board.half_move_clock;
+    if let Some(hit) = probe_eval_cache(board_hash, optimism, halfmove) {
+        return hit;
+    }
+    if !v16::maintenance_active() || !is_dual_net_enabled() {
+        return evaluate_with_optimism(board, optimism);
+    }
+    let fast = evaluate_fast(board, optimism);
+    if fast >= beta + 120 {
+        store_eval_cache(board_hash, optimism, halfmove, fast);
+        return fast;
+    }
+    if fast <= alpha - 426 {
+        store_eval_cache(board_hash, optimism, halfmove, fast);
+        return fast;
+    }
+    if fast.abs() >= 380 {
+        store_eval_cache(board_hash, optimism, halfmove, fast);
+        return fast;
+    }
+    evaluate_with_optimism(board, optimism)
+}
+
 #[inline(always)]
 pub fn evaluate(board: &mut BoardState) -> i16 {
     evaluate_with_optimism(board, 0)
@@ -120,9 +158,15 @@ pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
     let score = if let Some(hit) = probe_eval_cache(board_hash, optimism, halfmove) {
         hit
     } else {
-        board.ensure_accumulators_fresh();
         let raw = if v16::maintenance_active() {
-            if let Some(ev) = v16::evaluate_board_detailed(board) {
+            let fast = if is_dual_net_enabled() {
+                evaluate_fast(board, optimism)
+            } else {
+                0
+            };
+            if is_dual_net_enabled() && fast.abs() >= 380 {
+                fast
+            } else if let Some(ev) = v16::evaluate_board_detailed(board) {
                 let psqt = ev.psqt as i64;
                 let positional = ev.positional as i64;
                 let mut nnue = psqt + positional;
@@ -157,6 +201,7 @@ pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
                 v16::evaluate_board(board).unwrap_or(0)
             }
         } else {
+            board.ensure_accumulators_fresh();
             evaluate_fast(board, optimism)
         };
         store_eval_cache(board_hash, optimism, halfmove, raw);

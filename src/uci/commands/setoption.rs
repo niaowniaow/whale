@@ -58,6 +58,13 @@ impl UciClient {
             if name.eq_ignore_ascii_case("Ponder") {
                 self.ponder_enabled = value.eq_ignore_ascii_case("true") || value == "1";
             }
+            if name.eq_ignore_ascii_case("DualNet")
+                || name.eq_ignore_ascii_case("Dual_Net")
+                || name.eq_ignore_ascii_case("Dual Net")
+            {
+                let enabled = value.eq_ignore_ascii_case("true") || value == "1";
+                crate::eval::set_dual_net(enabled);
+            }
             if name.eq_ignore_ascii_case("SyzygyProbeLimit")
                 && let Ok(v) = value.parse::<u8>()
             {
@@ -164,6 +171,15 @@ impl UciClient {
             }
             if name.eq_ignore_ascii_case("DAD_Enabled") {
                 state.params.dad_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("Extension_Cap_Enabled")
+                || name.eq_ignore_ascii_case("Extension_Cap")
+                || name.eq_ignore_ascii_case("ExtensionCap_Enabled")
+                || name.eq_ignore_ascii_case("ExtensionCap")
+                || name.eq_ignore_ascii_case("Cap_Enabled")
+                || name.eq_ignore_ascii_case("Cap")
+            {
+                state.params.extension_cap_enabled = flag_on;
             }
             // Draw aversion (Lc0 Contempt/DrawScore concepts, Whale's own use).
             if name.eq_ignore_ascii_case("Contempt")
@@ -311,6 +327,7 @@ mod tests {
             "LQT_Enabled",
             "SPS_Enabled",
             "DAD_Enabled",
+            "Extension_Cap_Enabled",
         ] {
             client.run_setoption(&["name", name, "value", "false"]);
         }
@@ -323,9 +340,28 @@ mod tests {
             assert!(!state.params.lqt_enabled);
             assert!(!state.params.sps_enabled);
             assert!(!state.params.dad_enabled);
+            assert!(!state.params.extension_cap_enabled);
         }
         client.run_setoption(&["name", "CFSS_Enabled", "value", "1"]);
         assert!(client.search_state.lock().unwrap().params.cfss_enabled);
+        client.run_setoption(&["name", "Extension_Cap", "value", "1"]);
+        assert!(
+            client
+                .search_state
+                .lock()
+                .unwrap()
+                .params
+                .extension_cap_enabled
+        );
+        client.run_setoption(&["name", "Cap", "value", "0"]);
+        assert!(
+            !client
+                .search_state
+                .lock()
+                .unwrap()
+                .params
+                .extension_cap_enabled
+        );
     }
 
     #[test]

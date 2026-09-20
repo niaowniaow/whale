@@ -127,11 +127,6 @@ impl BoardState {
     }
 
     pub fn ensure_accumulators_fresh(&mut self) {
-        if sfnn16::maintenance_active() {
-            let pos = SfnnPosition::from_board(self);
-            sfnn16::ensure_sfnn16_fresh(self, &pos);
-        }
-
         let target_idx = self.history.index;
         if self.history.computed[target_idx] {
             return;
