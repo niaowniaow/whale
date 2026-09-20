@@ -5,6 +5,8 @@
 //! No code is ported: formulas below are Whale's own, only the *concepts*
 //! (parity-tweaked draws, user contempt, logistic cp->WDL) are reused.
 
+use crate::common::side::Side;
+
 /// Nominal draw score before contempt (centipawns, from side-to-move view).
 pub const DRAW_BASE: i16 = 0;
 
@@ -29,14 +31,33 @@ pub fn draw_score(nodes: u64) -> i16 {
 
 /// Apply user contempt to a draw-ish score.
 ///
-/// * `score` — score from side-to-move perspective.
-/// * `stm_is_white` — true when White is to move.
-/// * `contempt_cp` — positive means "avoid draws" for both sides
-///   (Lc0 `Contempt` concept, linear form).
+/// * `score` — score from the side-to-move perspective at the draw node.
+/// * `stm` — side to move at the draw node.
+/// * `engine_side` — side the engine plays (root side to move).
+/// * `contempt_cp` — draw aversion in cp (Lc0 `Contempt` concept, linear form).
+///   Positive means the *engine* dislikes draws.
 /// * `draw_score_cp` — absolute draw value override (Lc0 `DrawScore` concept).
 ///
 /// Only near-zero scores are shifted so mates/TB wins are untouched.
-pub fn apply_contempt(score: i16, stm_is_white: bool, contempt_cp: i16, draw_score_cp: i16) -> i16 {
+///
+/// FIX (contempt was side-agnostic): the old form computed a `side_sign`,
+/// discarded it, and subtracted a hard-capped `|contempt| <= 50` from *every*
+/// draw node. That collapsed into a parity-only "postpone the draw" gradient
+/// and made the option unable to express "I (the engine) want to avoid draws":
+/// it moved the draw value in the same direction for both colours, and option
+/// values above 50 had no additional effect despite the UCI range of ±200.
+///
+/// Correct form: negamax returns scores from the side-to-move view, so a draw
+/// must be worth `-contempt` when we are to move and `+contempt` when the
+/// opponent is to move. The full option range is applied so the UCI value means
+/// exactly what the documentation says.
+pub fn apply_contempt(
+    score: i16,
+    stm: Side,
+    engine_side: Side,
+    contempt_cp: i16,
+    draw_score_cp: i16,
+) -> i16 {
     let c = contempt_cp.clamp(-CONTEMPT_LIMIT, CONTEMPT_LIMIT);
     let d = draw_score_cp.clamp(-CONTEMPT_LIMIT, CONTEMPT_LIMIT);
     if c == 0 && d == 0 {
@@ -45,15 +66,10 @@ pub fn apply_contempt(score: i16, stm_is_white: bool, contempt_cp: i16, draw_sco
     if score.abs() > 10 {
         return score;
     }
-    // Shift the draw baseline, then add side-aware contempt so both sides
-    // prefer playing on when contempt is positive.
-    let side_sign: i16 = if stm_is_white { 1 } else { -1 };
-    let _ = side_sign;
-    // Symmetric form: positive contempt lowers the draw value for the
-    // side to move (they would rather play on).
-    score
-        .saturating_add(d)
-        .saturating_sub(c.signum() * c.abs().min(50))
+    // Engine-relative contempt (zero-sum across sides): our own draw aversion
+    // devalues the draw for us and raises it for the opponent.
+    let contempt = if stm == engine_side { c } else { -c };
+    score.saturating_add(d).saturating_sub(contempt)
 }
 
 /// Convert a centipawn score to WDL permille (w, d, l), sum = 1000.
@@ -103,17 +119,53 @@ mod tests {
 
     #[test]
     fn contempt_leaves_default_scores_untouched() {
-        assert_eq!(apply_contempt(0, true, 0, 0), 0);
-        assert_eq!(apply_contempt(1, false, 0, 0), 1);
-        assert_eq!(apply_contempt(500, true, 50, 0), 500);
+        assert_eq!(apply_contempt(0, Side::White, Side::White, 0, 0), 0);
+        assert_eq!(apply_contempt(1, Side::Black, Side::White, 0, 0), 1);
+        assert_eq!(apply_contempt(500, Side::White, Side::White, 50, 0), 500);
     }
 
     #[test]
     fn contempt_shifts_draws() {
-        let base = apply_contempt(0, true, 30, 0);
-        assert!(base < 0, "positive contempt must devalue draws");
-        let d = apply_contempt(0, true, 0, 20);
+        // Positive contempt: bad for the engine, good for the opponent.
+        let ours = apply_contempt(0, Side::White, Side::White, 30, 0);
+        let theirs = apply_contempt(0, Side::Black, Side::White, 30, 0);
+        assert!(ours < 0, "engine must devalue draws when contempt > 0");
+        assert_eq!(theirs, -ours, "contempt must be zero-sum across sides");
+
+        let d = apply_contempt(0, Side::White, Side::White, 0, 20);
         assert_eq!(d, 20);
+    }
+
+    #[test]
+    fn contempt_follows_the_engine_side() {
+        // Same node, engine playing Black: the sign of the draw value flips.
+        assert_eq!(
+            apply_contempt(0, Side::White, Side::Black, 40, 0),
+            -apply_contempt(0, Side::White, Side::White, 40, 0)
+        );
+        // Negative contempt means the engine is happy to take draws...
+        assert!(apply_contempt(0, Side::Black, Side::Black, -40, 0) > 0);
+        // ...and the opponent is then the one who dislikes them.
+        assert_eq!(
+            apply_contempt(0, Side::White, Side::Black, -40, 0),
+            -apply_contempt(0, Side::White, Side::White, -40, 0)
+        );
+    }
+
+    #[test]
+    fn contempt_uses_the_full_option_range() {
+        // Regression: the old form silently capped the effect at +-50 cp, so
+        // `Contempt 200` behaved identically to `Contempt 50`.
+        assert_eq!(apply_contempt(0, Side::White, Side::White, 50, 0), -50);
+        assert_eq!(
+            apply_contempt(0, Side::White, Side::White, 200, 0),
+            -CONTEMPT_LIMIT
+        );
+        // Out-of-range values clamp instead of wrapping.
+        assert_eq!(
+            apply_contempt(0, Side::White, Side::White, i16::MAX, 0),
+            -CONTEMPT_LIMIT
+        );
     }
 
     #[test]

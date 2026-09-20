@@ -171,7 +171,7 @@ cargo run --release -- --generate-magics
 | `SyzygyPath`    | string |   `<empty>`  | Path to directory with `.rtbw` and `.rtbz` files.     |
 | `EvalFile`      | string | `<embedded>` | Path to custom NNUE weights file.                       |
 | `EvalFileSmall` | string |   `<empty>`  | Path to small NNUE net for dual-net mode.              |
-| `Contempt`      |  spin  |       0      | Draw aversion in cp (-200 to 200, Lc0-inspired).       |
+| `Contempt`      |  spin  |       0      | Engine-relative draw aversion in cp (-200 to 200, Lc0-inspired). |
 | `DrawScore`     |  spin  |       0      | Absolute draw value override in cp.                    |
 | `ShowWDL`       | check  |     true     | Emit `wdl w d l` on search info lines.                 |
 | `CFSS_Enabled`  | check  |     true     | Coarse-to-fine selective search.                       |

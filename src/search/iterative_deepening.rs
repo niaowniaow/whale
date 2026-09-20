@@ -330,6 +330,10 @@ pub fn search(
 ) {
     search_state.reset_search();
     search_state.tt.new_search();
+    // A draw score is returned from the side-to-move view, so contempt needs to
+    // know which side we are; the engine plays the root side to move. Helpers
+    // spawned below inherit this through `clone_for_worker`.
+    search_state.engine_side = board_state.side_to_move;
 
     let use_tm = search_state.opt_time > 0;
 
@@ -459,6 +463,7 @@ pub fn format_score(score: i16) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::common::side::Side;
 
     #[test]
     fn test_format_score() {
@@ -466,6 +471,45 @@ mod tests {
         assert_eq!(format_score(-500), "cp -500");
         assert_eq!(format_score(MAX_CENTIPAWN_EVAL - 1), "mate 1");
         assert_eq!(format_score(MAX_CENTIPAWN_EVAL - 3), "mate 2");
+    }
+
+    #[test]
+    fn search_records_engine_side_from_root_stm() {
+        for (fen, expected) in [
+            (crate::common::helpers::STARTING_FEN, Side::White),
+            (
+                "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1",
+                Side::Black,
+            ),
+        ] {
+            let mut board = BoardState::parse_fen(fen);
+            let token = AtomicBool::new(false);
+            let mut debug = false;
+            let mut state = SearchState::new();
+            search(&mut board, 2, &token, &mut debug, &mut state, 1);
+            assert_eq!(state.engine_side, expected, "fen {fen}");
+        }
+    }
+
+    #[test]
+    fn contempt_is_engine_relative_at_the_root() {
+        // K vs K is a dead draw and the engine plays the side to move, so with
+        // positive contempt the root score must be negative (the draw is bad for
+        // us) whichever colour we play. The +-1 band absorbs the node-parity
+        // tweak in `draw::draw_score`.
+        for fen in ["8/8/8/8/8/8/8/K6k w - - 0 1", "8/8/8/8/8/8/8/K6k b - - 0 1"] {
+            let mut board = BoardState::parse_fen(fen);
+            let token = AtomicBool::new(false);
+            let mut debug = false;
+            let mut state = SearchState::new();
+            state.contempt_cp = 50;
+            search(&mut board, 3, &token, &mut debug, &mut state, 1);
+            assert!(
+                (-51..=-50).contains(&state.score),
+                "fen {fen}: contempt must devalue the draw for the engine, got {}",
+                state.score
+            );
+        }
     }
 
     #[test]

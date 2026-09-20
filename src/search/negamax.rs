@@ -8,7 +8,7 @@ use crate::common::piece::Piece;
 use crate::common::tt::{self, TranspositionEntryType};
 use crate::search::move_picker::MovePicker;
 use crate::search::pv_table::PvTable;
-use crate::search::search_state::{SearchState, stm_is_white};
+use crate::search::search_state::SearchState;
 use crate::search::{alp, cfss, draw, gtp, lmr, nmp, psm, quiescence, tce};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -92,7 +92,8 @@ fn search_internal(
         let base = draw::draw_score(ctx.search_state.nodes);
         return draw::apply_contempt(
             base,
-            stm_is_white(board_state.side_to_move),
+            board_state.side_to_move,
+            ctx.search_state.engine_side,
             ctx.search_state.contempt_cp,
             ctx.search_state.draw_score_cp,
         );
@@ -1209,7 +1210,8 @@ fn search_internal(
         let base = draw::draw_score(ctx.search_state.nodes);
         return draw::apply_contempt(
             base,
-            stm_is_white(board_state.side_to_move),
+            board_state.side_to_move,
+            ctx.search_state.engine_side,
             ctx.search_state.contempt_cp,
             ctx.search_state.draw_score_cp,
         );

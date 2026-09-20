@@ -1,6 +1,7 @@
 use crate::common::constants::MAX_PLY;
 use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
+use crate::common::side::Side;
 use crate::common::tt::TranspositionTable;
 use crate::eval::move_ordering::MoveOrdering;
 
@@ -68,12 +69,6 @@ impl Default for SearchParameters {
     }
 }
 
-/// Side-to-move view helper for contempt (Whale's own linear form).
-#[inline(always)]
-pub fn stm_is_white(side: crate::common::side::Side) -> bool {
-    side == crate::common::side::Side::White
-}
-
 use std::sync::Arc;
 
 pub struct SearchState {
@@ -95,8 +90,16 @@ pub struct SearchState {
     pub previous_time_reduction: f64,
     pub best_move_changes: i32,
     pub optimism: [i32; 2],
+    /// Side the engine plays in this search (root side to move). Draw scoring
+    /// needs it so contempt is engine-relative: `apply_contempt` returns a value
+    /// from the side-to-move view, so the same draw must be scored *below* the
+    /// draw baseline for us and *above* it for the opponent.
+    /// Written by `iterative_deepening::search` before the first node is
+    /// visited, and inherited by helper threads via `clone_for_worker`.
+    pub engine_side: Side,
     /// Lc0-style draw aversion (cp, -200..200, 0 = off). Positive values make
-    /// both sides prefer playing on instead of taking draws.
+    /// the engine prefer playing on instead of taking draws (engine-relative:
+    /// the opponent then likes the draw just as much).
     pub contempt_cp: i16,
     /// Absolute draw-value override (cp). Added to near-zero scores.
     pub draw_score_cp: i16,
@@ -145,6 +148,7 @@ impl SearchState {
             previous_time_reduction: 0.85,
             best_move_changes: 0,
             optimism: [0; 2],
+            engine_side: Side::White,
             contempt_cp: 0,
             draw_score_cp: 0,
             show_wdl: true,
@@ -201,6 +205,7 @@ impl SearchState {
             previous_time_reduction: self.previous_time_reduction,
             best_move_changes: 0,
             optimism: self.optimism,
+            engine_side: self.engine_side,
             contempt_cp: self.contempt_cp,
             draw_score_cp: self.draw_score_cp,
             show_wdl: self.show_wdl,
@@ -289,10 +294,14 @@ mod tests {
         primary.contempt_cp = 25;
         primary.draw_score_cp = -5;
         primary.show_wdl = false;
+        primary.engine_side = Side::Black;
         let worker = primary.clone_for_worker(1);
         assert_eq!(worker.contempt_cp, 25);
         assert_eq!(worker.draw_score_cp, -5);
         assert!(!worker.show_wdl);
+        // Helpers must score draws for the same side as the primary, otherwise
+        // the shared TT would mix contempt-relative scores (see sps.rs).
+        assert_eq!(worker.engine_side, Side::Black);
     }
 
     #[test]

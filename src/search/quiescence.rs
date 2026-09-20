@@ -8,7 +8,7 @@ use crate::eval::{evaluate_qsearch, evaluate_with_optimism};
 use crate::search::bmo::BanditArm;
 use crate::search::draw;
 use crate::search::move_picker::MovePicker;
-use crate::search::search_state::{SearchState, stm_is_white};
+use crate::search::search_state::SearchState;
 use crate::{board::state::BoardState, common::constants::MAX_CENTIPAWN_EVAL};
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -47,7 +47,8 @@ pub fn search(
         let base = draw::draw_score(search_state.nodes);
         return draw::apply_contempt(
             base,
-            stm_is_white(board_state.side_to_move),
+            board_state.side_to_move,
+            search_state.engine_side,
             search_state.contempt_cp,
             search_state.draw_score_cp,
         );
@@ -61,7 +62,8 @@ pub fn search(
             let base = draw::draw_score(search_state.nodes);
             draw::apply_contempt(
                 base,
-                stm_is_white(board_state.side_to_move),
+                board_state.side_to_move,
+                search_state.engine_side,
                 search_state.contempt_cp,
                 search_state.draw_score_cp,
             )
