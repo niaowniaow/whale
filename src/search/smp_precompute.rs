@@ -18,8 +18,7 @@ pub fn select_speculative_replies(
 ) -> Vec<Move> {
     let mut move_list = MoveList::new();
     board.generate_moves(&mut move_list);
-    // PERF: one threat snapshot for the whole root list instead of
-    // recomputing checkers/pinners inside `is_legal` for every move.
+
     let nt = NodeThreats::compute(board);
 
     let mut scored_moves: Vec<(Move, i32)> = Vec::with_capacity(move_list.len());
@@ -191,8 +190,6 @@ mod tests {
     fn test_select_skips_illegal_moves() {
         use crate::common::square::Square;
 
-        // Be2 is pinned to the king by the rook on e8: every bishop move
-        // leaves the file and is illegal.
         let board = BoardState::parse_fen("3kr3/8/8/8/8/8/4B3/4K3 w - - 0 1");
         let tt = TranspositionTable::new(1024);
         let replies = select_speculative_replies(&board, &tt, 3);
@@ -219,7 +216,6 @@ mod tests {
     fn test_select_scores_losing_capture_above_quiets() {
         use crate::common::square::Square;
 
-        // Qxd3 wins a pawn but loses the queen to ...cxd3.
         let board = BoardState::parse_fen("4k3/8/8/8/2p5/3p4/4Q3/4K3 w - - 0 1");
         let tt = TranspositionTable::new(1024);
         let replies = select_speculative_replies(&board, &tt, 5);
@@ -245,14 +241,13 @@ mod tests {
         use crate::common::move_type::MoveType;
         use crate::common::square::Square;
 
-        // Be2 is pinned: leaving the e-file exposes the king.
         let board = BoardState::parse_fen("4r2k/8/8/8/8/8/4B3/4K3 w - - 0 1");
         let state = Arc::new(Mutex::new(SearchState::new()));
         let cancel = Arc::new(AtomicBool::new(false));
         let illegal = Move::new(Square::E2, Square::D3, MoveType::Quiet);
         assert!(!board.is_legal(illegal));
         run_precomputation(board, illegal, state, cancel, 1);
-        // Null moves must not panic the precompute path either.
+
         let board = BoardState::parse_fen(STARTING_FEN);
         assert!(!board.is_legal(Move::NO_MOVE));
         run_precomputation(

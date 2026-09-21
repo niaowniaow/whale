@@ -6,7 +6,6 @@ use crate::common::constants::{MAX_MASK_INDEX, MAX_RETRY_COUNT};
 use crate::common::random;
 use crate::common::square::Square;
 
-// Precalculated by generate_all_magic_numbers()
 pub const BISHOP_MAGICS: [u64; 64] = [
     572335195422784,
     9225705203045892096,
@@ -296,7 +295,6 @@ pub fn find_magic_number(square: Square, bits_in_mask: i32, is_bishop: bool) -> 
     for _ in 0..MAX_RETRY_COUNT {
         let potential_magic_number = generate_potential_magic_number();
 
-        // Early exit impossible magics
         if ((mask.0.wrapping_mul(potential_magic_number)) & 0xFF00_0000_0000_0000).count_ones() < 6
         {
             continue;
@@ -328,8 +326,6 @@ pub fn find_magic_number(square: Square, bits_in_mask: i32, is_bishop: bool) -> 
     panic!("No magic number found");
 }
 
-/// Regenerates all magic numbers by brute-force search and prints them to stdout.
-/// Intended to be called from `main` via a CLI flag (e.g. `--generate-magics`).
 pub fn generate_all_magic_numbers() {
     println!("pub const BISHOP_MAGICS: [u64; 64] = [");
     for square in 0..64 {
@@ -621,7 +617,7 @@ mod tests {
         let bits = mask.0.count_ones() as i32;
         let lsb = mask.get_lsb();
         assert_eq!(get_occupancy_mapping(1, bits, mask), Bitboard(1u64 << lsb));
-        // Highest index bit alone also selects exactly one mask square.
+
         let single = get_occupancy_mapping(1usize << (bits - 1), bits, mask);
         assert_eq!(single.0.count_ones(), 1);
         assert_eq!(single.0 & !mask.0, 0);

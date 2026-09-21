@@ -6,9 +6,6 @@ pub fn calculate_move_time_with_moves(clock: i32, increment: i32, movestogo: i32
     calculate_optimum_with_ply(clock, increment, movestogo, 0, -1, 50, false).0
 }
 
-/// Stockfish timeman.cpp mirror (sudden-death + cyclic branches).
-/// `ponder` applies the Stockfish Ponder-option bonus (optimum += optimum/4,
-/// timeman.cpp:164-165). `movestogo <= 0` means "no movestogo" (SF: == 0).
 pub fn calculate_optimum_with_ply(
     clock: i32,
     increment: i32,

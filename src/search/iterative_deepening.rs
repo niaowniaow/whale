@@ -1,10 +1,19 @@
 use crate::board::node_threats::NodeThreats;
+use crate::board::plans;
 use crate::board::state::BoardState;
 use crate::common::constants::{ASPIRATION_WINDOW_MARGIN, MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
+use crate::search::attack;
+use crate::search::concession;
+use crate::search::conversion;
+use crate::search::counterplay;
+use crate::search::multipv::MultipvLine;
 use crate::search::negamax;
+use crate::search::position_state;
+use crate::search::pressure;
 use crate::search::pv_table::PvTable;
+use crate::search::risk;
 use crate::search::search_state::SearchState;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
@@ -19,15 +28,12 @@ fn worker_search(
     let mut previous_pv = Vec::new();
     let mut pv_table = PvTable::new();
 
-    // FIX ASPIRATION: Lazy SMP helpers run full-window searches only (no
-    // private aspiration); depth stagger (odd/even) is the sole diversity
-    // source so every thread shares identical params/TT view.
     let start_depth = if thread_id % 2 == 1 { 1 } else { 2 };
     for current_depth in start_depth..=max_depth {
         if cancellation_token.load(Ordering::Relaxed) {
             break;
         }
-        // FIX LIMIT max_nodes: helpers abort cleanly on the shared token.
+
         if search_state.max_nodes > 0 && search_state.nodes >= search_state.max_nodes {
             break;
         }
@@ -47,8 +53,6 @@ fn worker_search(
             break;
         }
 
-        // Root discards nothing here (helpers only warm the shared TT), but a
-        // cancelled score must not poison move ordering.
         if search_state.max_nodes > 0 && search_state.nodes >= search_state.max_nodes {
             break;
         }
@@ -63,6 +67,87 @@ fn worker_search(
         search_state.tbhits,
         search_state.seldepth,
     )
+}
+
+fn search_excluded_root(
+    board_state: &mut BoardState,
+    depth: u8,
+    cancellation_token: &AtomicBool,
+    search_state: &mut SearchState,
+    excluded: &[Move],
+) -> Option<(Move, i16, Vec<Move>)> {
+    let mut all = MoveList::new();
+    board_state.generate_moves(&mut all);
+    let nt = NodeThreats::compute(board_state);
+    let saved = std::mem::take(&mut search_state.searchmoves);
+    let uci_active = !saved.is_empty();
+    let mut allowed = Vec::new();
+    for i in 0..all.len() {
+        let m = all[i].mv;
+        if excluded.contains(&m) {
+            continue;
+        }
+        if uci_active && !saved.contains(&m) {
+            continue;
+        }
+        if board_state.is_legal_with(m, nt.checkers, nt.pinned) {
+            allowed.push(m);
+        }
+    }
+    if allowed.is_empty() {
+        search_state.searchmoves = saved;
+        return None;
+    }
+    search_state.searchmoves = allowed;
+    let mut pv = PvTable::new();
+    let score = negamax::search(
+        board_state,
+        depth,
+        i16::MIN + 1,
+        i16::MAX - 1,
+        cancellation_token,
+        &[],
+        &mut pv,
+        search_state,
+    );
+    let line = pv.line().to_vec();
+    let bm = line.first().copied().unwrap_or(Move::NO_MOVE);
+    search_state.searchmoves = saved;
+    if cancellation_token.load(Ordering::Relaxed) || bm == Move::NO_MOVE {
+        return None;
+    }
+    Some((bm, score, line))
+}
+
+fn search_single_root(
+    board_state: &mut BoardState,
+    depth: u8,
+    candidate: Move,
+    cancellation_token: &AtomicBool,
+    search_state: &mut SearchState,
+) -> Option<(i16, Vec<Move>)> {
+    let saved = std::mem::take(&mut search_state.searchmoves);
+    search_state.searchmoves = vec![candidate];
+    let mut pv = PvTable::new();
+    let score = negamax::search(
+        board_state,
+        depth,
+        i16::MIN + 1,
+        i16::MAX - 1,
+        cancellation_token,
+        &[],
+        &mut pv,
+        search_state,
+    );
+    let line = pv.line().to_vec();
+    search_state.searchmoves = saved;
+    if cancellation_token.load(Ordering::Relaxed) {
+        return None;
+    }
+    if line.first().copied().unwrap_or(Move::NO_MOVE) != candidate {
+        return None;
+    }
+    Some((score, line))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -92,8 +177,6 @@ fn search_primary(
     for current_depth in 1..=max_depth {
         let iter_start_nodes = search_state.nodes;
 
-        // FIX LIMIT max_nodes: stop cleanly between iterations (root discards
-        // the aborted iteration below via the cancellation check).
         if search_state.max_nodes > 0
             && search_state.nodes + worker_nodes.load(Ordering::Relaxed) >= search_state.max_nodes
         {
@@ -132,9 +215,6 @@ fn search_primary(
         let mut completed = false;
         let mut delta = ASPIRATION_WINDOW_MARGIN;
 
-        // FIX ASPIRATION: Stockfish search.cpp:376-444 window dynamics. On
-        // fail-low the window slides down with beta=alpha overlap; on
-        // fail-high alpha tightens to beta-delta overlap; delta grows gently.
         loop {
             let score = negamax::search(
                 board_state,
@@ -179,6 +259,17 @@ fn search_primary(
             break;
         }
 
+        let mut aprm_boost = 1.0f64;
+        let mut aprm_state_txt = "improve";
+        let mut aprm_cpi_us = 0i32;
+        let mut aprm_cpi_opp = 0i32;
+        let mut aprm_free_us = 0u32;
+        let mut aprm_free_opp = 0u32;
+        let mut aprm_breaks_opp = 0u32;
+        let mut aprm_momentum = 0i16;
+        let mut aprm_concession_txt = String::new();
+        let mut aprm_musttry = false;
+        let mut aprm_move_changed = false;
         if completed {
             let current_pv = pv_table.line().to_vec();
             let new_best_move = current_pv.first().copied().unwrap_or(Move::NO_MOVE);
@@ -189,11 +280,13 @@ fn search_primary(
             if move_changed {
                 last_best_move_depth = current_depth;
             }
+            aprm_move_changed = move_changed;
             if new_best_move != Move::NO_MOVE {
                 best_move_so_far = new_best_move;
                 search_state.ponder_move = current_pv.get(1).copied().unwrap_or(Move::NO_MOVE);
             }
 
+            let prev_iter_score = last_score;
             last_score = current_score;
             search_state.score = current_score;
             if !current_pv.is_empty() {
@@ -203,10 +296,141 @@ fn search_primary(
 
             iter_scores[iter_idx] = current_score;
             iter_idx = (iter_idx + 1) & 3;
+
+            {
+                let root_nt = NodeThreats::compute(board_state);
+                let root_in_check = root_nt.in_check();
+                aprm_cpi_us = counterplay::compute_cpi_fast(&root_nt).cpi;
+                aprm_free_us = counterplay::count_freedom(board_state);
+                aprm_momentum = current_score.saturating_sub(prev_iter_score);
+                let mut opp_cpi = 0i32;
+                let mut opp_free = 0u32;
+                let mut opp_breaks = 0u32;
+                if best_move_so_far != Move::NO_MOVE {
+                    let mut child = board_state.clone();
+                    child.make_move(best_move_so_far);
+                    let child_nt = NodeThreats::compute(&child);
+                    opp_cpi = counterplay::compute_cpi_fast(&child_nt).cpi;
+                    opp_free = counterplay::count_freedom(&child);
+
+                    opp_breaks = plans::available_pawn_breaks(&child);
+                }
+                aprm_cpi_opp = opp_cpi;
+                aprm_free_opp = opp_free;
+                aprm_breaks_opp = opp_breaks;
+
+                let eval_diff = (current_score as i32 - prev_iter_score as i32).abs();
+                let volatility = if eval_diff > 120 {
+                    position_state::VolatilityLevel::Extreme
+                } else if eval_diff > 60 {
+                    position_state::VolatilityLevel::High
+                } else if eval_diff > 25 {
+                    position_state::VolatilityLevel::Medium
+                } else {
+                    position_state::VolatilityLevel::Low
+                };
+
+                let st = if search_state.params.state_enabled {
+                    position_state::classify_with_hysteresis(
+                        &position_state::StateInput {
+                            score: current_score,
+                            opp_cpi,
+                            own_cpi: aprm_cpi_us,
+                            momentum: aprm_momentum,
+                            in_check: root_in_check,
+                            volatility,
+                        },
+                        &search_state.state_thresholds,
+                        Some(search_state.last_state),
+                    )
+                } else {
+                    position_state::PositionState::Improve
+                };
+                aprm_state_txt = st.as_str();
+                search_state.last_state = st;
+
+                let baseline = search_state
+                    .prev_root_score
+                    .or(search_state.best_previous_score);
+                if let Some(prev) = baseline {
+                    if let Some(c) = concession::detect_concession(prev, current_score, 0) {
+                        aprm_concession_txt = format!(" concession={:?}+{}", c.kind, c.swing_cp);
+                        search_state.last_concession = Some(c);
+                    }
+                }
+
+                if search_state.params.pressure_enabled {
+                    let cpi_delta = opp_cpi - search_state.prev_opp_cpi.unwrap_or(opp_cpi);
+                    let free_delta =
+                        opp_free as i32 - search_state.prev_opp_freedom.unwrap_or(opp_free) as i32;
+                    let plans_denied = search_state.prev_opp_breaks.unwrap_or(opp_breaks) as i32
+                        - opp_breaks as i32;
+                    search_state.pressure_state = pressure::update_pressure_with_plans(
+                        &search_state.pressure_state,
+                        aprm_momentum,
+                        cpi_delta,
+                        free_delta,
+                        plans_denied,
+                    );
+                }
+                search_state.prev_root_score = Some(current_score);
+                search_state.prev_opp_cpi = Some(opp_cpi);
+                search_state.prev_opp_freedom = Some(opp_free);
+                search_state.prev_opp_breaks = Some(opp_breaks);
+
+                let gain = aprm_momentum.max(0) as i32;
+                let window = if move_changed {
+                    2
+                } else if search_state.best_move_changes > 0 {
+                    5
+                } else {
+                    12
+                };
+                let urgency = attack::urgency_for(window, gain);
+
+                search_state.verification_budget = if search_state.params.attack_enabled {
+                    attack::verification_depth(urgency)
+                } else {
+                    0
+                };
+
+                if search_state.params.state_enabled {
+                    if current_score < prev_iter_score.saturating_sub(50) {
+                        search_state.reset_mode = true;
+                    } else if current_score >= prev_iter_score {
+                        search_state.reset_mode = false;
+                    }
+                }
+
+                search_state.simplify_bias = search_state.params.conversion_enabled
+                    && conversion::should_convert(
+                        current_score,
+                        opp_cpi,
+                        &search_state.conversion_params,
+                    );
+
+                search_state.last_musttry = false;
+                if search_state.params.risk_enabled {
+                    let risk = risk::risk_score(
+                        (opp_cpi - aprm_cpi_us).max(0),
+                        if root_in_check { 20 } else { 0 },
+                        false,
+                    );
+                    let input = risk::MustTryInput {
+                        gain_cp: gain,
+                        urgency,
+                        risk,
+                        opp_cpi_after: opp_cpi,
+                    };
+                    if risk::must_try_gate(&input, &search_state.risk_envelope) {
+                        aprm_boost = 1.25;
+                        aprm_musttry = true;
+                        search_state.last_musttry = true;
+                    }
+                }
+            }
         }
 
-        // FIX NODES-SELDEPTH: consistent totals (primary + helpers) for NPS and
-        // effort; u64 throughout with i64 casts before signed arithmetic.
         let total_nodes_now = search_state.nodes + worker_nodes.load(Ordering::Relaxed);
         if use_tm {
             let elapsed = timer.elapsed().as_millis() as f64;
@@ -254,7 +478,8 @@ fn search_primary(
                 * reduction
                 * best_move_instability
                 * high_best_move_effort
-                * dad_time_factor;
+                * dad_time_factor
+                * aprm_boost;
 
             if legal_root_moves <= 1 {
                 total_time = total_time.min(500.0);
@@ -268,7 +493,7 @@ fn search_primary(
 
             let stop_time = total_time.min(max_limit);
             let is_mate = current_score.abs() as i32 >= (MAX_CENTIPAWN_EVAL as i32 - 5);
-            // FIX LIMIT max_nodes: abort cleanly inside the time check as well.
+
             let nodes_exceeded =
                 search_state.max_nodes > 0 && total_nodes_now >= search_state.max_nodes;
 
@@ -295,7 +520,7 @@ fn search_primary(
                 .collect::<Vec<String>>()
                 .join(" ");
             let score_str = format_score(search_state.score);
-            // Lc0-style WDL reporting (Whale's own logistic in search::draw).
+
             let wdl_str = if search_state.show_wdl {
                 let (w, d, l) = crate::search::draw::cp_to_wdl(search_state.score);
                 format!(" wdl {w} {d} {l}")
@@ -316,6 +541,151 @@ fn search_primary(
             );
             let _ = std::io::Write::flush(&mut std::io::stdout());
         }
+
+        if completed && best_move_so_far != Move::NO_MOVE {
+            let mut verified_txt = String::new();
+            if search_state.params.attack_enabled
+                && aprm_musttry
+                && (aprm_move_changed || current_depth <= 1)
+                && !cancellation_token.load(Ordering::Relaxed)
+            {
+                let vdepth = current_depth.saturating_add(search_state.verification_budget);
+                if let Some((vscore, _vpv)) = search_single_root(
+                    board_state,
+                    vdepth,
+                    best_move_so_far,
+                    cancellation_token,
+                    search_state,
+                ) {
+                    search_state.last_verified = Some(vscore);
+                    if vscore >= current_score.saturating_sub(30) {
+                        verified_txt = format!(" verified={vscore}");
+                    } else {
+                        search_state.reset_mode = true;
+                        search_state.verification_budget = 0;
+                        verified_txt = format!(" refuted={vscore}");
+                    }
+                }
+            }
+            let want_extra = search_state.multipv.saturating_sub(1);
+            let mut lines: Vec<MultipvLine> = Vec::new();
+            lines.push(MultipvLine {
+                mv: best_move_so_far,
+                score: current_score,
+                pv: previous_pv.clone(),
+                kind: crate::search::multipv::classify_candidate_rich(
+                    best_move_so_far,
+                    current_score,
+                    current_score,
+                    search_state.last_musttry,
+                    search_state.last_state,
+                ),
+            });
+            if want_extra > 0 && !cancellation_token.load(Ordering::Relaxed) {
+                let mut found = vec![best_move_so_far];
+                for _ in 0..want_extra {
+                    if cancellation_token.load(Ordering::Relaxed) {
+                        break;
+                    }
+                    match search_excluded_root(
+                        board_state,
+                        current_depth,
+                        cancellation_token,
+                        search_state,
+                        &found,
+                    ) {
+                        Some((bm, sc, pv)) => {
+                            found.push(bm);
+                            lines.push(MultipvLine {
+                                mv: bm,
+                                score: sc,
+                                pv: pv.clone(),
+                                kind: crate::search::multipv::classify_candidate_rich(
+                                    bm,
+                                    sc,
+                                    current_score,
+                                    false,
+                                    search_state.last_state,
+                                ),
+                            });
+                        }
+                        None => break,
+                    }
+                }
+            }
+            search_state.multipv_lines = lines.clone();
+            if *debug_mode {
+                let time_ms2 = timer.elapsed().as_millis().max(1) as f64;
+                let total_nodes2 = search_state.nodes + worker_nodes.load(Ordering::Relaxed);
+                let nps2 = (total_nodes2 as f64 / time_ms2 * 1000.0) as i32;
+                for (idx, l) in lines.iter().enumerate().skip(1) {
+                    let pv_str =
+                        l.pv.iter()
+                            .map(|m| {
+                                let promotion = m
+                                    .promotion_char()
+                                    .map(|c| c.to_string())
+                                    .unwrap_or_else(String::new);
+                                format!("{}{}{}", m.source, m.target, promotion)
+                            })
+                            .collect::<Vec<String>>()
+                            .join(" ");
+                    println!(
+                        "info depth {} seldepth {} multipv {} score {} nodes {} time {} nps {} pv {}",
+                        current_depth,
+                        search_state.seldepth,
+                        idx + 1,
+                        format_score(l.score),
+                        total_nodes2,
+                        time_ms2,
+                        nps2,
+                        pv_str
+                    );
+                }
+                let conv_txt = if search_state.params.conversion_enabled
+                    && conversion::should_convert(
+                        current_score,
+                        aprm_cpi_opp,
+                        &search_state.conversion_params,
+                    ) {
+                    " convert=yes"
+                } else {
+                    ""
+                };
+                let must_txt = if aprm_musttry { " musttry=yes" } else { "" };
+                let reset_txt = if search_state.reset_mode {
+                    " reset=yes"
+                } else {
+                    ""
+                };
+                let simpl_txt = if search_state.simplify_bias {
+                    " simplify=yes"
+                } else {
+                    ""
+                };
+                println!(
+                    "info string aprm depth {} state={} cpi_us={} cpi_opp={} freedom_us={} freedom_them={} plans_opp={} momentum={} pressure={} sustained={} vbudget={}{}{}{}{}{}{}",
+                    current_depth,
+                    aprm_state_txt,
+                    aprm_cpi_us,
+                    aprm_cpi_opp,
+                    aprm_free_us,
+                    aprm_free_opp,
+                    aprm_breaks_opp,
+                    aprm_momentum,
+                    search_state.pressure_state.pressure,
+                    search_state.pressure_state.sustained_plies,
+                    search_state.verification_budget,
+                    aprm_concession_txt,
+                    must_txt,
+                    conv_txt,
+                    reset_txt,
+                    simpl_txt,
+                    verified_txt
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+        }
     }
     search_state.best_previous_score = Some(search_state.score);
 }
@@ -330,20 +700,16 @@ pub fn search(
 ) {
     search_state.reset_search();
     search_state.tt.new_search();
-    // A draw score is returned from the side-to-move view, so contempt needs to
-    // know which side we are; the engine plays the root side to move. Helpers
-    // spawned below inherit this through `clone_for_worker`.
+
     search_state.engine_side = board_state.side_to_move;
 
     let use_tm = search_state.opt_time > 0;
 
-    // FIX LIMIT searchmoves: an empty filter means "all moves" (skip filtering).
     let mut legal_root_moves = 0;
     {
         let mut root_moves = MoveList::new();
         board_state.generate_moves(&mut root_moves);
-        // PERF: one threat snapshot for the whole root list, matching the
-        // per-node snapshot used by the search itself.
+
         let root_threats = NodeThreats::compute(board_state);
         let filter = !search_state.searchmoves.is_empty();
         for i in 0..root_moves.len() {
@@ -358,7 +724,7 @@ pub fn search(
                 }
             }
         }
-        // A non-empty filter with no legal moves must not kill the search.
+
         if filter && legal_root_moves == 0 {
             for i in 0..root_moves.len() {
                 let m = root_moves[i].mv;
@@ -376,7 +742,7 @@ pub fn search(
     } else {
         depth
     };
-    // FIX LIMIT mate_in: cap depth to ~2*plies+1 so mate search terminates.
+
     if search_state.mate_in > 0 {
         let mate_cap = search_state
             .mate_in
@@ -440,7 +806,7 @@ pub fn search(
             use_tm,
         );
     }
-    // FIX NODES-SELDEPTH: consistent totals include helper threads.
+
     search_state.nodes += worker_nodes.load(Ordering::Relaxed);
     search_state.tbhits += worker_tbhits.load(Ordering::Relaxed);
     search_state.seldepth = search_state
@@ -493,10 +859,6 @@ mod tests {
 
     #[test]
     fn contempt_is_engine_relative_at_the_root() {
-        // K vs K is a dead draw and the engine plays the side to move, so with
-        // positive contempt the root score must be negative (the draw is bad for
-        // us) whichever colour we play. The +-1 band absorbs the node-parity
-        // tweak in `draw::draw_score`.
         for fen in ["8/8/8/8/8/8/8/K6k w - - 0 1", "8/8/8/8/8/8/8/K6k b - - 0 1"] {
             let mut board = BoardState::parse_fen(fen);
             let token = AtomicBool::new(false);
@@ -584,7 +946,7 @@ mod tests {
         let mut state = SearchState::new();
         state.searchmoves = vec![Move::new(Square::A1, Square::A8, MoveType::Quiet)];
         search(&mut board, 1, &token, &mut debug, &mut state, 1);
-        // Illegal-only filter covers the empty-filter fallback counting path.
+
         assert!(state.nodes > 0);
     }
 

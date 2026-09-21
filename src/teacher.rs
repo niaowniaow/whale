@@ -46,9 +46,6 @@ impl Drop for StockfishTeacher {
     }
 }
 
-/// Drive one `position`/`go` exchange over any byte streams. Split out of
-/// [`StockfishTeacher::evaluate`] so the protocol loop is testable without
-/// spawning a real engine.
 fn evaluate_on(
     stdin: &mut impl Write,
     stdout: &mut impl BufRead,
@@ -127,7 +124,6 @@ mod tests {
 
     #[test]
     fn parse_score_clamps_and_rejects_garbage() {
-        // Centipawn scores clamp to the eval window.
         assert_eq!(
             parse_score(&["info", "score", "cp", "99999"]),
             Some(MAX_CENTIPAWN_EVAL)
@@ -136,12 +132,12 @@ mod tests {
             parse_score(&["info", "score", "cp", "-99999"]),
             Some(-MAX_CENTIPAWN_EVAL)
         );
-        // Negative mate scores mirror around the window.
+
         assert_eq!(
             parse_score(&["info", "score", "mate", "-2"]),
             Some(-(MAX_CENTIPAWN_EVAL - 4))
         );
-        // Unknown score kinds and truncated/unparseable lines yield nothing.
+
         assert_eq!(parse_score(&["info", "score", "lowerbound", "10"]), None);
         assert_eq!(parse_score(&["info", "score"]), None);
         assert_eq!(parse_score(&["info"]), None);
@@ -189,11 +185,11 @@ mod tests {
         use crate::common::helpers::STARTING_FEN;
 
         let board = BoardState::parse_fen(STARTING_FEN);
-        // EOF before any bestmove.
+
         let mut stdin = Vec::new();
         let mut stdout = Cursor::new(b"info string hi\n" as &[u8]);
         assert_eq!(evaluate_on(&mut stdin, &mut stdout, &board, 1).unwrap(), 0);
-        // Bestmove with no score line at all.
+
         let mut stdin = Vec::new();
         let mut stdout = Cursor::new(b"bestmove e2e4\n" as &[u8]);
         assert_eq!(evaluate_on(&mut stdin, &mut stdout, &board, 1).unwrap(), 0);
@@ -201,8 +197,6 @@ mod tests {
 
     #[test]
     fn drop_reaps_exited_child() {
-        // Portable instant-exit child: Drop must tolerate closed pipes and
-        // an already-dead process.
         #[cfg(windows)]
         let mut child = Command::new("cmd")
             .args(["/C", "exit", "0"])

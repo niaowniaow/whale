@@ -141,13 +141,6 @@ pub struct TranspositionTable {
     pub generation: AtomicU8,
 }
 
-// SAFETY: `TranspositionTable` is shared across Lazy SMP search threads via
-// `Arc<TranspositionTable>`. Following Stockfish (tt.cpp) and Reckless
-// (transposition.rs), all entry access is lock-free with benign races:
-// key/data are separate atomics, so a torn read can at worst return a stale
-// but well-formed entry (same pack/unpack as a locked read). `clusters` is
-// never resized while shared — `resize` takes `&mut self`. `prefetch` is a
-// side-effect-free CPU hint.
 unsafe impl Send for TranspositionTable {}
 unsafe impl Sync for TranspositionTable {}
 
@@ -210,11 +203,9 @@ impl TranspositionTable {
         self.capacity
     }
 
-    /// Permille (0..1000) of occupied slots, Stockfish `hashfull` concept.
-    /// Lock-free best-effort read; torn entries simply count or not.
     pub fn hashfull(&self) -> u32 {
         let mut used = 0u64;
-        // Sample up to 1024 clusters to bound cost on huge tables.
+
         let step = (self.cluster_count / 1024).max(1);
         let mut sampled = 0u64;
         let mut i = 0;
@@ -248,11 +239,6 @@ impl TranspositionTable {
     pub fn prefetch(&self, hash: u64) {
         #[cfg(target_arch = "x86_64")]
         {
-            // SAFETY: `index` is masked to `cluster_count - 1` (a power-of-two),
-            // so it is always in bounds of `self.clusters`. The resulting pointer
-            // targets a valid, allocated `Cluster`. `_mm_prefetch` with `_MM_HINT_T0`
-            // is a no-op hint to the CPU cache hierarchy and never traps, even if
-            // the address were invalid (it would simply be ignored).
             unsafe {
                 use core::arch::x86_64::{_MM_HINT_T0, _mm_prefetch};
                 let index = (hash as usize) & (self.cluster_count - 1);
@@ -396,11 +382,6 @@ impl TranspositionTable {
         target.key.store(hash, Ordering::Release);
     }
 
-    // FIX MATE-DOWNGRADE-50: mirror Reckless transposition.rs:315-351.
-    // Write path only folds ply into decisive scores; read path additionally
-    // downgrades mate/TB scores that the 50-move rule may invalidate.
-    // Thresholds are derived from our own MAX_CENTIPAWN_EVAL/MAX_PLY so they
-    // stay consistent with syzygy::TB_WIN.
     const fn mate_score() -> i32 {
         MAX_CENTIPAWN_EVAL as i32
     }
@@ -440,11 +421,10 @@ impl TranspositionTable {
             return score;
         }
         if Self::is_win_score(s) {
-            // Downgrade a potentially false mate score.
             if s >= Self::mate_in_max() && Self::mate_score() - s > 100 - hm {
                 return (Self::tb_win_in_max() - 1) as i16;
             }
-            // Downgrade a potentially false TB score.
+
             if Self::tb_win() - s > 100 - hm {
                 return (Self::tb_win_in_max() - 1) as i16;
             }
@@ -478,9 +458,6 @@ mod tests {
 
     #[test]
     fn test_tt_concurrent_colliding_entries() {
-        // Lock-free semantics (Stockfish/Reckless): under contention an entry
-        // may belong to a colliding hash, but its packed data must always be
-        // internally consistent (score/depth/type come from one atomic pack).
         let tt = TranspositionTable::new(1024);
         std::thread::scope(|scope| {
             for worker in 0..8u64 {
@@ -556,11 +533,9 @@ mod tests {
 
     #[test]
     fn test_tt_mate_downgrade_near_fifty() {
-        // Mate score that the 50-move rule may invalidate must downgrade.
         let mate_score = MAX_CENTIPAWN_EVAL - 5;
         let stored = TranspositionTable::adjust_score(mate_score, 0, 0);
-        // halfmove=95: MATE - score(5) <= 100-95(5)? 5 > 5 false, no downgrade at boundary;
-        // halfmove=96: 5 > 4 true -> downgrade.
+
         let ok = TranspositionTable::retrieve_score(stored, 0, 0);
         assert_eq!(ok, mate_score);
         let downgraded = TranspositionTable::retrieve_score(stored, 0, 96);
@@ -824,14 +799,13 @@ mod tests {
 
     #[test]
     fn test_tt_adjust_score_loss_and_normal() {
-        // Loss path subtracts ply.
         let loss = -(MAX_CENTIPAWN_EVAL - 5);
         assert_eq!(TranspositionTable::adjust_score(loss, 10, 0), loss - 10);
-        // Normal scores pass through untouched.
+
         assert_eq!(TranspositionTable::adjust_score(100, 10, 0), 100);
         assert_eq!(TranspositionTable::adjust_score(-100, 10, 0), -100);
         assert_eq!(TranspositionTable::adjust_score(0, 10, 0), 0);
-        // Just below the win threshold stays normal.
+
         assert_eq!(TranspositionTable::adjust_score(30861, 10, 0), 30861);
         assert_eq!(TranspositionTable::adjust_score(-30861, 10, 0), -30861);
     }
@@ -854,8 +828,6 @@ mod tests {
 
     #[test]
     fn test_tt_retrieve_score_tb_win_downgrade() {
-        // 30870 is a TB win (>= 30862) but below mate-in-max (30936),
-        // so only the TB-downgrade branch can fire at high halfmove.
         let tb = 30870_i16;
         assert_eq!(TranspositionTable::retrieve_score(tb, 0, 0), tb);
         let downgraded = TranspositionTable::retrieve_score(tb, 0, 96);
@@ -906,8 +878,7 @@ mod tests {
     #[test]
     fn test_tt_submit_evicts_lowest_depth_in_full_cluster() {
         let tt = TranspositionTable::new(1024);
-        // Stride is a multiple of any small power-of-two cluster count,
-        // so all five hashes land in the same cluster.
+
         const STRIDE: u64 = 4096;
         let moves = [
             Move::new(Square::A2, Square::A3, MoveType::Quiet),
@@ -928,7 +899,7 @@ mod tests {
             let entry = tt.probe((i as u64 + 1) * STRIDE).unwrap();
             assert_eq!(entry.best_move, *m);
         }
-        // Fifth colliding entry with highest depth evicts the depth-1 entry.
+
         let newcomer = Move::new(Square::E2, Square::E3, MoveType::Quiet);
         tt.submit_entry(5 * STRIDE, 999, 10, newcomer, TranspositionEntryType::Exact);
         assert_eq!(tt.probe(5 * STRIDE).unwrap().best_move, newcomer);
@@ -941,7 +912,7 @@ mod tests {
         let tt = TranspositionTable::new(1024);
         assert_eq!(tt.hashfull(), 0);
         let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
-        // One entry in 2048 slots is 0 permille; fill enough to register.
+
         for i in 0..600u64 {
             tt.submit_entry(424243 + i * 7919, 100, 5, m, TranspositionEntryType::Exact);
         }

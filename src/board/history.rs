@@ -47,9 +47,7 @@ pub struct History {
     pub dirty_updates: Box<[DirtyUpdate]>,
     pub computed: Box<[bool]>,
     pub index: usize,
-    /// Plies since the last null move (cf. Stockfish `pliesFromNull`).
-    /// Repetition windows must stop at a null move, so callers use
-    /// `min(half_move_clock, plies_from_null)` as the lookback distance.
+
     pub plies_from_null: usize,
     plies_from_null_stack: Box<[usize]>,
 }
@@ -261,9 +259,9 @@ mod tests {
         let mut history = History::new();
         history.save(Piece::None, Square::NoSquare, Castle::NONE, 0xABC, 0);
         assert!(!history.has_hash_appeared_twice(0xABC, 0));
-        // Empty range: start == len.
+
         assert!(!history.has_hash_appeared_twice(0xABC, 1));
-        // Start beyond len is an empty range, not a panic.
+
         assert!(!history.has_hash_appeared_twice(0xABC, 99));
     }
 

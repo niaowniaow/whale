@@ -37,8 +37,7 @@ The search engine uses a multi-threaded Principal Variation Search (PVS) with it
 
   * **Adversarial Learned Pruner (ALP):** Predicts safe pruning chances based on various factors.
   * **GNN Tree Pruner (GTP):** Uses a graph neural network to prune less important branches.
-  * **Sibling Cutoff Rate Pruning (SCR):** Prunes quiet moves based on real-time ratios.
-  * **Positional Momentum Tracking (PMT):** Adjusts evaluations based on recent moves.
+  * **Eval Momentum (Δ static eval over 2 plies):** Feeds RFP/NMP/LMR margins; late-move LMR reduction also keys on sibling-cutoff rate at all-nodes.
   * **Reverse Futility Pruning (RFP)** & **ProbCut:** Dynamically adjusts margins.
   * **Null Move Pruning (NMP):** Verifies searches with adaptive reductions.
 
@@ -55,8 +54,22 @@ The search engine uses a multi-threaded Principal Variation Search (PVS) with it
   * **Runtime Annealing Search (RAS):** Dynamically adjusts search parameters.
   * **Speculative Move Pre-computation (SMP):** Prepares responses to expected opponent moves.
   * **Per-Node Threat Snapshot:** Checkers, pinners, lesser-piece threat maps and check squares are computed once per node and shared by legality tests, DCN evaluation, quiet-move scoring, TCE and LQT.
-  * **Transposition Table:** Two-tiered design for efficient storage.
-  * **Multi-Level History:** Tracks various move histories.
+* **Transposition Table:** Two-tiered design for efficient storage.
+* **Multi-Level History:** Tracks various move histories.
+
+### 2b. Adaptive Pressure Layer (S1–S8)
+
+Behavioral policy on top of search — TT-safe (shapes pruning/ordering/
+extension/time only, never leaf eval), one UCI toggle per subsystem:
+
+* **S1 State & Phase Controller** (`position_state.rs`): DEFEND → … → CONVERT classification at the root + `info string aprm state=…`.
+* **S2 Counterplay Model** (`counterplay.rs`): node-local CPI from the per-node threat snapshot; widens RFP margin when the side to move has resources.
+* **S3 Risk Envelope & Must-Try Gate** (`risk.rs`): gain + urgency + risk + counterplay gate; passed gates buy +25% root time.
+* **S4 Concession Tracker** (`concession.rs`): eval-swing detection + Temporary → Permanent ladder.
+* **S5 Pressure Planner** (`pressure.rs`): pressure trajectory + ΔCPI/ΔRisk efficiency.
+* **S6 Attack & Conversion** (`attack.rs`, `conversion.rs`): urgency → verification budget; tunable convert/crush thresholds.
+* **S8 Verification** (`multipv.rs`, `metrics.rs`, `tests/aprm.rs`, `tests/aprm_suite.rs`): UCI `MultiPV` (1–8) root lines with candidate classes + `info string aprm` diagnostics (CPI, freedom, plans, momentum, pressure, concession, musttry, convert, reset, simplify, verified) + 6-category Style Suite + Ultimate 12-step chain. Metric mapping in `docs/adaptive-pressure-metrics.md`.
+* **Threshold tuning:** `MustTryGain`, `MustTryRisk`, `ConvertScore`, `CrushScore`, `DefendCPI` are UCI spins wired into `tools/spsa_tuner.py` (spec §24: tune, don't hard-code).
 
 ### 3. NNUE Evaluation
 
@@ -182,21 +195,64 @@ cargo run --release -- --generate-magics
 | `SPS_Enabled`   | check  |     true     | Speculative persona search (helper threads).           |
 | `DAD_Enabled`           | check  |     true     | Disagreement-allocated depth time factor.              |
 | `Extension_Cap_Enabled` | check  |     true     | Consecutive extension cap (prevents tactical dive).    |
+| `MultiPV`               |  spin  |       1      | Ranked root lines 1–8 (spec §28 behavioral verification). |
+| `CPI_Enabled`           | check  |     true     | S2 counterplay model (CPI → RFP margin).               |
+| `State_Enabled`         | check  |     true     | S1 state controller (root shaping + diagnostics).      |
+| `Risk_Enabled`          | check  |     true     | S3 risk envelope + must-try time gate.                 |
+| `Pressure_Enabled`      | check  |     true     | S5 pressure trajectory tracking.                       |
+| `Attack_Enabled`        | check  |     true     | S6a attack urgency budgets.                            |
+| `Conversion_Enabled`    | check  |     true     | S6b conversion signal in diagnostics.                  |
+| `MustTryGain`  |  spin  |      30      | Min gain (cp) for must-try gate (10–100, SPSA).        |
+| `MustTryRisk`  |  spin  |      120     | Max risk units for must-try gate (40–250, SPSA).       |
+| `ConvertScore` |  spin  |      250     | Score (cp) to prefer simplification (100–600, SPSA).   |
+| `CrushScore`   |  spin  |      600     | Score (cp) for forced conversion (300–1200, SPSA).     |
+| `DefendCPI`    |  spin  |      120     | Opp CPI triggering defend state (40–250, SPSA).        |
 | `DualNet`               | check  |     true     | Dual-Net optimistic evaluation gating.                 |
 | `Clear Hash`            | button |       -      | Clears all entries in the Transposition Table.         |
 
 ---
 
+### 2b. Whale Adaptive Architecture (§61 Domain Modules)
+
+Whale structures its behavioral playing policy into clean, decoupled domain crates:
+
+* **`perception`** ([`src/perception/`](file:///C:/Users/newo/Downloads/whale/src/perception/mod.rs)): Strategic snapshot, pawn islands, passed/isolated/backward pawns, open files, king shelter.
+* **`world`** ([`src/world/`](file:///C:/Users/newo/Downloads/whale/src/world/mod.rs)): 7-state behavioral machine (`Defend`, `Stabilize`, `Improve`, `Press`, `Attack`, `Crush`, `Convert`), hysteresis, volatility levels, CPI calculations, and pressure trajectories.
+* **`opponent`** ([`src/opponent/`](file:///C:/Users/newo/Downloads/whale/src/opponent/mod.rs)): Opponent modeling, defense/escape capacity, and proactive break detection (`plans.rs`).
+* **`opportunity`** ([`src/opportunity/`](file:///C:/Users/newo/Downloads/whale/src/opportunity/mod.rs)): Weakness classification across 4 persistence levels (`Temporary`, `Latent`, `Structural`, `Permanent`).
+* **`risk`** ([`src/risk/`](file:///C:/Users/newo/Downloads/whale/src/risk/mod.rs)): Risk envelope and Must-Try tactical gate.
+* **`endgame`** ([`src/endgame/`](file:///C:/Users/newo/Downloads/whale/src/endgame/mod.rs)): Simplification incentives and anti-fortress conversion gates.
+* **`root`** ([`src/root/`](file:///C:/Users/newo/Downloads/whale/src/root/mod.rs)): Multi-PV candidate classification, root attack commitment verification, and 16-metric search telemetry.
+
+---
+
+## 🚀 Cloud & Kaggle CPU Pipeline
+
+A ready-to-run Jupyter notebook is provided in [`notebooks/whale_kaggle_pipeline.ipynb`](file:///C:/Users/newo/Downloads/whale/notebooks/whale_kaggle_pipeline.ipynb) for running on free Kaggle Linux CPU instances (4 vCPUs):
+* Auto-installs Rust toolchain & Linux build tools.
+* Builds Whale in Release mode.
+* Performs SPSA parameter tuning with matplotlib convergence graphs.
+* Runs fastchess SPRT match validation.
+* Analyzes 16 Core Behavioral Metrics (MTR, PCR, CRI, RSI, ODI).
+* Demos Multi-Head NNUE PyTorch training on CPU.
+
+---
+
 ## Testing
 
-To run the full verification suite — 675 unit tests (bitboards, movegen, board
-state, eval, search, UCI) plus the perft, search and equivalence integration
-suites (`eval_equiv`, `tce_equiv`), i.e. 711 tests total (5 long-running search
-cases are `#[ignore]`d):
+To run the full verification suite — 700+ unit tests plus the APRM behavioral, transition, and EPD benchmark suites:
 
 ```bash
-cargo test --release
+# Run unit & regression tests
+cargo test --release --test aprm
+
+# Run 12-step state transition chain & style categories
+cargo test --release --test aprm_suite
+
+# Run 6-category position benchmark suite (Defensive, Quiet, Opportunity, MustTry, Pressure, Conversion)
+cargo test --release --test epd_suite
 ```
+
 
 ---
 

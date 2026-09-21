@@ -1,11 +1,19 @@
 pub mod bitboard;
 pub mod board;
 pub mod common;
+pub mod endgame;
 pub mod eval;
+pub mod opponent;
+pub mod opportunity;
+pub mod perception;
+pub mod risk;
+pub mod root;
 pub mod search;
 pub mod syzygy;
 pub mod teacher;
 pub mod uci;
+pub mod world;
+
 
 #[cfg(feature = "train")]
 pub mod datagen;
@@ -61,9 +69,6 @@ mod tests {
         super::init();
     }
 
-    /// Child entry point for subprocess tests below: the parent spawns the
-    /// current test binary filtered to this test with WHALE_EXIT_PROBE set.
-    /// Without the env var it is a no-op so normal runs are unaffected.
     #[test]
     fn exit_probe_child() {
         match std::env::var("WHALE_EXIT_PROBE").as_deref() {
@@ -110,8 +115,6 @@ mod tests {
         )
     }
 
-    // Without the `train` feature these stubs print an error and exit(1).
-    // (With it they would start real long-running work, so don't run there.)
     #[cfg(not(feature = "train"))]
     #[test]
     fn exit_stubs_terminate_with_error() {
@@ -131,7 +134,6 @@ mod tests {
 
     #[test]
     fn cli_run_eof_breaks_loop() {
-        // No `exit` command: closing stdin ends the loop via Ok(0).
         let (status, out, _) = probe_with_mode("cli_run", Some(b"info\n"));
         assert!(status.success());
         assert!(out.contains("Whale v"));
@@ -139,14 +141,10 @@ mod tests {
 
     #[test]
     fn cli_run_dispatches_uci_and_quit() {
-        // NOTE: stdout content is not asserted here: `quit` ends the child
-        // via process::exit(0), which drops the block-buffered pipe buffer
-        // (and with it the "uciok" line). Exit code proves the dispatch ran.
         let (status, _, _) = probe_with_mode("cli_run", Some(b"uci\nquit\n"));
         assert!(status.success());
     }
 
-    // Valid datagen args reach the no-train stub, which exits(1).
     #[cfg(not(feature = "train"))]
     #[test]
     fn cli_run_valid_datagen_reaches_stub() {

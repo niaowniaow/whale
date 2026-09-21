@@ -10,11 +10,6 @@ use std::time::Instant;
 
 impl UciClient {
     pub(crate) fn run_go(&mut self, parameters: &[&str]) {
-        // A new `go` while a search is running would spawn a second parallel
-        // search on the same state; ignore it loudly instead (Reckless
-        // uci.rs:137-143: unexpected commands are dropped while running).
-        // The search thread holds the search_state lock for its whole run, so
-        // try_lock failure is a reliable busy signal.
         if self.search_state.try_lock().is_err() {
             cli::write_line("info string busy");
             return;
@@ -34,9 +29,6 @@ impl UciClient {
             state.ponder_move = Move::NO_MOVE;
         }
 
-        // Search start time: the outer timer measures its deadline from here
-        // so ponder thinking time is not double-counted (Stockfish
-        // search.cpp:2129 startTime).
         let start_time = Instant::now();
 
         let is_ponder = parameters.contains(&"ponder");
@@ -45,7 +37,7 @@ impl UciClient {
         let has_depth = parameters.contains(&"depth");
         let depth = get_parameter("depth", parameters, 8)
             .clamp(1, constants::MAX_SEARCH_DEPTH as i32) as u8;
-        // Unsigned per UCI spec; unparseable tokens are ignored (keep default).
+
         let wtime = get_u64("wtime", parameters);
         let btime = get_u64("btime", parameters);
         let winc = get_u64("winc", parameters).unwrap_or(0);
@@ -57,13 +49,6 @@ impl UciClient {
         let infinite = parameters.contains(&"infinite");
         let ponder_option = self.ponder_enabled;
 
-        // `searchmoves` must be the last token group on the line (SF uci.cpp).
-        // Parsed moves resolve against the generated list by squares
-        // (Stockfish UCI::to_move): a bare `e2e4` parses as Quiet but must
-        // match the generated DoublePush, otherwise the root filter would
-        // silently drop every move. Exact-type matches win so `e7e8q` keeps
-        // only the queen promotion. Unparseable/illegal entries are skipped;
-        // an empty/wholly-invalid list means all.
         let searchmoves: Vec<Move> = parameters
             .iter()
             .position(|&t| t == "searchmoves")
@@ -110,7 +95,6 @@ impl UciClient {
             board.move_count
         };
 
-        // Wire go limits into the shared SearchState fields (0/empty = off).
         {
             let mut guard = self.search_state.lock().unwrap();
             guard.max_nodes = nodes;
@@ -118,9 +102,6 @@ impl UciClient {
             guard.searchmoves = searchmoves;
         }
 
-        // SINGLE time calculation with the real overhead/ply/opponent clock
-        // (previously computed twice with dummy values, then recomputed).
-        // movetime: opt = max = movetime - overhead, floored at 1ms.
         let (mut opt_ms, mut max_ms): (i64, u64) = match (movetime, clock_opt) {
             (Some(mt), _) => {
                 let t = (mt as i64 - self.move_overhead as i64).max(1);
@@ -151,10 +132,6 @@ impl UciClient {
             opt_ms = opt_ms.min(self.max_move_time as i64);
         }
 
-        // While pondering, the inner search runs unbounded (opt/max = -1, like
-        // Stockfish search.cpp:2137-2139 which never stops a ponder search);
-        // the outer timer below enforces the real deadline from start_time
-        // once `ponderhit` arrives.
         let (inner_opt, inner_max): (i32, i32) = if is_ponder || max_ms == u64::MAX {
             (-1, -1)
         } else {
@@ -168,15 +145,13 @@ impl UciClient {
             let cancel_for_timer = Arc::clone(&cancel_token);
             let is_pondering_timer = Arc::clone(&self.is_pondering);
             thread::spawn(move || {
-                // Wait out the ponder phase without consuming the budget...
                 while is_pondering_timer.load(Ordering::Relaxed) {
                     if cancel_for_timer.load(Ordering::Relaxed) {
                         return;
                     }
                     thread::sleep(std::time::Duration::from_millis(5));
                 }
-                // ...then stop at start_time + max (ponder time already spent
-                // is subtracted instead of sleeping a full max afterwards).
+
                 let elapsed_ms = start_time.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
                 if max_ms > elapsed_ms {
                     thread::sleep(std::time::Duration::from_millis(max_ms - elapsed_ms));
@@ -257,9 +232,6 @@ mod tests {
     use super::*;
     use std::time::{Duration, Instant};
 
-    // The go tests below share the global SEARCH_STATE (reset on every
-    // run_go, set on every search completion), so they must not run
-    // concurrently or they reset/observe each other's state.
     static GO_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn wait_for_best_move(timeout: Duration) -> bool {
@@ -298,8 +270,7 @@ mod tests {
 
         let _serial = GO_TEST_LOCK.lock().unwrap();
         let mut client = UciClient::new();
-        // `e2e4` parses as Quiet but must resolve to the generated
-        // DoublePush; `xxxx` is unparseable and `e7e5` is not a white move.
+
         client.run_go(&["depth", "1", "searchmoves", "e2e4", "xxxx", "e7e5"]);
         {
             let guard = client.search_state.lock().unwrap();

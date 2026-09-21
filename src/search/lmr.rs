@@ -61,10 +61,9 @@ pub struct LmrQuery {
     pub momentum: i16,
     pub found_pv: bool,
     pub structural_disagreement: i16,
-    /// Expected fail-high node (Stockfish cut-node concept, clean-room).
+
     pub cut_node: bool,
-    /// PV-ish position (TT hit on PV path). Whale has no TT pv-flag yet,
-    /// so callers pass `is_pv_node` as a conservative proxy.
+
     pub tt_pv: bool,
 }
 
@@ -91,8 +90,7 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
     if query.is_pv_node {
         reduction = reduction.saturating_sub(1);
     }
-    // Whale's own small cut-node / tt-pv tweak (Stockfish concept, own numbers):
-    // PV-ish lines reduce less, expected cut-nodes reduce more.
+
     if query.tt_pv {
         reduction = reduction.saturating_sub(1);
     }

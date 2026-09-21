@@ -87,9 +87,6 @@ impl BoardState {
                 );
             }
             _ => {
-                // Unusual shapes (promotion captures, null moves, ...): full
-                // refresh of both accumulators instead of panicking (or
-                // silently replaying nothing, as the lazy apply_dirty path does).
                 self.refresh_accumulator(Side::White, network);
                 self.refresh_accumulator(Side::Black, network);
             }
@@ -258,29 +255,23 @@ mod tests {
     fn flush_each_pending_shape_marks_computed() {
         use Square::*;
 
-        // (0, 0): nothing queued.
         let board = flush_shape(&[], &[]);
         assert!(board.history.computed[0]);
 
-        // (1, 0): single add.
         let board = flush_shape(&[E4], &[]);
         assert!(board.history.computed[0]);
         assert_eq!(board.pending_adds, 0);
 
-        // (1, 1): add plus capture-style remove.
         let board = flush_shape(&[E4], &[D2]);
         assert!(board.history.computed[0]);
         assert_eq!((board.pending_adds, board.pending_removes), (0, 0));
 
-        // (1, 2): en-passant shape.
         let board = flush_shape(&[E4], &[D2, E2]);
         assert!(board.history.computed[0]);
 
-        // (2, 2): castling shape.
         let board = flush_shape(&[E4, E5], &[D2, E2]);
         assert!(board.history.computed[0]);
 
-        // Fallback shapes refresh instead of replaying.
         let board = flush_shape(&[], &[D2]);
         assert!(board.history.computed[0]);
         let board = flush_shape(&[E4, E5], &[D2]);
@@ -297,7 +288,6 @@ mod tests {
         board.ensure_accumulators_fresh();
         assert!(board.history.computed[1]);
 
-        // Fresh board: index 0 arrives computed, so ensure is a no-op.
         let mut clean = startpos();
         assert!(clean.history.computed[clean.history.index]);
         clean.ensure_accumulators_fresh();
@@ -308,7 +298,6 @@ mod tests {
     fn ensure_replays_each_dirty_shape() {
         use Square::*;
 
-        // (adds, removes) shapes replayed through index 1.
         let shapes: &[(&[Square], &[Square])] = &[
             (&[], &[]),
             (&[E4], &[]),

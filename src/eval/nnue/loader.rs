@@ -20,13 +20,6 @@ pub struct Network {
     pub output_bias: i16,
 }
 
-// SAFETY: `Network` is `#[repr(C, align(64))]` composed entirely of `i16` arrays (for which
-// every bit pattern is valid). `build.rs` guarantees `nnue.bin` is exactly
-// `size_of::<Network>()` bytes. The `include_bytes!` macro produces a `&[u8; N]` with
-// static lifetime whose alignment is at least 1; `*include_bytes!(...)` copies the array
-// into a value context, and `transmute` reinterprets those bytes as `Network`. The 64-byte
-// alignment requirement is satisfied because `EMBEDDED_NETWORK` is a `static` — the linker
-// places it at an address satisfying `align_of::<Network>()`.
 static EMBEDDED_NETWORK: Network =
     unsafe { std::mem::transmute(*include_bytes!("../../../resources/nnue.bin")) };
 
@@ -54,10 +47,7 @@ impl Network {
         const FNV_PRIME: u64 = 1099511628211;
 
         let mut hash = FNV_OFFSET;
-        // SAFETY: `ptr` originates from `&Self` cast to `*const u8`, and `len` is
-        // `size_of_val(self)`, so the byte range `[ptr, ptr + len)` lies entirely
-        // within the allocated object. The `Network` struct is `repr(C)` with no
-        // padding bytes that could be uninitialized (all fields are `i16` arrays).
+
         let bytes = unsafe { std::slice::from_raw_parts(ptr, len) };
         for &byte in bytes {
             hash ^= u64::from(byte);
@@ -67,12 +57,6 @@ impl Network {
     }
 
     pub fn new_boxed() -> Box<Self> {
-        // SAFETY: `Layout::new::<Self>()` produces a valid layout for `Network`.
-        // `alloc_zeroed` returns a pointer aligned to `align_of::<Network>()` (64)
-        // with `size_of::<Network>()` zero-initialized bytes, or null on failure
-        // (handled by the null check + `handle_alloc_error`). All-zero bytes form
-        // valid `i16` values (0). `Box::from_raw` takes ownership; the pointer
-        // was allocated with the Global allocator, matching `Box`'s deallocation.
         unsafe {
             let layout = Layout::new::<Self>();
             let ptr = alloc_zeroed(layout) as *mut Self;
@@ -108,10 +92,7 @@ impl Network {
         use std::slice::from_raw_parts;
 
         let mut file = File::create(path)?;
-        // SAFETY: `self` is a valid reference, so `self as *const Self as *const u8`
-        // points to `size_of::<Self>()` readable bytes. `Network` is `repr(C)` with
-        // no padding (only contiguous `i16` arrays), so the byte representation is
-        // fully initialized and safe to read.
+
         let bytes = unsafe {
             from_raw_parts(
                 self as *const Self as *const u8,

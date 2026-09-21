@@ -52,7 +52,6 @@ macro_rules! perft_test_case {
     };
 }
 
-// Starting Position tests
 perft_test_case!(perft_starting_d0, STARTING_FEN, 0, 1);
 perft_test_case!(perft_starting_d1, STARTING_FEN, 1, 20);
 perft_test_case!(perft_starting_d2, STARTING_FEN, 2, 400);
@@ -61,14 +60,12 @@ perft_test_case!(perft_starting_d4, STARTING_FEN, 4, 197_281);
 perft_test_case!(perft_starting_d5, STARTING_FEN, 5, 4_865_609);
 perft_test_case!(perft_starting_d6, STARTING_FEN, 6, 119_060_324);
 
-// Kiwi Pete tests
 perft_test_case!(perft_kiwi_pete_d1, KIWI_PETE_FEN, 1, 48);
 perft_test_case!(perft_kiwi_pete_d2, KIWI_PETE_FEN, 2, 2_039);
 perft_test_case!(perft_kiwi_pete_d3, KIWI_PETE_FEN, 3, 97_862);
 perft_test_case!(perft_kiwi_pete_d4, KIWI_PETE_FEN, 4, 4_085_603);
 perft_test_case!(perft_kiwi_pete_d5, KIWI_PETE_FEN, 5, 193_690_690);
 
-// Endgame tests
 perft_test_case!(perft_endgame_d1, ENDGAME_FEN, 1, 14);
 perft_test_case!(perft_endgame_d2, ENDGAME_FEN, 2, 191);
 perft_test_case!(perft_endgame_d3, ENDGAME_FEN, 3, 2_812);

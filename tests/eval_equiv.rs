@@ -18,7 +18,7 @@ fn cached_eval_matches_fresh_everywhere() {
     ];
     for fen in fens {
         let mut board = BoardState::parse_fen(fen);
-        // Also exercise positions one move deep.
+
         let mut suite: Vec<BoardState> = vec![board.clone()];
         let mut ml = MoveList::new();
         board.generate_moves(&mut ml);

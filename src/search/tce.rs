@@ -282,7 +282,6 @@ mod tests {
 
     #[test]
     fn extract_covers_check_capture_and_pawn_push() {
-        // Pawn-advance follows the raw target-rank rule (white target rank >= 6).
         let board = BoardState::parse_fen("4k3/8/8/8/8/4P3/8/4K3 w - - 0 1");
         let back = Move::new(Square::E3, Square::E2, MoveType::Quiet);
         let f = extract_threat_features(&board, &snapshot(&board), back, 6, false, None);

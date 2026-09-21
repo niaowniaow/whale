@@ -179,7 +179,6 @@ fn models_family_search_integration() {
         assert!(res.is_ok(), "Failed to activate {model_name}: {:?}", res);
         assert_eq!(whale::eval::nnue::v16::active_model_name(), model_name);
 
-        // Run search with the loaded model on tactical position
         assert_tactic_best_move("6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1", "e1e8");
     }
     let _ = whale::eval::nnue::v16::set_eval_file("Model", "embedded");

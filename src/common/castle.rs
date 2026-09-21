@@ -99,7 +99,7 @@ mod tests {
         assert!(all.contains(Castle::WHITE_LONG));
         assert!(all.contains(Castle::BLACK_SHORT));
         assert!(all.contains(Castle::BLACK_LONG));
-        // Retains unknown bits verbatim.
+
         assert_eq!(Castle::from_bits_retain(0b1111_0000).bits(), 0b1111_0000);
     }
 
@@ -110,7 +110,7 @@ mod tests {
         assert!(combined.contains(Castle::WHITE_SHORT));
         assert!(combined.contains(Castle::WHITE_LONG));
         assert!(!combined.contains(Castle::BLACK_SHORT));
-        // Originals unchanged (Copy semantics).
+
         assert_eq!(Castle::WHITE_SHORT.bits(), 1);
     }
 
@@ -137,7 +137,7 @@ mod tests {
     fn test_castle_default_is_none_and_contains_none() {
         assert_eq!(Castle::default(), Castle::NONE);
         assert_eq!(Castle::default().bits(), 0);
-        // `contains(NONE)` is vacuously true for any value.
+
         assert!(Castle::NONE.contains(Castle::NONE));
         assert!(Castle::WHITE_SHORT.contains(Castle::NONE));
     }
@@ -149,7 +149,7 @@ mod tests {
         assert_eq!(castle, Castle::WHITE_SHORT);
         castle.remove(Castle::WHITE_SHORT | Castle::WHITE_LONG);
         assert_eq!(castle, Castle::NONE);
-        // Removing from empty stays empty.
+
         castle.remove(Castle::BLACK_LONG);
         assert_eq!(castle, Castle::NONE);
     }

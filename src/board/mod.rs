@@ -4,5 +4,7 @@ pub mod make_move;
 pub mod movegen;
 pub mod nnue;
 pub mod node_threats;
+pub use crate::opponent::plans;
 pub mod see;
 pub mod state;
+pub use crate::perception::strategic;

@@ -28,15 +28,6 @@ impl Piece {
 }
 
 impl BoardState {
-    /// Exact boolean SEE (Reckless `see(bool)` concept, Whale's own proof):
-    /// returns exactly `self.see(mv) >= threshold`, but short-circuits when
-    /// the worst case is already decided. Proof: the swap loop backs up with
-    /// `gain[i-1] -= max(0, gain[i])`, so the final result is always
-    /// `>= gain[0] - gain[1]`, where `gain[1]` is the enemy recapture value.
-    /// The enemy recapture promotes (at most +800) only when the target
-    /// square lies on their promotion rank, so excluding that rare case,
-    /// `gain[0] - attacker_value` is a strict floor. If the floor already
-    /// clears `threshold`, the full loop cannot change the verdict.
     pub fn see_ge(&self, mv: Move, threshold: i16) -> bool {
         let captured = self.get_initial_captured_piece(mv);
         let mut initial = captured.see_value() as i32;
@@ -47,14 +38,11 @@ impl BoardState {
         } else {
             let piece = self.piece_mapping[mv.source as usize];
             if piece == Piece::None {
-                // No piece to move (only possible for pseudo-moves): the
-                // floor argument does not apply, run the full algorithm.
                 return self.see(mv) >= threshold;
             }
             piece.see_value() as i32
         };
-        // Enemy promotion by recapture needs the target on their back
-        // rank (index 0 for Black, 7 for White).
+
         let target_rank = mv.target as usize / 8;
         let enemy_promo_rank = if self.side_to_move == Side::White {
             target_rank == 0
@@ -67,7 +55,6 @@ impl BoardState {
         self.see(mv) >= threshold
     }
 
-    // impl - https://www.chessprogramming.org/SEE_-_The_Swap_Algorithm
     pub fn see(&self, mv: Move) -> i16 {
         let (source, target) = (mv.source, mv.target);
         let mut occupancy = self.occupancy();
@@ -79,7 +66,6 @@ impl BoardState {
 
         let mut attackers = self.get_all_attackers(target, occupancy);
 
-        // First Capture
         occupancy.clear_bit(source as usize);
         attackers.clear_bit(source as usize);
 
@@ -232,7 +218,7 @@ mod tests {
         let mv = Move::new(Square::D2, Square::D4, MoveType::Capture);
 
         let score = board.see(mv);
-        assert_eq!(score, 900); // White gains Black Queen
+        assert_eq!(score, 900);
     }
 
     #[test]
@@ -241,7 +227,7 @@ mod tests {
         let mv = Move::new(Square::D2, Square::D4, MoveType::Capture);
 
         let score = board.see(mv);
-        assert_eq!(score, 400); // 900 (Queen) - 500 (Rook) = 400
+        assert_eq!(score, 400);
     }
 
     #[test]
@@ -250,7 +236,7 @@ mod tests {
         let mv = Move::new(Square::C3, Square::D5, MoveType::Capture);
 
         let score = board.see(mv);
-        assert_eq!(score, 0); // 300 (Bishop) - 300 (Knight) = 0
+        assert_eq!(score, 0);
     }
 
     #[test]
@@ -259,7 +245,7 @@ mod tests {
         let mv = Move::new(Square::D2, Square::D4, MoveType::Capture);
 
         let score = board.see(mv);
-        assert_eq!(score, 900); // White Rook on d1 defends, White ends up ahead by Queen
+        assert_eq!(score, 900);
     }
 
     #[test]
@@ -268,7 +254,7 @@ mod tests {
         let mv = Move::new(Square::D2, Square::D4, MoveType::Capture);
 
         let score = board.see(mv);
-        assert_eq!(score, -400); // 100 (Pawn) - 500 (Rook) = -400
+        assert_eq!(score, -400);
     }
 
     #[test]
@@ -276,16 +262,16 @@ mod tests {
         let board = BoardState::parse_fen("rr6/P7/k7/8/8/8/8/K7 w - - 0 1");
 
         let mv_queen = Move::new(Square::A7, Square::B8, MoveType::QueenPromotionCapture);
-        assert_eq!(board.see(mv_queen), 400); // 500 (Rook) + (900 - 100) (Queen promo) - 900 (recapture) = 400
+        assert_eq!(board.see(mv_queen), 400);
 
         let mv_rook = Move::new(Square::A7, Square::B8, MoveType::RookPromotionCapture);
-        assert_eq!(board.see(mv_rook), 400); // 500 (Rook) + (500 - 100) (Rook promo) - 500 (recapture) = 400
+        assert_eq!(board.see(mv_rook), 400);
 
         let mv_bishop = Move::new(Square::A7, Square::B8, MoveType::BishopPromotionCapture);
-        assert_eq!(board.see(mv_bishop), 400); // 500 (Rook) + (300 - 100) (Bishop promo) - 300 (recapture) = 400
+        assert_eq!(board.see(mv_bishop), 400);
 
         let mv_knight = Move::new(Square::A7, Square::B8, MoveType::KnightPromotionCapture);
-        assert_eq!(board.see(mv_knight), 400); // 500 (Rook) + (300 - 100) (Knight promo) - 300 (recapture) = 400
+        assert_eq!(board.see(mv_knight), 400);
     }
 
     #[test]
@@ -293,8 +279,6 @@ mod tests {
         use crate::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
         use crate::common::move_list::MoveList;
 
-        // Thresholds mirroring every production call site: qsearch -74 and
-        // futility deltas, SEE-prune gates, picker partition gates, -75.
         let thresholds: [i16; 9] = [-600, -400, -200, -100, -75, -74, -38, 0, 100];
         for fen in [
             STARTING_FEN,
@@ -344,7 +328,6 @@ mod tests {
 
     #[test]
     fn see_en_passant_captures_pawn() {
-        // Minimal position: no recapture available, so the pawn is free.
         let board = BoardState::parse_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
         assert_eq!(board.en_passant_square, Square::D6);
         let mv = Move::new(Square::E5, Square::D6, MoveType::EnPassant);
@@ -368,8 +351,6 @@ mod tests {
 
     #[test]
     fn see_white_pawn_recapture_promotes() {
-        // Black queen takes a rook; the white pawn recapture promotes.
-        // 500 (rook) - (900 (queen) + 800 (promotion)) = -1200.
         let board = BoardState::parse_fen("1R2k3/q1P5/8/8/8/8/8/4K3 b - - 0 1");
         let mv = Move::new(Square::A7, Square::B8, MoveType::Capture);
         assert_eq!(board.see(mv), -1200);
@@ -377,7 +358,6 @@ mod tests {
 
     #[test]
     fn see_black_pawn_recapture_promotes() {
-        // Mirror image on the first rank for a black pawn recapture.
         let board = BoardState::parse_fen("4k3/8/8/8/8/8/Q1p5/1r2K3 w - - 0 1");
         let mv = Move::new(Square::A2, Square::B1, MoveType::Capture);
         assert_eq!(board.see(mv), -1200);
@@ -385,8 +365,6 @@ mod tests {
 
     #[test]
     fn see_king_recapture() {
-        // Rook takes a defended pawn; only the king recaptures.
-        // 100 (pawn) - 500 (rook) = -400.
         let board = BoardState::parse_fen("4k3/4p3/8/8/8/8/4R3/4K3 w - - 0 1");
         let mv = Move::new(Square::E2, Square::E7, MoveType::Capture);
         assert_eq!(board.see(mv), -400);
@@ -394,8 +372,6 @@ mod tests {
 
     #[test]
     fn see_diagonal_xray() {
-        // Bishop version of the orthogonal x-ray test: the back bishop
-        // recaptures after both front bishops are traded.
         let board = BoardState::parse_fen("k7/8/3b4/8/3q4/8/3B4/3B3K w - - 0 1");
         let mv = Move::new(Square::D2, Square::D4, MoveType::Capture);
         assert_eq!(board.see(mv), 900);
@@ -403,8 +379,6 @@ mod tests {
 
     #[test]
     fn see_queen_recapture() {
-        // Pawn takes a knight; the queen recaptures.
-        // 300 (knight) - 100 (pawn) = 200.
         let board = BoardState::parse_fen("3qk3/8/8/3n4/4P3/8/8/4K3 w - - 0 1");
         let mv = Move::new(Square::E4, Square::D5, MoveType::Capture);
         assert_eq!(board.see(mv), 200);

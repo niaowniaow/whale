@@ -43,9 +43,6 @@ pub(crate) struct UciClient {
 
 impl UciClient {
     pub(crate) fn new() -> Self {
-        // NOTE: advertised UCI defaults (Hash 16 / Move Overhead 10 / Ponder
-        // false) mirror Stockfish engine.cpp; the transposition table is sized
-        // to match the advertised Hash default here.
         let mut search_state = crate::search::search_state::SearchState::new();
         search_state.tt = std::sync::Arc::new(crate::common::tt::TranspositionTable::new_mb(16));
         Self {
@@ -64,8 +61,6 @@ impl UciClient {
     }
 
     fn run(&mut self) {
-        // Stockfish uci.cpp:123-129 prints nothing before the `uci` command;
-        // id/options are answered only after `uci` (see write_id).
         let stdin = std::io::stdin();
         loop {
             let mut line = String::new();
@@ -85,9 +80,6 @@ impl UciClient {
             let parameters = &parts[1..];
 
             if command == "quit" {
-                // Signal any running search/precompute before exiting instead
-                // of exit(0) immediately (no join: search threads are detached;
-                // process exit reaps them).
                 self.run_stop(&[]);
                 std::process::exit(0);
             }
@@ -110,8 +102,7 @@ impl UciClient {
             "perft" => self.run_perft(parameters),
             "bench" => self.run_bench(parameters),
             "model" => self.run_model(parameters),
-            // Unexpected commands are ignored silently (stderr only) so GUI
-            // stdout parsing never breaks (Reckless uci.rs).
+
             _ => eprintln!("Unknown command {command}"),
         }
     }
@@ -164,6 +155,19 @@ impl UciClient {
         cli::write_line("option name SPS_Enabled type check default true");
         cli::write_line("option name DAD_Enabled type check default true");
         cli::write_line("option name Extension_Cap_Enabled type check default true");
+        cli::write_line("option name MultiPV type spin default 1 min 1 max 8");
+        cli::write_line("option name CPI_Enabled type check default true");
+        cli::write_line("option name State_Enabled type check default true");
+        cli::write_line("option name Risk_Enabled type check default true");
+        cli::write_line("option name Pressure_Enabled type check default true");
+        cli::write_line("option name Attack_Enabled type check default true");
+        cli::write_line("option name Conversion_Enabled type check default true");
+        cli::write_line("option name QS_Checks_Enabled type check default true");
+        cli::write_line("option name MustTryGain type spin default 30 min 10 max 100");
+        cli::write_line("option name MustTryRisk type spin default 120 min 40 max 250");
+        cli::write_line("option name ConvertScore type spin default 250 min 100 max 600");
+        cli::write_line("option name CrushScore type spin default 600 min 300 max 1200");
+        cli::write_line("option name DefendCPI type spin default 120 min 40 max 250");
         cli::write_line("option name DualNet type check default true");
 
         if let Some(path) = crate::eval::nnue::v16::try_load_default_path() {
@@ -172,9 +176,6 @@ impl UciClient {
         cli::write_line("uciok");
     }
 
-    /// Runtime `perft [depth]` debug command (Stockfish uci.cpp, Reckless
-    /// uci.rs): legal move count from the current position using the library
-    /// movegen (read-only). Defaults to depth 5.
     pub(crate) fn run_perft(&mut self, parameters: &[&str]) {
         let depth: u8 = parameters
             .first()
@@ -195,9 +196,6 @@ impl UciClient {
         ));
     }
 
-    /// Runtime `bench [hashMB] [threads] [depth]` debug command: searches a
-    /// fixed set of positions with a stable output format (Reckless
-    /// tools/bench.rs, Stockfish benchmark.cpp). Defaults: 16MB / 1 / 12.
     pub(crate) fn run_bench(&mut self, parameters: &[&str]) {
         use crate::common::helpers::BENCH_FENS;
         let hash_mb: usize = parameters
@@ -220,7 +218,7 @@ impl UciClient {
         let mut debug = false;
         let mut total_nodes: u64 = 0;
         let total_start = std::time::Instant::now();
-        // Shared TT across positions measures realistic replacement.
+
         let shared_tt = std::sync::Arc::new(crate::common::tt::TranspositionTable::new_mb(
             hash_mb.clamp(1, 2048),
         ));
@@ -272,8 +270,6 @@ impl UciClient {
     }
 }
 
-/// Recursive legal-node counter for `perft` (same make/unmake +
-/// is_in_check filter as tests/perft.rs).
 fn perft_count(board: &mut BoardState, depth: u8) -> u64 {
     if depth == 0 {
         return 1;
@@ -292,8 +288,6 @@ fn perft_count(board: &mut BoardState, depth: u8) -> u64 {
 }
 
 pub(crate) fn output_best_move(move_obj: Move, ponder_obj: Move) {
-    // Reckless uci.rs: "bestmove (none)" when there is no legal move;
-    // "0000" is reserved for null moves (Stockfish).
     if move_obj == Move::NO_MOVE {
         cli::write_line("bestmove (none)");
         return;
@@ -338,10 +332,6 @@ pub(crate) fn get_parameter(name: &str, parameters: &[&str], fallback: i32) -> i
     fallback
 }
 
-/// Parse an unsigned (`u64`) go/setoption value. A present-but-unparseable
-/// (or negative) token is ignored and `None` is returned so the caller keeps
-/// its default instead of silently falling back to a wrong value
-/// (Stockfish uci.cpp:191-236, Reckless uci.rs:390-433).
 pub(crate) fn get_u64(name: &str, parameters: &[&str]) -> Option<u64> {
     for i in 0..parameters.len() {
         if parameters[i] == name && i + 1 < parameters.len() {
@@ -422,7 +412,7 @@ mod tests {
         assert_eq!(get_u64("wtime", &[]), None);
         assert_eq!(get_u64("wtime", &["wtime"]), None);
         assert_eq!(get_u64("wtime", &["wtime", "xx"]), None);
-        // Negative tokens are not valid u64: keep the default.
+
         assert_eq!(get_u64("wtime", &["wtime", "-5"]), None);
         assert_eq!(get_u64("wtime", &["btime", "5"]), None);
         assert_eq!(get_u64("nodes", &["nodes", "0"]), Some(0));
@@ -432,7 +422,7 @@ mod tests {
     fn get_parameter_handles_negative_and_duplicates() {
         assert_eq!(get_parameter("movestogo", &["movestogo", "-1"], 0), -1);
         assert_eq!(get_parameter("depth", &["depth", "-3"], 8), -3);
-        // First occurrence wins.
+
         assert_eq!(get_parameter("depth", &["depth", "3", "depth", "9"], 8), 3);
     }
 
@@ -440,14 +430,13 @@ mod tests {
     fn output_best_move_promotion_shapes() {
         use crate::common::moves::Move;
 
-        // Promotion without ponder.
         output_best_move(Move::parse_long_algebraic("a7a8n").unwrap(), Move::NO_MOVE);
-        // Plain move with promotion ponder.
+
         output_best_move(
             Move::parse_long_algebraic("e2e4").unwrap(),
             Move::parse_long_algebraic("a7a8r").unwrap(),
         );
-        // Both sides promote.
+
         output_best_move(
             Move::parse_long_algebraic("e7e8q").unwrap(),
             Move::parse_long_algebraic("a2a1n").unwrap(),
@@ -477,7 +466,6 @@ mod tests {
     fn output_best_move_none_ignores_ponder() {
         use crate::common::moves::Move;
 
-        // The "(none)" shape takes an early return; any ponder is dropped.
         output_best_move(Move::NO_MOVE, Move::parse_long_algebraic("e2e4").unwrap());
     }
 
@@ -491,8 +479,7 @@ mod tests {
             get_u64("wtime", &["wtime", "100", "wtime", "200"]),
             Some(100)
         );
-        // A present-but-unparseable first token keeps the default (None);
-        // later duplicates are not consulted.
+
         assert_eq!(get_u64("wtime", &["wtime", "xx", "wtime", "200"]), None);
     }
 

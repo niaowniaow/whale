@@ -63,12 +63,10 @@ pub fn board_state_to_viriboard(whale_state: &BoardState) -> ViriBoard {
     *viriboard.ep_sq_mut() = if whale_state.en_passant_square == WhaleSquare::NoSquare {
         None
     } else {
-        // Viriboard mapping is flipped
         let viri_ep_idx = (whale_state.en_passant_square as u8) ^ 56;
         ViriSquare::new(viri_ep_idx)
     };
 
-    // Viriboard castling is represented differently to Whale.
     let mut castling = ViriCastlingRights::NONE;
     if whale_state.castle.contains(WhaleCastle::WHITE_SHORT) {
         castling.wk = Some(ViriSquare::H1);
@@ -106,7 +104,6 @@ pub fn board_state_to_viriboard(whale_state: &BoardState) -> ViriBoard {
                 WhalePiece::None => unreachable!(),
             };
 
-            // Viriboard mapping is flipped
             let viri_sq_idx = (whale_idx as u8) ^ 56;
             let viri_sq = ViriSquare::new_clamped(viri_sq_idx);
 
@@ -123,7 +120,6 @@ pub fn board_state_to_viriboard(whale_state: &BoardState) -> ViriBoard {
 pub fn map_whale_move(m: &Move) -> ViriMove {
     let from_viri = ViriSquare::new_clamped((m.source as u8) ^ 56);
     let to_viri = if m.move_type == MoveType::Castle {
-        // Viriboard maps castle differently
         let rook_sq = match m.target {
             WhaleSquare::G1 => WhaleSquare::H1,
             WhaleSquare::C1 => WhaleSquare::A1,
@@ -171,14 +167,12 @@ pub fn write_game_to_binpack<W: Write>(
         -initial_eval
     };
 
-    // 2 = Win, 1 = Draw, 0 = Loss
     let wdl_outcome = match outcome {
         WhaleSide::White => 2,
         WhaleSide::Black => 0,
         _ => 1,
     };
 
-    // Direct creation of PackedBoard using to_marlinformat (which handles private fields)
     let initial_position = start_board.to_marlinformat(initial_white_pov_eval, wdl_outcome, 0);
 
     let mut game = ViriGame {
@@ -397,8 +391,6 @@ pub fn run_with_teacher(
             });
         }
 
-        // Drop the main thread's sender so that when all worker threads exit,
-        // no senders remain and the receiver loop terminates.
         drop(tx);
 
         s.spawn(move || {

@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+
 import argparse
 import math
 import os
@@ -17,6 +17,12 @@ PARAMETERS = {
     "LMR_Base": {"default": 65, "min": 10, "max": 150, "step": 5},
     "LMR_Div": {"default": 215, "min": 100, "max": 350, "step": 10},
     "History_Weight": {"default": 2, "min": 1, "max": 4, "step": 1},
+
+    "MustTryGain": {"default": 30, "min": 10, "max": 100, "step": 5},
+    "MustTryRisk": {"default": 120, "min": 40, "max": 250, "step": 10},
+    "ConvertScore": {"default": 250, "min": 100, "max": 600, "step": 25},
+    "CrushScore": {"default": 600, "min": 300, "max": 1200, "step": 50},
+    "DefendCPI": {"default": 120, "min": 40, "max": 250, "step": 10},
 }
 
 class SpsaTuner:

@@ -20,19 +20,6 @@ pub fn persona_for_thread(thread_id: usize) -> SearchPersona {
     }
 }
 
-/// NOTE (SPS v2): personas are live again — see TT-SAFETY INVARIANT below.
-/// TT-SAFETY INVARIANT (why personas can share one TT): personas may only
-/// differ in pruning/LMR shaping (futility/probcut/RFP margins, NMP divisor,
-/// LMR base). All of these preserve alpha-beta bound validity — a fail-high
-/// is still a true lower bound no matter how much was reduced — so entries
-/// stored by one persona stay sound cutoffs for every other thread.
-///
-/// What personas must NEVER differ in is `optimism`: leaf evals (and hence
-/// every score stored to the TT) are shifted by the searching thread's
-/// optimism (`negamax.rs` static eval, `quiescence.rs`), so per-thread
-/// optimism would bake asymmetric offsets into shared entries and corrupt
-/// other threads' cutoffs. Optimism stays uniform (owned by
-/// `search_primary`); personas shape the search, never the eval.
 pub fn apply_persona(
     persona: SearchPersona,
     params: &mut SearchParameters,
@@ -104,8 +91,6 @@ mod tests {
 
     #[test]
     fn test_apply_aggressive_persona() {
-        // SPS v2: Aggressive shapes pruning/LMR only. Optimism is no longer
-        // touched (per-thread optimism would pollute the shared TT).
         let mut params = SearchParameters::default();
         let mut lmr_table = LmrTable::new(params.lmr_base, params.lmr_div);
 

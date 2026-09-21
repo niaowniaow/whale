@@ -27,7 +27,6 @@ pub const MAX_MOVES: usize = 218;
 
 #[derive(Clone, Copy, Debug)]
 pub struct MoveList {
-    // TODO: optz, have an Uninit list to avoid unnecessary mem ops
     pub moves: [ScoredMove; MAX_MOVES],
     pub count: usize,
 }
@@ -135,8 +134,7 @@ mod tests {
         }
         assert_eq!(list.count, MAX_MOVES);
         assert_eq!(list.len(), MAX_MOVES);
-        // In debug builds overflow panics via debug_assert by design, so only
-        // exercise the early-return cap in release builds.
+
         if !cfg!(debug_assertions) {
             list.push(sample_move());
             assert_eq!(list.count, MAX_MOVES);
@@ -153,7 +151,7 @@ mod tests {
         list.clear();
         assert_eq!(list.count, 0);
         assert!(list.is_empty());
-        // Can push again after clear.
+
         list.push(sample_move());
         assert_eq!(list.count, 1);
         assert_eq!(list[0], sample_move());
@@ -168,7 +166,7 @@ mod tests {
         list[1].score = -20;
         assert_eq!(list[0].score, 150);
         assert_eq!(list[1].score, -20);
-        // Slice iteration via Deref.
+
         let scores: Vec<i32> = list.iter().map(|sm| sm.score).collect();
         assert_eq!(scores, vec![150, -20]);
     }

@@ -300,9 +300,9 @@ mod tests {
     #[test]
     fn should_get_attacks_for_central_bishop_with_blockers() {
         let mut occupancy_board = Bitboard(0);
-        occupancy_board.set_bit(Square::D4 as usize); // Should prune c3,b2,a1
-        occupancy_board.set_bit(Square::A5 as usize); // Should not cause any problems because it is not in the diagonal
-        occupancy_board.set_bit(Square::H2 as usize); // Should not change anything as it is an edge square
+        occupancy_board.set_bit(Square::D4 as usize);
+        occupancy_board.set_bit(Square::A5 as usize);
+        occupancy_board.set_bit(Square::H2 as usize);
         let bishop_attacks_e5 = get_bishop_attacks(Square::E5, occupancy_board);
 
         assert_eq!(1, bishop_attacks_e5.get_bit(Square::F4 as usize));
@@ -340,8 +340,8 @@ mod tests {
     #[test]
     fn should_get_attacks_for_corner_bishop_with_blockers() {
         let mut occupancy_board = Bitboard(0);
-        occupancy_board.set_bit(Square::E5 as usize); // Should prune f6, g7, h8
-        occupancy_board.set_bit(Square::E4 as usize); // Should not make a difference
+        occupancy_board.set_bit(Square::E5 as usize);
+        occupancy_board.set_bit(Square::E4 as usize);
         let bishop_attacks_a1 = get_bishop_attacks(Square::A1, occupancy_board);
 
         assert_eq!(1, bishop_attacks_a1.get_bit(Square::B2 as usize));
@@ -378,10 +378,10 @@ mod tests {
     #[test]
     fn should_get_attacks_for_central_rook_with_blockers() {
         let mut occupancy_board = Bitboard(0);
-        occupancy_board.set_bit(Square::E3 as usize); // Should prune e2, e1
-        occupancy_board.set_bit(Square::G7 as usize); // Should not make a difference
-        occupancy_board.set_bit(Square::E8 as usize); // Should not make a difference
-        occupancy_board.set_bit(Square::F5 as usize); // Should prune g5, h5
+        occupancy_board.set_bit(Square::E3 as usize);
+        occupancy_board.set_bit(Square::G7 as usize);
+        occupancy_board.set_bit(Square::E8 as usize);
+        occupancy_board.set_bit(Square::F5 as usize);
         let rook_attacks_e5 = get_rook_attacks(Square::E5, occupancy_board);
 
         assert_eq!(1, rook_attacks_e5.get_bit(Square::E3 as usize));
@@ -426,10 +426,10 @@ mod tests {
     #[test]
     fn should_get_attacks_for_corner_rook_with_blockers() {
         let mut occupancy_board = Bitboard(0);
-        occupancy_board.set_bit(Square::A5 as usize); // Should prune a6, a7, a8
-        occupancy_board.set_bit(Square::G7 as usize); // Should not make a difference
-        occupancy_board.set_bit(Square::E8 as usize); // Should not make a difference
-        occupancy_board.set_bit(Square::B1 as usize); // Should prune c1, d1, e1, f1, g1, h1
+        occupancy_board.set_bit(Square::A5 as usize);
+        occupancy_board.set_bit(Square::G7 as usize);
+        occupancy_board.set_bit(Square::E8 as usize);
+        occupancy_board.set_bit(Square::B1 as usize);
         let rook_attacks_a1 = get_rook_attacks(Square::A1, occupancy_board);
 
         assert_eq!(1, rook_attacks_a1.get_bit(Square::A2 as usize));

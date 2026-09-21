@@ -241,12 +241,10 @@ mod tests {
         assert_eq!(b1 ^ b2, Bitboard(0b0110));
         assert_eq!(!Bitboard(0), Bitboard(u64::MAX));
 
-        // Mixed with u64
         assert_eq!(b1 & 0b1010, Bitboard(0b1000));
         assert_eq!(b1 | 0b1010, Bitboard(0b1110));
         assert_eq!(b1 ^ 0b1010, Bitboard(0b0110));
 
-        // Assign operators
         let mut temp = b1;
         temp &= b2;
         assert_eq!(temp, Bitboard(0b1000));
@@ -259,7 +257,6 @@ mod tests {
         temp ^= b2;
         assert_eq!(temp, Bitboard(0b0110));
 
-        // Assign operators with u64
         let mut temp = b1;
         temp &= 0b1010;
         assert_eq!(temp, Bitboard(0b1000));

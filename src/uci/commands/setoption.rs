@@ -148,8 +148,7 @@ impl UciClient {
             {
                 state.params.gtp_threshold = v.clamp(5, 50);
             }
-            // One switch per experimental heuristic (all default true).
-            // `value` follows the Ponder convention: "true"/"1" = on.
+
             let flag_on = value.eq_ignore_ascii_case("true") || value == "1";
             if name.eq_ignore_ascii_case("CFSS_Enabled") {
                 state.params.cfss_enabled = flag_on;
@@ -172,6 +171,58 @@ impl UciClient {
             if name.eq_ignore_ascii_case("DAD_Enabled") {
                 state.params.dad_enabled = flag_on;
             }
+            if name.eq_ignore_ascii_case("MultiPV")
+                && let Ok(v) = value.parse::<usize>()
+            {
+                state.multipv = v.clamp(1, 8);
+            }
+            if name.eq_ignore_ascii_case("CPI_Enabled") {
+                state.params.cpi_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("State_Enabled") {
+                state.params.state_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("Risk_Enabled") {
+                state.params.risk_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("Pressure_Enabled") {
+                state.params.pressure_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("Attack_Enabled") {
+                state.params.attack_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("Conversion_Enabled") {
+                state.params.conversion_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("QS_Checks_Enabled") || name.eq_ignore_ascii_case("QS_Checks") {
+                state.params.qs_checks_enabled = flag_on;
+            }
+
+            if name.eq_ignore_ascii_case("MustTryGain")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.risk_envelope.min_gain_cp = v.clamp(10, 100);
+            }
+            if name.eq_ignore_ascii_case("MustTryRisk")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.risk_envelope.must_try_max = v.clamp(40, 250);
+            }
+            if name.eq_ignore_ascii_case("ConvertScore")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.conversion_params.convert_min_cp = v.clamp(100, 600);
+            }
+            if name.eq_ignore_ascii_case("CrushScore")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.conversion_params.crush_min_cp = v.clamp(300, 1200);
+            }
+            if name.eq_ignore_ascii_case("DefendCPI")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.state_thresholds.defend_cpi = v.clamp(40, 250);
+            }
             if name.eq_ignore_ascii_case("Extension_Cap_Enabled")
                 || name.eq_ignore_ascii_case("Extension_Cap")
                 || name.eq_ignore_ascii_case("ExtensionCap_Enabled")
@@ -181,7 +232,7 @@ impl UciClient {
             {
                 state.params.extension_cap_enabled = flag_on;
             }
-            // Draw aversion (Lc0 Contempt/DrawScore concepts, Whale's own use).
+
             if name.eq_ignore_ascii_case("Contempt")
                 && let Ok(v) = value.parse::<i16>()
             {
@@ -196,11 +247,6 @@ impl UciClient {
                 state.show_wdl = !(value.eq_ignore_ascii_case("false") || value == "0");
             }
         } else {
-            // The search thread holds the search_state lock for its whole run,
-            // so a failed try_lock means a search is in flight. Stop it and
-            // say so instead of silently dropping the option (Stockfish
-            // uci.cpp:483-486 stops the search before applying options); the
-            // GUI can resend the option once the search ends.
             crate::uci::cli::write_line(
                 "info string setoption ignored while searching (stop the search and resend)",
             );
@@ -249,7 +295,7 @@ mod tests {
 
         {
             let state = uci_client.search_state.lock().unwrap();
-            assert_eq!(state.tt.capacity(), 4194304); // 128MB
+            assert_eq!(state.tt.capacity(), 4194304);
         }
 
         uci_client.run_setoption(&["name", "hash", "value", "1"]);
@@ -328,6 +374,12 @@ mod tests {
             "SPS_Enabled",
             "DAD_Enabled",
             "Extension_Cap_Enabled",
+            "CPI_Enabled",
+            "State_Enabled",
+            "Risk_Enabled",
+            "Pressure_Enabled",
+            "Attack_Enabled",
+            "Conversion_Enabled",
         ] {
             client.run_setoption(&["name", name, "value", "false"]);
         }
@@ -341,6 +393,12 @@ mod tests {
             assert!(!state.params.sps_enabled);
             assert!(!state.params.dad_enabled);
             assert!(!state.params.extension_cap_enabled);
+            assert!(!state.params.cpi_enabled);
+            assert!(!state.params.state_enabled);
+            assert!(!state.params.risk_enabled);
+            assert!(!state.params.pressure_enabled);
+            assert!(!state.params.attack_enabled);
+            assert!(!state.params.conversion_enabled);
         }
         client.run_setoption(&["name", "CFSS_Enabled", "value", "1"]);
         assert!(client.search_state.lock().unwrap().params.cfss_enabled);
@@ -382,6 +440,34 @@ mod tests {
         }
         client.run_setoption(&["name", "ALP_Enabled", "value", "false"]);
         assert!(!client.search_state.lock().unwrap().params.alp_enabled);
+    }
+
+    #[test]
+    fn should_apply_aprm_thresholds_with_clamps() {
+        let mut client = UciClient::new();
+        client.run_setoption(&["name", "MultiPV", "value", "3"]);
+        client.run_setoption(&["name", "MustTryGain", "value", "50"]);
+        client.run_setoption(&["name", "MustTryRisk", "value", "90"]);
+        client.run_setoption(&["name", "ConvertScore", "value", "300"]);
+        client.run_setoption(&["name", "CrushScore", "value", "800"]);
+        client.run_setoption(&["name", "DefendCPI", "value", "100"]);
+        {
+            let state = client.search_state.lock().unwrap();
+            assert_eq!(state.multipv, 3);
+            assert_eq!(state.risk_envelope.min_gain_cp, 50);
+            assert_eq!(state.risk_envelope.must_try_max, 90);
+            assert_eq!(state.conversion_params.convert_min_cp, 300);
+            assert_eq!(state.conversion_params.crush_min_cp, 800);
+            assert_eq!(state.state_thresholds.defend_cpi, 100);
+        }
+
+        client.run_setoption(&["name", "MultiPV", "value", "99"]);
+        client.run_setoption(&["name", "MustTryGain", "value", "9999"]);
+        {
+            let state = client.search_state.lock().unwrap();
+            assert_eq!(state.multipv, 8);
+            assert_eq!(state.risk_envelope.min_gain_cp, 100);
+        }
     }
 
     #[test]

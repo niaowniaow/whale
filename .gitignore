@@ -38,6 +38,7 @@ checksum.md5
 # Binaries and networks
 *.exe
 *.nnue
+!models/*.nnue
 *.pgn
 /nnue-pytorch/
 /v16/

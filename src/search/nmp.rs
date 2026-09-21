@@ -166,9 +166,9 @@ mod tests {
     fn reduction_scales_with_eval_margin() {
         let params = crate::search::search_state::SearchParameters::default();
         let base = params.nmp_base + 6 / params.nmp_depth_div;
-        // Eval margin <= 200 adds no bonus
+
         assert_eq!(get_reduction_with_margin(6, &params, 0, 150), base);
-        // Eval margin > 200 adds bonus
+
         assert_eq!(get_reduction_with_margin(6, &params, 0, 400), base + 1);
         assert_eq!(get_reduction_with_margin(6, &params, 0, 800), base + 2);
     }

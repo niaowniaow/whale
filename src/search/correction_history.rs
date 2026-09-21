@@ -134,7 +134,7 @@ mod tests {
         assert_eq!(corr.get_correction(&board, Some(mv)), 0);
         corr.update(&board, Some(mv), 300);
         assert_ne!(corr.get_correction(&board, Some(mv)), 0);
-        // Target without a piece exercises the None-piece guard (A4 is empty).
+
         let empty = Move::new(Square::A3, Square::A4, MoveType::Quiet);
         assert_eq!(
             corr.get_correction(&board, Some(empty)),

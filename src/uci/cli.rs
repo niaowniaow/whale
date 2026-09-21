@@ -215,9 +215,6 @@ mod tests {
 
     #[test]
     fn datagen_rejects_bad_cli_args() {
-        // NOTE: valid arguments are deliberately never passed here: without
-        // the `train` feature the stub calls `process::exit(1)`, and with it
-        // a real datagen run would start.
         let cmd = DatagenCommand;
         cmd.run(&[]);
         cmd.run(&["out.binpack"]);

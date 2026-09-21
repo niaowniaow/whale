@@ -30,10 +30,6 @@ impl BoardState {
         search_state: &mut SearchState,
         num_threads: usize,
     ) -> Move {
-        // Only shortcut on an unconditional tablebase win at halfmove 0:
-        // with halfmove > 0 the 50-move rule may convert the win, and
-        // losses/draws are always left to normal search. probe/root_move
-        // signatures are owned by another team and stay untouched.
         if self.half_move_clock == 0
             && let Some(tb_move) = crate::syzygy::root_move(self)
         {
@@ -96,8 +92,7 @@ impl BoardState {
                 MoveGenType::Captures => {
                     self.generate_en_passants(source, move_list, gen_type);
                     self.generate_pawn_attacks(source, move_list, gen_type);
-                    // Quiet queen promotions belong to the captures stage;
-                    // add_pawn_move filters out everything else here.
+
                     self.generate_pawn_pushes(source, move_list, gen_type);
                 }
             }
@@ -355,14 +350,12 @@ impl BoardState {
             ];
             for (quiet_mt, cap_mt, is_queen) in PROMOS {
                 match gen_type {
-                    // The captures stage owns every capture plus quiet
-                    // queen promotions (L1 movegen boundary).
                     MoveGenType::Captures => {
                         if !capture && !is_queen {
                             continue;
                         }
                     }
-                    // The quiets stage owns quiet underpromotions only.
+
                     MoveGenType::Quiets => {
                         if capture || is_queen {
                             continue;
@@ -434,7 +427,6 @@ mod tests {
         assert_eq!(move_list3.len(), 42, "AdvancedMove move count");
     }
 
-    // If the move count ever goes wrong one of these tests usually helps catch edge cases missed
     #[test]
     fn starting_position_has_no_castle_moves() {
         let board = BoardState::parse_fen(STARTING_FEN);
@@ -516,7 +508,6 @@ mod tests {
 
     #[test]
     fn blocked_pawn_pushes_generate_no_moves() {
-        // White pawn on E2 is stopped by the black pawn on E3.
         let board = BoardState::parse_fen("4k3/8/8/8/8/4p3/4P3/4K3 w - - 0 1");
         let mut moves = MoveList::new();
         board.generate_moves(&mut moves);
@@ -524,7 +515,7 @@ mod tests {
             moves.iter().all(|m| m.mv.source != Square::E2),
             "blocked E2 pawn must not move"
         );
-        // Black pawn on E2 is stopped by the white king on E1.
+
         let black = BoardState::parse_fen("4k3/8/8/8/8/8/4p3/4K3 b - - 0 1");
         let mut black_moves = MoveList::new();
         black.generate_moves(&mut black_moves);
@@ -548,7 +539,6 @@ mod tests {
 
     #[test]
     fn short_castle_blocked_by_attack_but_long_available() {
-        // Black bishop on C4 attacks F1 through the empty D3/E2 squares.
         let board = BoardState::parse_fen("r3k2r/pppppppp/8/8/2b5/8/PPPP1PPP/R3K2R w KQkq - 0 1");
         let mut moves = MoveList::new();
         board.generate_moves(&mut moves);

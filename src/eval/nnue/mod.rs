@@ -14,11 +14,6 @@ pub const INPUT_SIZE: usize = 768;
 
 pub const SCALE: i32 = 400;
 
-// Hash-keyed cache for the final evaluation (after optimism correction and
-// fifty-move damping). Both vary independently of the board hash — optimism
-// changes per iteration/side, halfmove clock is not part of the Zobrist hash —
-// so both are part of the key. Thread-local: each search thread gets its own
-// table, no locking on the hot path.
 const EVAL_CACHE_BITS: u32 = 18;
 const EVAL_CACHE_SIZE: usize = 1 << EVAL_CACHE_BITS;
 const EVAL_CACHE_MASK: u64 = (EVAL_CACHE_SIZE as u64) - 1;
@@ -67,8 +62,6 @@ fn store_eval_cache(hash: u64, optimism: i32, halfmove: u8, score: i16) {
     });
 }
 
-/// Drop all cached scores. Called when the active network changes so a
-/// stale score from the previous net can never be served.
 pub fn clear_eval_cache() {
     EVAL_CACHE.with(|cache| {
         cache.borrow_mut().fill(EvalCacheEntry {
@@ -129,9 +122,6 @@ pub fn evaluate_with_depth(board: &mut BoardState, optimism: i32, depth: u8) -> 
     dcn::DcnModel::condition_evaluation(base_score, depth, board, dcn::DcnConfig::default())
 }
 
-/// Same as [`evaluate_with_depth`] but reuses threat counts from a
-/// per-node [`crate::board::node_threats::NodeThreats`] snapshot instead of
-/// recomputing them inside DCN. Bit-identical results.
 #[inline(always)]
 pub fn evaluate_with_depth_cached(
     board: &mut BoardState,
@@ -264,11 +254,6 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
     #[cfg(target_arch = "x86_64")]
     {
         if is_x86_feature_detected!("avx2") {
-            // SAFETY: AVX2 availability is verified above. `acc_active.state` and
-            // `acc_passive.state` are `[i16; ACC_SIZE]` inside `Accumulator` which is
-            // `#[repr(C, align(64))]` — satisfying the 32-byte alignment required by
-            // `_mm256_load_si256`. Weight slices are `&[i16]` of length `ACC_SIZE`,
-            // read via unaligned loads. See `evaluate_side_avx2` for loop bound proof.
             unsafe {
                 output +=
                     evaluate_side_avx2(&acc_active.state, &network.output_weights[0..ACC_SIZE]);
@@ -331,12 +316,6 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
     output.clamp(-29000, 29000) as i16
 }
 
-// SAFETY: Caller guarantees AVX2 is available (checked via `is_x86_feature_detected!`).
-// `state` is `&[i16; 256]` from an `align(64)` Accumulator — 32-byte aligned for
-// `_mm256_load_si256`. `weights` is `&[i16]` of length 256, read via `_mm256_loadu_si256`
-// (no alignment required). Loop runs 16 iterations × 16 i16 per __m256i = 256 elements,
-// exactly covering `ACC_SIZE`. The `_mm256_storeu_si256` into a stack `[i32; 8]` is safe
-// because it writes exactly 32 bytes = 8 × i32.
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
 unsafe fn evaluate_side_avx2(state: &[i16; ACC_SIZE], weights: &[i16]) -> i64 {
@@ -397,14 +376,6 @@ mod tests {
         board.side_to_move = Side::White;
         let score = evaluate_internal(&board, &network);
 
-        // Active state value: 10.clamp(0, 255) = 10. screlu = 10 * 10 = 100.
-        // Passive state value: 20.clamp(0, 255) = 20. screlu = 20 * 20 = 400.
-        // sum = 256 * (100 * 2) + 256 * (400 * 3) = 51200 + 307200 = 358400
-        // Dequantize:
-        // output = 358400 / 255 = 1405
-        // output += 10 (bias) = 1415
-        // output *= 400 (SCALE) = 566000
-        // output /= 16320 (QA * QB) = 34
         assert_eq!(score, 34);
     }
 
@@ -477,7 +448,7 @@ mod tests {
         let second = evaluate(&mut board);
         assert_eq!(first, second);
         assert!(first.abs() < 5000);
-        // A different optimism key computes (and caches) separately.
+
         let _ = evaluate_with_optimism(&mut board, 5);
     }
 
@@ -526,7 +497,7 @@ mod tests {
         let white_stm = evaluate_internal(&board, &network);
         board.side_to_move = Side::Black;
         let black_stm = evaluate_internal(&board, &network);
-        // Swapped weights must change the score.
+
         assert_ne!(white_stm, black_stm);
     }
 
@@ -556,12 +527,12 @@ mod tests {
         let hash = board.board_hash;
         let halfmove = board.half_move_clock;
         let a = evaluate_with_optimism(&mut board, 0);
-        // Cached under (hash, 0, halfmove).
+
         assert_eq!(probe_eval_cache(hash, 0, halfmove), Some(a));
         assert_eq!(probe_eval_cache(hash, 7, halfmove), None);
         let b = evaluate_with_optimism(&mut board, 7);
         assert_eq!(probe_eval_cache(hash, 7, halfmove), Some(b));
-        // Halfmove clock is part of the key.
+
         board.half_move_clock = halfmove.wrapping_add(1);
         assert_eq!(
             probe_eval_cache(hash, 0, board.half_move_clock),
@@ -604,7 +575,6 @@ mod tests {
         board.history.accumulators[idx].black.state.fill(-100);
         board.side_to_move = Side::White;
 
-        // Every input clamps to 0, so only the bias survives: 7 * 400 / 16320 = 0.
         assert_eq!(evaluate_internal(&board, &network), 0);
     }
 
@@ -636,8 +606,7 @@ mod tests {
         board.ensure_accumulators_fresh();
         board.half_move_clock = 0;
         let network = Network::get_embedded();
-        // No pawns or pieces: the material term vanishes and optimism is zero,
-        // so evaluate_fast must equal the raw network output.
+
         assert_eq!(
             evaluate_fast(&mut board, 0),
             evaluate_internal(&board, network)
@@ -650,7 +619,7 @@ mod tests {
 
         clear_eval_cache();
         let mut board = BoardState::parse_fen(STARTING_FEN);
-        // Tactical (<5), blended (5..=15) and strategic (>15) DCN regimes.
+
         for depth in [0u8, 1, 5, 10, 15, 16, 64] {
             let score = evaluate_with_depth(&mut board, 0, depth);
             assert!(score.abs() <= 29000, "depth {depth} out of range");
@@ -662,7 +631,7 @@ mod tests {
         clear_eval_cache();
         store_eval_cache(123, 0, 0, 11);
         assert_eq!(probe_eval_cache(123, 0, 0), Some(11));
-        // Same table index, different hash: direct-mapped overwrite.
+
         let colliding = 123u64 + EVAL_CACHE_SIZE as u64;
         store_eval_cache(colliding, 0, 0, 22);
         assert_eq!(probe_eval_cache(colliding, 0, 0), Some(22));

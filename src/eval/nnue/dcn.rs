@@ -82,10 +82,6 @@ impl DcnModel {
         Self::condition_evaluation_cached(raw_eval, depth, board, checks, qt_us, qt_them, config)
     }
 
-    /// Same as [`Self::condition_evaluation`] but reuses caller-provided
-    /// threat counts (from [`crate::board::node_threats::NodeThreats`])
-    /// instead of recomputing `checkers()` + 2x `threat_by_lesser()`.
-    /// Bit-identical results.
     pub fn condition_evaluation_cached(
         raw_eval: i16,
         depth: u8,
@@ -234,12 +230,12 @@ mod tests {
     fn test_dcn_tactical_and_strategic_branches() {
         let config = DcnConfig::default();
         let start = BoardState::parse_fen(STARTING_FEN);
-        // Tactical (depth 0) and strategic (depth 30) both stay in range.
+
         let tac = DcnModel::condition_evaluation(100, 0, &start, config);
         let strat = DcnModel::condition_evaluation(100, 30, &start, config);
         assert!(tac.abs() <= 29000);
         assert!(strat.abs() <= 29000);
-        // Blended middle depth interpolates without explosion.
+
         let mid = DcnModel::condition_evaluation(100, 10, &start, config);
         assert!((mid as i32 - tac as i32).abs() <= 500);
     }
@@ -247,7 +243,7 @@ mod tests {
     #[test]
     fn test_dcn_strategic_bishop_pair_bonus() {
         let config = DcnConfig::default();
-        // White keeps the pair, Black is missing one bishop.
+
         let fen = "rnbqk1nr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
         let board = BoardState::parse_fen(fen);
         let with_bonus = DcnModel::condition_evaluation(0, 30, &board, config);

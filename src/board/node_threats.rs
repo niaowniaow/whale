@@ -4,27 +4,18 @@ use crate::common::piece::Piece;
 #[cfg(test)]
 use crate::common::side::Side;
 
-/// Per-node threat snapshot, computed ONCE per search node and shared by
-/// legality, eval (DCN), quiet move scoring, TCE and LQT.
-///
-/// Rationale (Stockfish `StateInfo` / Reckless cached-threats concept):
-/// `checkers()`, `pinned_pieces()` and especially `threat_by_lesser()` were
-/// each recomputed several times per node (legality per move, DCN eval,
-/// quiet scoring, TCE/LQT features). One snapshot replaces all of them with
-/// zero behavior change — every consumer reads the same values.
 #[derive(Clone, Copy, Debug)]
 pub struct NodeThreats {
-    /// Enemy checkers bitboard (`!= 0` ⟺ side to move is in check).
     pub checkers: u64,
-    /// Own pinned pieces bitboard.
+
     pub pinned: u64,
-    /// Enemy pinned pieces bitboard (TCE pin pressure signal).
+
     pub pinned_them: u64,
-    /// Squares attacked by enemy lesser pieces, per own piece type.
+
     pub threats_us: [u64; 6],
-    /// Squares attacked by our lesser pieces, per enemy piece type.
+
     pub threats_them: [u64; 6],
-    /// Squares from which our pieces give check to the enemy king.
+
     pub check_squares: [u64; 6],
 }
 
@@ -42,12 +33,6 @@ impl NodeThreats {
         }
     }
 
-    /// Reduced snapshot for quiescence nodes ONLY. Qsearch reads exactly
-    /// three fields: `checkers`/`pinned` (legality), `threats_us` (LQT
-    /// discovered-attacks). It never touches `pinned_them` (TCE-only),
-    /// `threats_them` (DCN-only; qsearch eval skips DCN) or `check_squares`
-    /// (quiet scoring; qsearch never generates quiets). The skipped fields
-    /// are zero — do NOT use this snapshot outside `quiescence.rs`.
     #[inline(always)]
     pub fn compute_for_qsearch(board: &BoardState) -> Self {
         let stm = board.side_to_move;
@@ -79,13 +64,11 @@ impl NodeThreats {
         self.checkers != 0
     }
 
-    /// Number of checking pieces (DCN tactical signal).
     #[inline(always)]
     pub fn checks(&self) -> u32 {
         self.checkers.count_ones()
     }
 
-    /// Own queens standing on enemy-threatened squares (DCN tactical signal).
     #[inline(always)]
     pub fn queen_threat_us(&self, board: &BoardState) -> u32 {
         (self.threats_us[Piece::Queen as usize]
@@ -93,7 +76,6 @@ impl NodeThreats {
             .count_ones()
     }
 
-    /// Enemy queens standing on our-threatened squares (DCN tactical signal).
     #[inline(always)]
     pub fn queen_threat_them(&self, board: &BoardState) -> u32 {
         let them = board.side_to_move.other();
@@ -101,8 +83,6 @@ impl NodeThreats {
             .count_ones()
     }
 
-    /// Own pieces of `piece` standing on enemy-threatened squares
-    /// (LQT discovered-attacks signal).
     #[inline(always)]
     pub fn threatened_count(&self, board: &BoardState, piece: Piece) -> u32 {
         let idx = piece as usize;

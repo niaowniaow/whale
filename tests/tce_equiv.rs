@@ -6,7 +6,6 @@ use whale::common::moves::Move;
 use whale::common::piece::Piece;
 use whale::search::tce::{ThreatFeatures, extract_threat_features};
 
-// Reference implementation: the exact pre-NodeThreats computation.
 fn fresh_features(
     board: &BoardState,
     move_obj: Move,
@@ -36,7 +35,7 @@ fn fresh_features(
     } else {
         0
     };
-    // (rest identical by construction: same board reads)
+
     let _ = (depth, move_obj, previous_move);
     ThreatFeatures {
         num_pins,
@@ -44,7 +43,7 @@ fn fresh_features(
         is_check: in_check,
         num_checkers,
         is_capture: move_obj.is_capture(),
-        material_imbalance: 0, // filled below like extract does
+        material_imbalance: 0,
         king_danger: 0,
         depth_remaining: depth as i32,
         is_recapture: false,
@@ -53,7 +52,6 @@ fn fresh_features(
 }
 
 fn pseudo_random(seed: &mut u64) -> u64 {
-    // SplitMix64.
     *seed = seed.wrapping_add(0x9E3779B97F4A7C15);
     let mut z = *seed;
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
@@ -76,7 +74,7 @@ fn tce_features_match_fresh_on_random_walk() {
     for fen in extra {
         positions.push(BoardState::parse_fen(fen));
     }
-    // Random walk: 300 plies, snapshot every position.
+
     for _ in 0..300 {
         let mut ml = MoveList::new();
         board.generate_moves(&mut ml);

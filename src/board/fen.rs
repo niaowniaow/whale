@@ -187,14 +187,12 @@ fn parse_en_passant(board: &mut BoardState, fen: &str) {
     if own_pawns & (left | right) == 0 {
         return;
     }
-    // The enemy pawn that just double-pushed must still stand immediately
-    // in front of the EP square (Stockfish position.cpp: target bitboard).
+
     let enemy = board.side_to_move.other();
     if board.piece_mapping[pushed] != Piece::Pawn || board.occupancies[enemy].get_bit(pushed) == 0 {
         return;
     }
-    // Both the EP square and the square behind it must be empty
-    // (Stockfish: nothing on epSquare or epSquare + pawn_push(side)).
+
     let behind = if board.side_to_move == Side::White {
         sq_index.saturating_sub(8)
     } else {
@@ -329,7 +327,6 @@ mod tests {
         let junk = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w XYZ - 0 1");
         assert_eq!(junk.castle, Castle::NONE);
 
-        // to_fen always orders rights as KQkq regardless of input order.
         let mixed = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w qQkK - 0 1");
         assert_eq!(mixed.to_fen().split(' ').nth(2).unwrap(), "KQkq");
     }
@@ -347,24 +344,15 @@ mod tests {
     #[test]
     fn rejects_invalid_en_passant_squares() {
         let cases = [
-            // No marker.
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq - 0 1",
-            // Too short.
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e 0 1",
-            // File out of range.
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq i3 0 1",
-            // Rank out of range.
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e9 0 1",
-            // Wrong rank for the side to move (white needs rank 6, black rank 3).
             "rnbqkbnr/pppppppp/8/8/4P3/8/PPPP1PPP/RNBQKBNR w KQkq e3 0 1",
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq e6 0 1",
-            // No adjacent own pawn.
             "8/8/8/8/8/8/8/4K2k w - e3 0 1",
-            // Adjacent own pawn but the pushed enemy pawn is missing.
             "rnbqkbnr/ppp1pppp/8/4P3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1",
-            // The square behind the EP square is occupied.
             "rnbqkbnr/pppppppp/8/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1",
-            // The EP square itself is occupied.
             "rnbqkbnr/ppp1pppp/3p4/3pP3/8/8/PPPP1PPP/RNBQKBNR w KQkq d6 0 1",
         ];
         for fen in cases {
@@ -394,12 +382,10 @@ mod tests {
             BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR b KQkq - 0 3");
         assert_eq!(black.move_count, 5);
 
-        // Fullmove clamps to a minimum of 1.
         let zero =
             BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 0");
         assert_eq!(zero.move_count, 0);
 
-        // Four sections only: clocks stay at zero.
         let short = BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq");
         assert_eq!(short.half_move_clock, 0);
         assert_eq!(short.move_count, 0);
@@ -449,14 +435,14 @@ mod tests {
             board.to_fen().split(' ').next().unwrap(),
             "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR"
         );
-        // '!' is neither a piece nor a digit, so it is skipped.
+
         let noisy =
             BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR! w KQkq - 0 1");
         assert_eq!(
             noisy.get_pieces(Side::White, Piece::Pawn).0,
             71776119061217280
         );
-        // An oversized digit empties the first rank without panicking.
+
         let gappy = BoardState::parse_fen("9/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         assert!(gappy.get_pieces(Side::Black, Piece::Rook).is_empty());
         assert_eq!(gappy.get_pieces(Side::Black, Piece::Pawn).0, 65280);

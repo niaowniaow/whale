@@ -1,20 +1,3 @@
-// Stockfish SFNNv16 inference path (HalfKAv2_hm + FullThreats + PP_3Wide).
-//
-// Feature sets: HalfKAv2_hm (22_528) + FullThreats (59_808) + PP_3Wide (4_560).
-// Big net: L1 1024, FC0 32, FC1 32, 8 material buckets sharing one transformer.
-// Transformer uses pairwise products (/512), per-feature PSQT (8 buckets),
-// paired Sqr/Clip activations on fc_0 and fc_1, plus the forwarded
-// fc_0[30] - fc_0[31] output term. Integer math follows the Stockfish paths,
-// so official SFNNv16 .nnue files load and evaluate through the same model.
-// Outer UCI/search score scaling remains Whale-specific.
-//
-// What is intentionally Whale-specific:
-// - HalfKA/PSQT are incrementally maintained; threats/pairs recompute per eval,
-// - optional custom "RUDI" checkpoint layout,
-// - file loading only (no embedding of Stockfish weights in this repo).
-// - the engine only uses a v16 net after an explicit `setoption EvalFile`;
-//   there is no implicit auto-load during evaluation.
-
 use std::cell::RefCell;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock, RwLock};
@@ -27,23 +10,20 @@ use crate::common::square::Square;
 pub const VERSION: u8 = 16;
 pub const N_BUCKETS: usize = 8;
 
-// ---- Feature dimensions (Stockfish HalfKAv2_hm + FullThreats) ----
 pub const PSQ_DIMS: usize = 22_528;
 pub const THREAT_DIMS: usize = 59_808;
 pub const PAIR_DIMS: usize = 4_560;
-pub const BIG_INPUT_DIMS: usize = PSQ_DIMS + THREAT_DIMS + PAIR_DIMS; // 86_896
-pub const PS_PLANES: usize = 704; // 11 * 64
+pub const BIG_INPUT_DIMS: usize = PSQ_DIMS + THREAT_DIMS + PAIR_DIMS;
+pub const PS_PLANES: usize = 704;
 pub const KING_BUCKET_COUNT: usize = 32;
 
-// ---- Layer sizes ----
 pub const L1: usize = 1024;
 
 pub const FC0_OUT: usize = 32;
 pub const FC0_ACT: usize = 32;
-pub const FC1_IN: usize = 64; // 32 sqr + 32 clip
-pub const FC1_OUT: usize = 32; // L3
+pub const FC1_IN: usize = 64;
+pub const FC1_OUT: usize = 32;
 
-// ---- Quantization / scales (nnue_common.h) ----
 pub const OUTPUT_SCALE: i32 = 16;
 pub const WEIGHT_SCALE_BITS: u32 = 6;
 pub const SF_FILE_VERSION: u32 = 0x7AF32F20;
@@ -53,7 +33,6 @@ pub const THREAT_HASH: u32 = 0x2e6b9d04;
 pub const PAIR_HASH: u32 = 0x86f2b1dd;
 const LEB128_MAGIC: &[u8] = b"COMPRESSED_LEB128";
 
-// ---- Gate / combine (evaluate.cpp) ----
 pub const PAWN_VALUE: i32 = 208;
 pub const KNIGHT_VALUE: i32 = 781;
 pub const BISHOP_VALUE: i32 = 825;
@@ -62,35 +41,26 @@ pub const QUEEN_VALUE: i32 = 2538;
 pub const SMALL_GATE: i32 = 962;
 pub const SMALL_FALLBACK: i32 = 236;
 
-// max active features: HalfKA pieces (<=32) + official threat/pair lists.
 pub const MAX_THREAT_ACTIVE: usize = 256;
 pub const MAX_PAIR_ACTIVE: usize = 256;
 pub const MAX_ACTIVE: usize = 32 + MAX_THREAT_ACTIVE + MAX_PAIR_ACTIVE;
-
-// ---------------------------------------------------------------------------
-// Square helpers. Internal feature math uses Stockfish numbering (A1 = 0);
-// Whale squares are vertically flipped (A8 = 0), converted with `^ 56`.
-// ---------------------------------------------------------------------------
 
 #[inline(always)]
 fn to_sf(sq: usize) -> usize {
     sq ^ 56
 }
 
-// KingBuckets table (Stockfish half_ka_v2_hm.h), bucket ids in A1=0 order.
 const KING_BUCKETS: [u32; 64] = [
     28, 29, 30, 31, 31, 30, 29, 28, 24, 25, 26, 27, 27, 26, 25, 24, 20, 21, 22, 23, 23, 22, 21, 20,
     16, 17, 18, 19, 19, 18, 17, 16, 12, 13, 14, 15, 15, 14, 13, 12, 8, 9, 10, 11, 11, 10, 9, 8, 4,
     5, 6, 7, 7, 6, 5, 4, 0, 1, 2, 3, 3, 2, 1, 0,
 ];
 
-// HalfKA OrientTBL: mirror files when the king stands on a-d files.
 #[inline(always)]
 fn halfka_orient(ksq_sf: usize) -> usize {
     if ksq_sf & 7 < 4 { 7 } else { 0 }
 }
 
-// Stockfish piece codes: W_PAWN..W_KING = 1..6, B_* = 9..14.
 #[inline(always)]
 #[allow(dead_code)]
 fn sf_piece_code(side: Side, piece: Piece) -> usize {
@@ -98,15 +68,11 @@ fn sf_piece_code(side: Side, piece: Piece) -> usize {
     if side == Side::Black { base + 8 } else { base }
 }
 
-// ---------------------------------------------------------------------------
-// Position view in Stockfish numbering shared by features and trainer.
-// ---------------------------------------------------------------------------
-
 pub struct SfnnPosition {
-    pub pieces: [u64; 6], // per Whale Piece discriminant, A1=0 bitboards
+    pub pieces: [u64; 6],
     pub white: u64,
     pub black: u64,
-    // 0..5 = piece type, 6 = empty, in A1=0 order
+
     pub mapping: [u8; 64],
 }
 
@@ -151,10 +117,6 @@ impl SfnnPosition {
         self.occupied().count_ones() as usize
     }
 }
-
-// ---------------------------------------------------------------------------
-// HalfKAv2_hm, exact port of make_index.
-// ---------------------------------------------------------------------------
 
 pub fn halfka_index(
     perspective: Side,
@@ -204,10 +166,6 @@ pub fn append_halfka(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// SF-numbered attack helpers (threat geometry only).
-// ---------------------------------------------------------------------------
 
 const FILE_A_BB: u64 = 0x0101_0101_0101_0101;
 const FILE_H_BB: u64 = 0x8080_8080_8080_8080;
@@ -310,11 +268,9 @@ fn slider_attacks_sf(sf_piece_type: usize, sq: usize, occ: u64) -> u64 {
 }
 
 fn pseudo_attacks_sf(piece_code: usize, sq: usize) -> u64 {
-    // Empty-board attacks for LUT construction. piece_code: SF codes.
     let pt = piece_code & 7;
     match pt {
         1 => {
-            // Pawns: both diagonals on the board (rank edges handled by caller).
             let f = (sq & 7) as i32;
             let r = (sq >> 3) as i32;
             let dr = if piece_code < 8 { 1 } else { -1 };
@@ -334,15 +290,10 @@ fn pseudo_attacks_sf(piece_code: usize, sq: usize) -> u64 {
     }
 }
 
-// Whale Piece discriminant -> SF piece type (1..6)
 #[inline(always)]
 fn sf_piece_type(pt_whale: usize) -> usize {
     pt_whale + 1
 }
-
-// ---------------------------------------------------------------------------
-// FullThreats tables (v10 values) + exact make_index.
-// ---------------------------------------------------------------------------
 
 const NUM_VALID_TARGETS: [usize; 16] = [0, 4, 10, 8, 8, 10, 0, 0, 0, 4, 10, 8, 8, 10, 0, 0];
 
@@ -355,22 +306,21 @@ const THREAT_MAP: [[i32; 6]; 6] = [
     [-1, -1, -1, -1, -1, -1],
 ];
 
-// OrientTBL[perspective][square]: file-based mirror anchors (A1=0 numbering).
 #[inline(always)]
 fn threat_orient(perspective: Side, sq_sf: usize) -> usize {
     let left_files = sq_sf & 7 < 4;
     match (perspective, left_files) {
-        (Side::White, true) => 0,   // SQ_A1
-        (Side::White, false) => 7,  // SQ_H1
-        (Side::Black, true) => 56,  // SQ_A8
-        (Side::Black, false) => 63, // SQ_H8
+        (Side::White, true) => 0,
+        (Side::White, false) => 7,
+        (Side::Black, true) => 56,
+        (Side::Black, false) => 63,
         (Side::Both, _) => 0,
     }
 }
 
 struct ThreatLuts {
     offsets: [[u32; 66]; 16],
-    lut1: [[u32; 16]; 16], // packed: bit1 = always excluded, bit0 = semi, base >> 8
+    lut1: [[u32; 16]; 16],
     lut2: [[[u8; 64]; 64]; 16],
 }
 
@@ -386,7 +336,6 @@ fn build_threat_luts() -> ThreatLuts {
             if pt != 1 {
                 piece_offset += pseudo_attacks_sf(code, from).count_ones();
             } else if (8..56).contains(&from) {
-                // Pawns on ranks 2..7 (A1=0 numbering).
                 piece_offset += pseudo_attacks_sf(code, from).count_ones();
             }
         }
@@ -405,8 +354,7 @@ fn build_threat_luts() -> ThreatLuts {
             let map = THREAT_MAP[at][vt];
             let semi = (attacker & 7) == (attacked & 7) && (enemy || (attacker & 7) != 1);
             let excluded = map < 0;
-            // C++ does this sum in unsigned 32-bit (wraps for excluded pairs,
-            // whose entries are never used); replicate with wrapping ops.
+
             let color = (attacked >> 3) as i32;
             let per = NUM_VALID_TARGETS[attacker] as i32 / 2;
             let feature = offsets[attacker][65]
@@ -468,8 +416,6 @@ fn threat_make_index(
     Some(index as usize)
 }
 
-/// Enumerates every attack edge once, in a fixed order, as
-/// `(attacker_code, from_sf, to_sf, attacked_code)` with SF piece codes.
 pub fn for_each_threat(pos: &SfnnPosition, mut emit: impl FnMut(usize, usize, usize, usize)) {
     let occ = pos.occupied();
     let whale_occ = crate::bitboard::Bitboard(occ.swap_bytes());
@@ -489,7 +435,6 @@ pub fn for_each_threat(pos: &SfnnPosition, mut emit: impl FnMut(usize, usize, us
             let sf_pt = sf_piece_type(pt);
             let attacker = if c == Side::White { sf_pt } else { sf_pt + 8 };
             if pt == 0 {
-                // Pawns: diagonal captures onto occupied squares.
                 while bb != 0 {
                     let from = bb.trailing_zeros() as usize;
                     bb &= bb - 1;
@@ -533,8 +478,6 @@ pub fn for_each_threat(pos: &SfnnPosition, mut emit: impl FnMut(usize, usize, us
     }
 }
 
-/// Threat index for one perspective (needs that side's king square).
-/// Returns None for excluded pairs (mirrors the Dimensions sentinel).
 pub fn threat_index_for(
     perspective: Side,
     attacker: usize,
@@ -554,10 +497,6 @@ pub fn append_threats(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize
         }
     });
 }
-
-// ---------------------------------------------------------------------------
-// PP_3Wide pairs
-// ---------------------------------------------------------------------------
 
 #[inline(always)]
 fn make_pawn_id(color: Side, square_sf: usize) -> usize {
@@ -632,8 +571,6 @@ pub fn pair_index_for(
         - (PSQ_DIMS + THREAT_DIMS)
 }
 
-/// Enumerates every pawn-pair relationship once as
-/// `(color, from_sf, to_sf, paired_color)`.
 pub fn for_each_pair(pos: &SfnnPosition, mut emit: impl FnMut(Side, usize, usize, Side)) {
     let white = pos.pieces[Piece::Pawn as usize] & pos.white;
     let black = pos.pieces[Piece::Pawn as usize] & pos.black;
@@ -644,14 +581,14 @@ pub fn for_each_pair(pos: &SfnnPosition, mut emit: impl FnMut(Side, usize, usize
         bb &= bb - 1;
         let band = pawn_pair_bb(from);
 
-        let mut ww = band & bb; // Only pair with remaining white pawns
+        let mut ww = band & bb;
         while ww != 0 {
             let to = ww.trailing_zeros() as usize;
             ww &= ww - 1;
             emit(Side::White, from, to, Side::White);
         }
 
-        let mut wb = band & black; // Pair with all black pawns
+        let mut wb = band & black;
         while wb != 0 {
             let to = wb.trailing_zeros() as usize;
             wb &= wb - 1;
@@ -665,7 +602,7 @@ pub fn for_each_pair(pos: &SfnnPosition, mut emit: impl FnMut(Side, usize, usize
         bb &= bb - 1;
         let band = pawn_pair_bb(from);
 
-        let mut bbk = band & bb; // Only pair with remaining black pawns
+        let mut bbk = band & bb;
         while bbk != 0 {
             let to = bbk.trailing_zeros() as usize;
             bbk &= bbk - 1;
@@ -755,10 +692,6 @@ pub fn collect_pairs(
     len
 }
 
-// ---------------------------------------------------------------------------
-// Buckets + simple_eval gate (evaluate.cpp).
-// ---------------------------------------------------------------------------
-
 pub fn material_bucket(piece_count: usize) -> usize {
     ((piece_count.saturating_sub(1)) / 4).min(N_BUCKETS - 1)
 }
@@ -813,7 +746,6 @@ fn combine_hash(hashes: &[u32]) -> u32 {
 }
 
 pub fn arch_hash(l1: u32) -> u32 {
-    // fc_0 -> ac_0 -> fc_1 -> ac_1 -> fc_2 (ac_sqr omitted, like Stockfish).
     let mut h = 0xEC42E90Du32 ^ (l1 * 2);
     h = affine_hash(FC0_OUT as u32, h);
     h = relu_hash(h);
@@ -835,8 +767,6 @@ pub fn network_hash(use_threats: bool, l1: u32) -> u32 {
     transformer_hash(use_threats, l1) ^ arch_hash(l1)
 }
 
-// De-scramble table for SSSE3ChunkSize=4 fully-connected weights.
-// Reference implementation: exercised only by `unscramble_table_is_permutation`.
 #[cfg(test)]
 fn unscramble_table(out_dims: usize, padded_in: usize) -> Vec<usize> {
     let n = out_dims * padded_in;
@@ -993,14 +923,14 @@ impl SfnnArch {
 #[derive(Clone, Debug, Default)]
 pub struct SfnnTransformer {
     pub bias: Vec<i16>,
-    pub weights: Vec<i16>,       // PSQ_DIMS x l1, [feat * l1 + j]
-    pub threat_w: Vec<i8>,       // THREAT_DIMS x l1 (empty for small net)
-    pub threat_w_i16: Vec<i16>,  // For Rudi net
-    pub psqt_w: Vec<i32>,        // PSQ_DIMS x 8, [feat * 8 + b]
-    pub threat_psqt_w: Vec<i32>, // THREAT_DIMS x 8 (empty for small net)
-    pub pair_w: Vec<i8>,         // PAIR_DIMS x l1 (empty for small net)
-    pub pair_w_i16: Vec<i16>,    // For Rudi net
-    pub pair_psqt_w: Vec<i32>,   // PAIR_DIMS x 8 (empty for small net)
+    pub weights: Vec<i16>,
+    pub threat_w: Vec<i8>,
+    pub threat_w_i16: Vec<i16>,
+    pub psqt_w: Vec<i32>,
+    pub threat_psqt_w: Vec<i32>,
+    pub pair_w: Vec<i8>,
+    pub pair_w_i16: Vec<i16>,
+    pub pair_psqt_w: Vec<i32>,
 }
 
 #[derive(Clone, Debug)]
@@ -1009,7 +939,7 @@ pub struct Sfnn16Net {
     pub use_threats: bool,
     pub is_rudi: bool,
     pub transformer: SfnnTransformer,
-    pub stacks: Vec<SfnnArch>, // N_BUCKETS entries
+    pub stacks: Vec<SfnnArch>,
 }
 
 impl Sfnn16Net {
@@ -1288,20 +1218,6 @@ fn read_rudi_i32(data: &[u8], offset: &mut usize, count: usize) -> Result<Vec<i3
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// Inference (scalar + AVX2 paths).
-// ---------------------------------------------------------------------------
-
-// SAFETY invariants for all AVX2 routines below:
-//  - Callers verify AVX2 availability via `is_x86_feature_detected!("avx2")`
-//    at runtime before invoking any `*_avx2` function.
-//  - Buffers and slices passed to these functions have fixed dimensions
-//    proportional to SIMD vector widths (e.g. `FC0_OUT = 32`, `FC1_OUT = 32`,
-//    `L1 = 1024`, `N_BUCKETS = 8`). Loop indices are strictly bounded by
-//    these compile-time constants.
-//  - Memory reads use `_mm256_loadu_si256` for potentially unaligned slices,
-//    preventing alignment fault exceptions.
-
 #[inline(always)]
 fn div_trunc(a: i32, b: i32) -> i32 {
     a / b
@@ -1572,10 +1488,6 @@ fn propagate(arch: &SfnnArch, l1: usize, input: &[u8]) -> i32 {
     ((out as i64 * multiplier) / denominator) as i32
 }
 
-// ---------------------------------------------------------------------------
-// Incremental accumulators (HalfKA + PSQT; threats are per-eval).
-// ---------------------------------------------------------------------------
-
 #[derive(Clone, Debug)]
 pub struct Sfnn16Accs {
     pub halfka: [[i16; L1]; 2],
@@ -1631,8 +1543,6 @@ pub fn active_loaded_net() -> Option<&'static LoadedNets> {
     }
 }
 
-/// Test-only handle on the active network. Production reads `ACTIVE_NET`
-/// directly, so this stays out of non-test builds.
 #[cfg(test)]
 fn loaded_nets() -> Option<Arc<LoadedNets>> {
     NETS.read().ok().and_then(|guard| guard.clone())
@@ -1642,15 +1552,7 @@ pub fn try_load_default_path() -> Option<&'static str> {
     if maintenance_active() {
         return Some("active");
     }
-    // Precedence matches the other entry points so startup and `Model`/
-    // `EvalFile` resolve to the same file:
-    //   1. the Whale family in `models/` (the `Model` combo values, see
-    //      `resolve_model_path`),
-    //   2. the same files dropped next to the binary (the Makefile `all`
-    //      target copies the binary into the repo root),
-    //   3. raw/vendored checkpoint files.
-    // Legacy `rudim*.nnue` names were dropped together with the files
-    // themselves; `EvalFile` still accepts any explicit path.
+
     let candidates = [
         "models/whale_big.nnue",
         "models/whale_medium.nnue",
@@ -1660,7 +1562,6 @@ pub fn try_load_default_path() -> Option<&'static str> {
         "whale_small.nnue",
         "v16/quantised.bin",
         "quantised.bin",
-        // Written by `train::copy_trained_weights` (BIG_KEEPER_PATH).
         "resources/sfnn16-big-checkpoint.bin",
     ];
     candidates
@@ -1681,9 +1582,6 @@ fn current_gen() -> u64 {
     NETS_GEN.load(Ordering::SeqCst)
 }
 
-/// Load an SFNNv16 file. On success the network activates (bumps the
-/// generation so all accumulator entries refresh lazily); on failure the
-/// previous network (if any) is kept.
 pub fn load_net(path: &str) -> Result<(), &'static str> {
     let net =
         Sfnn16Net::load_file(path, true, L1).or_else(|_| Sfnn16Net::load_file(path, false, L1))?;
@@ -2065,8 +1963,6 @@ fn kings_present(pos: &SfnnPosition) -> bool {
 }
 
 pub fn refresh_all(pos: &SfnnPosition, accs: &mut Sfnn16Accs) {
-    // Mid-parse boards may miss a king: leave the entry stale so it
-    // refreshes once the position is complete.
     if !kings_present(pos) {
         return;
     }
@@ -2122,10 +2018,6 @@ pub fn apply_queued(
         accs.generation = current_gen();
     }
 }
-
-// ---------------------------------------------------------------------------
-// Full evaluation.
-// ---------------------------------------------------------------------------
 
 #[cfg(target_arch = "x86_64")]
 #[target_feature(enable = "avx2")]
@@ -2400,8 +2292,6 @@ unsafe fn accumulate_psqt_avx2(
     }
 }
 
-// Non-tiled AVX2 kernel: kept as the reference implementation the tiled
-// production path is checked against, so it is compiled for tests only.
 #[cfg(all(test, target_arch = "x86_64"))]
 #[target_feature(enable = "avx2")]
 unsafe fn pairwise_transform_threats_avx2(
@@ -2797,8 +2687,6 @@ pub struct SfnnEval {
 }
 
 pub fn evaluate_nets(pos: &SfnnPosition, accs: &mut Sfnn16Accs, stm: Side) -> Option<SfnnEval> {
-    // Kingless mid-parse boards would yield trailing_zeros() == 64 below
-    // (king-square-indexed tables); bail out instead of indexing OOB.
     if !kings_present(pos) {
         return None;
     }
@@ -2911,9 +2799,7 @@ pub fn evaluate_board(board: &mut BoardState) -> Option<i16> {
         return None;
     }
     let accs = &mut board.history.sfnn16[idx];
-    // Internal units, same as evaluate_board_detailed: the single caller
-    // (nnue::evaluate_with_optimism fallback) applies gate/material/damping
-    // itself. No *100/256 rescale here (that scale is only for UCI display).
+
     evaluate_nets(&pos, accs, board.side_to_move).map(|e| e.combined.clamp(-29000, 29000) as i16)
 }
 
@@ -2931,11 +2817,6 @@ pub fn evaluate_board_detailed(board: &mut BoardState) -> Option<SfnnEval> {
     evaluate_nets(&pos, accs, board.side_to_move)
 }
 
-// ---------------------------------------------------------------------------
-// Board integration helpers (wired from board/nnue.rs).
-// ---------------------------------------------------------------------------
-
-/// Queued v10 feature event in SF numbering: (sq_sf, side, piece).
 pub type SfnnEvent = (usize, Side, Piece);
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -2986,8 +2867,6 @@ pub fn note_remove(pending: &mut SfnnPending, square: Square, side: Side, piece:
     pending.push_del((to_sf(square as usize), side, piece));
 }
 
-/// Flush queued events into the history entry (incremental HalfKA + PSQT).
-/// Falls back to full refresh on overflow or king moves per perspective.
 pub fn flush_pending(pos: &SfnnPosition, accs: &mut Sfnn16Accs, pending: &mut SfnnPending) {
     if !maintenance_active() {
         pending.clear();
@@ -2998,8 +2877,6 @@ pub fn flush_pending(pos: &SfnnPosition, accs: &mut Sfnn16Accs, pending: &mut Sf
         return;
     }
     if accs.generation != current_gen() {
-        // Stale entry (new position or new nets): full refresh covers all
-        // queued events, so drop them.
         refresh_all(pos, accs);
         pending.clear();
         return;
@@ -3019,13 +2896,6 @@ pub fn flush_pending(pos: &SfnnPosition, accs: &mut Sfnn16Accs, pending: &mut Sf
     pending.clear();
 }
 
-// ---------------------------------------------------------------------------
-// Trainer-facing helpers (feature enumeration in SF numbering).
-// ---------------------------------------------------------------------------
-
-/// Fill White/Black-perspective feature lists from SF-numbered bitboards
-/// (trainer path). Threat indices are relative to PSQ_DIMS (caller adds the
-/// offset when the full index space is needed).
 pub fn trainer_features(
     pieces: &[u64; 6],
     white: u64,
@@ -3053,10 +2923,6 @@ pub fn trainer_features(
     }
     (w_h, b_h, w_t, b_t)
 }
-
-// ---------------------------------------------------------------------------
-// Tests.
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
@@ -3259,7 +3125,6 @@ mod tests {
                 let mut accs = Sfnn16Accs::empty();
                 refresh_all(&pos, &mut accs);
                 if let Some(eval) = evaluate_nets(&pos, &mut accs, board.side_to_move) {
-                    // Sanity anchor: the official net evaluates startpos near zero.
                     if is_official && name == "startpos" {
                         assert_eq!(eval.combined, -1);
                     }
@@ -3319,10 +3184,9 @@ mod tests {
 
     #[test]
     fn square_helpers_use_sf_numbering() {
-        // Whale E2 = 52 flips to SF E2 = 12 (A1 = 0).
         assert_eq!(to_sf(52), 12);
         assert_eq!(to_sf(to_sf(36)), 36);
-        // Kings on a-d files mirror, e-h files do not.
+
         assert_eq!(halfka_orient(0), 7);
         assert_eq!(halfka_orient(4), 0);
         assert_eq!(sf_piece_code(Side::White, Piece::Pawn), 1);
@@ -3393,7 +3257,6 @@ mod tests {
         let mut neg = 0;
         assert_eq!(read_i32_le(&[0xFF, 0xFF, 0xFF, 0xFF], &mut neg), Ok(-1));
 
-        // LEB128 section: magic + length + two i16 payloads (1, -1).
         let mut data = Vec::new();
         data.extend_from_slice(LEB128_MAGIC);
         data.extend_from_slice(&2u32.to_le_bytes());
@@ -3511,7 +3374,6 @@ mod tests {
             None
         );
 
-        // King lives on the dedicated 640 plane.
         let king_idx = halfka_index(Side::White, Side::White, Piece::King, 4, 4).unwrap();
         assert!(king_idx >= 640);
 
@@ -3526,7 +3388,6 @@ mod tests {
             assert_eq!(out, again);
         }
 
-        // No king: no features.
         assert!({
             let mut out = Vec::new();
             append_halfka(
@@ -3545,7 +3406,6 @@ mod tests {
 
     #[test]
     fn threat_and_pair_collectors_agree() {
-        // Kings only: no threats, no pairs, both collectors agree.
         let quiet =
             SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1"));
         let mut counted = 0;
@@ -3579,13 +3439,11 @@ mod tests {
             }
         }
 
-        // pair_index_for is the relative form of pair_make_index.
         let rel = pair_index_for(Side::White, Side::White, 12, 20, Side::White, 4);
         let abs = pair_make_index(Side::White, Side::White, 12, 20, Side::White, 4);
         assert_eq!(rel, abs - (PSQ_DIMS + THREAT_DIMS));
         assert!(rel < PAIR_DIMS);
 
-        // Trainer packs (halfka_w, halfka_b, threats+pairs_w, threats+pairs_b).
         let (w_h, b_h, w_t, b_t) =
             trainer_features(&pos.pieces, pos.white, pos.black, &pos.mapping);
         assert_eq!(w_h.len(), 32);
@@ -3596,9 +3454,6 @@ mod tests {
 
     #[test]
     fn whale_family_models_load() {
-        // The Whale model family lives in models/ (git-ignored: present in
-        // local checkouts, absent on CI — hence the skip when missing).
-        // Pure load_file: no global NETS mutation, safe under parallel tests.
         for name in ["whale_big", "whale_medium", "whale_small"] {
             let path = format!("models/{name}.nnue");
             if !std::path::Path::new(&path).exists() {
@@ -3670,20 +3525,19 @@ mod tests {
 
     #[test]
     fn halfka_black_perspective_and_ownership() {
-        // King on e1 (SF 4): white own pawn vs enemy pawn differ by 64.
         let own = halfka_index(Side::White, Side::White, Piece::Pawn, 12, 4).unwrap();
         let enemy = halfka_index(Side::White, Side::Black, Piece::Pawn, 12, 4).unwrap();
         assert_eq!(enemy.wrapping_sub(own), 64);
         assert!(own < PSQ_DIMS && enemy < PSQ_DIMS);
-        // Black perspective flips the board (square 12 -> 52 region).
+
         let black = halfka_index(Side::Black, Side::Black, Piece::Pawn, 12, 4).unwrap();
         assert!(black < PSQ_DIMS);
         assert_ne!(own, black);
-        // Left-file vs right-file kings mirror the file.
+
         let left = halfka_index(Side::White, Side::White, Piece::Knight, 0, 0).unwrap();
         let right = halfka_index(Side::White, Side::White, Piece::Knight, 0, 7).unwrap();
         assert_ne!(left, right);
-        // All piece types (except None) produce an index.
+
         for &pt in &Piece::ALL {
             if pt == Piece::None {
                 continue;
@@ -3721,17 +3575,11 @@ mod tests {
     #[test]
     fn for_each_threat_covers_piece_types() {
         let cases = [
-            // Pawn captures.
             "4k3/8/8/3p4/4P3/8/8/4K3 w - - 0 1",
-            // Knights attacking occupied squares.
             "4k3/8/8/3n4/8/2N5/8/4K3 w - - 0 1",
-            // Bishops on a shared diagonal.
             "4k3/8/8/3b4/4B3/8/8/4K3 w - - 0 1",
-            // Rooks on a shared file.
             "4k3/8/8/8/3R4/8/8/3rK3 w - - 0 1",
-            // Queens on a shared diagonal.
             "4k3/8/8/3q4/4Q3/8/8/4K3 w - - 0 1",
-            // King adjacent to a pawn.
             "4k3/8/8/8/8/8/3p4/4K3 w - - 0 1",
         ];
         for fen in cases {
@@ -3740,7 +3588,7 @@ mod tests {
             for_each_threat(&pos, |_, _, _, _| count += 1);
             assert!(count > 0, "no threat edges for {fen}");
         }
-        // Kings only: no edges.
+
         let quiet =
             SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1"));
         let mut count = 0;
@@ -3751,19 +3599,19 @@ mod tests {
     #[test]
     fn threat_index_excluded_semi_and_perspective() {
         let ksq = 4;
-        // Pawn vs pawn is excluded.
+
         assert_eq!(threat_index_for(Side::White, 1, 12, 19, 9, ksq), None);
-        // Knight vs king is excluded.
+
         assert_eq!(threat_index_for(Side::White, 2, 10, 4, 6, ksq), None);
-        // Knight vs knight (enemy) is semi: ordering decides.
+
         assert_eq!(threat_index_for(Side::White, 2, 10, 20, 10, ksq), None);
         let some = threat_index_for(Side::White, 2, 20, 10, 10, ksq);
         assert!(some.is_some());
         assert!(some.unwrap() < THREAT_DIMS);
-        // Non-semi pair (knight vs queen) is valid in both orderings.
+
         assert!(threat_index_for(Side::White, 2, 10, 20, 13, ksq).is_some());
         assert!(threat_index_for(Side::White, 2, 20, 10, 13, ksq).is_some());
-        // Black perspective also resolves (colors flipped internally).
+
         assert!(threat_index_for(Side::Black, 1, 12, 19, 9, 60).is_none());
         assert!(
             threat_index_for(Side::Black, 2, 20, 10, 10, 60).is_some()
@@ -3773,7 +3621,6 @@ mod tests {
 
     #[test]
     fn pair_orient_and_enumeration_variants() {
-        // All perspective/king-file/color combos stay in the pair window.
         for &persp in &[Side::White, Side::Black] {
             for &ksq in &[0usize, 7, 56, 63] {
                 for &(c, pc) in &[
@@ -3790,7 +3637,7 @@ mod tests {
                 }
             }
         }
-        // Neighboring white pawns pair; distant pawns do not.
+
         let near =
             SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/2P5/3P4/4K3 w - - 0 1"));
         let mut n = 0;
@@ -3801,7 +3648,7 @@ mod tests {
         let mut m = 0;
         for_each_pair(&far, |_, _, _, _| m += 1);
         assert_eq!(m, 0);
-        // Mixed colors on neighboring files pair.
+
         let mixed =
             SfnnPosition::from_board(&BoardState::parse_fen("4k3/8/8/8/8/2p5/3P4/4K3 w - - 0 1"));
         let mut k = 0;
@@ -3811,13 +3658,12 @@ mod tests {
 
     #[test]
     fn read_leb128_section_extra_errors() {
-        // Magic present but length missing.
         let mut only_magic = Vec::new();
         only_magic.extend_from_slice(LEB128_MAGIC);
         assert!(read_leb128_section(&only_magic, &mut 0, 1, decode_leb128_i16).is_err());
-        // Bad magic.
+
         assert!(read_leb128_section(&[0u8; 17], &mut 0, 1, decode_leb128_i16).is_err());
-        // Truncated payload after a valid header.
+
         let mut data = Vec::new();
         data.extend_from_slice(LEB128_MAGIC);
         data.extend_from_slice(&1u32.to_le_bytes());
@@ -3827,13 +3673,12 @@ mod tests {
 
     #[test]
     fn decode_leb128_overflow_and_truncation() {
-        // Empty input truncates.
         assert!(decode_leb128_i64(&[], &mut 0, 32).is_err());
-        // 6 continuation bytes overflow a 32-bit payload.
+
         assert!(decode_leb128_i64(&[0x80, 0x80, 0x80, 0x80, 0x80, 0x80], &mut 0, 32).is_err());
-        // Multi-byte positive decodes.
+
         assert_eq!(decode_leb128_i64(&[0xAC, 0x02], &mut 0, 32), Ok(300));
-        // Sign extension for 16-bit -2 (0x7E).
+
         assert_eq!(decode_leb128_i16(&[0x7E], &mut 0), Ok(-2));
     }
 
@@ -3862,9 +3707,9 @@ mod tests {
         let arch = SfnnArch::load(&data, &mut pos, 32, arch_hash(32)).unwrap();
         assert_eq!(pos, data.len());
         assert!(!arch.is_rudi);
-        // Bad hash.
+
         assert!(SfnnArch::load(&data, &mut 0, 32, 0x12345678).is_err());
-        // Truncated tails hit each section.
+
         for cut in [1usize, 100, 500, 1500, 3000] {
             let mut p = 0;
             assert!(
@@ -3876,57 +3721,55 @@ mod tests {
 
     #[test]
     fn sfnn16_load_bytes_early_errors() {
-        // Bad version.
         assert!(Sfnn16Net::load_bytes(&[0, 0, 0, 0], true, 2).is_err());
-        // Correct version but wrong file hash (threat net).
+
         let mut bad_hash = Vec::new();
         bad_hash.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
         bad_hash.extend_from_slice(&0u32.to_le_bytes());
         assert!(Sfnn16Net::load_bytes(&bad_hash, true, 2).is_err());
-        // Same prefix without threat check proceeds to description length.
+
         assert!(Sfnn16Net::load_bytes(&bad_hash, false, 2).is_err());
-        // Truncated description.
+
         let mut desc = Vec::new();
         desc.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
         desc.extend_from_slice(&network_hash(true, 2).to_le_bytes());
         desc.extend_from_slice(&100u32.to_le_bytes());
         assert!(Sfnn16Net::load_bytes(&desc, true, 2).is_err());
-        // Bad transformer hash.
+
         let mut th = Vec::new();
         th.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
         th.extend_from_slice(&network_hash(true, 2).to_le_bytes());
         th.extend_from_slice(&0u32.to_le_bytes());
         th.extend_from_slice(&0u32.to_le_bytes());
         assert!(Sfnn16Net::load_bytes(&th, true, 2).is_err());
-        // Correct transformer hash but truncated bias section.
+
         let mut ok = Vec::new();
         ok.extend_from_slice(&SF_FILE_VERSION.to_le_bytes());
         ok.extend_from_slice(&network_hash(true, 2).to_le_bytes());
         ok.extend_from_slice(&0u32.to_le_bytes());
         ok.extend_from_slice(&transformer_hash(true, 2).to_le_bytes());
         assert!(Sfnn16Net::load_bytes(&ok, true, 2).is_err());
-        // Bogus option never touches the global nets.
+
         assert!(set_eval_file("Bogus", "x").is_err());
         assert!(set_eval_file("EvalFileSmall", "x").is_ok());
     }
 
     #[test]
     fn load_rudi_extra_rejections() {
-        // Wrong payload length with RUDI header.
         let mut bad = Vec::new();
         bad.extend_from_slice(b"RUDI");
         bad.extend_from_slice(&123u32.to_le_bytes());
         bad.extend(std::iter::repeat_n(0u8, 123));
         assert!(Sfnn16Net::load_rudi(&bad).is_err());
-        // Declared length does not match actual length.
+
         let mut short = Vec::new();
         short.extend_from_slice(b"RUDI");
         short.extend_from_slice(&181_011_108u32.to_le_bytes());
         short.extend(std::iter::repeat_n(0u8, 100));
         assert!(Sfnn16Net::load_rudi(&short).is_err());
-        // Plain blob of an unrelated size.
+
         assert!(Sfnn16Net::load_rudi(&[1u8; 100]).is_err());
-        // Truncated RUDI helpers.
+
         assert!(read_rudi_i16(&[0x01], &mut 0, 1).is_err());
         assert!(read_rudi_i32(&[0x01, 0x02], &mut 0, 1).is_err());
     }
@@ -3943,11 +3786,11 @@ mod tests {
             is_rudi: rudi,
         };
         let input = [0u8; 32];
-        // Rudi zero net: ((0 - 2.8) * 100) * 16 = -4480.
+
         assert_eq!(propagate(&mk(true), 32, &input), -4480);
-        // Stockfish zero net: all-zero dot product.
+
         assert_eq!(propagate(&mk(false), 32, &input), 0);
-        // Same call twice is deterministic.
+
         assert_eq!(
             propagate(&mk(true), 32, &input),
             propagate(&mk(true), 32, &input)
@@ -3976,7 +3819,7 @@ mod tests {
         scatter_halfka(&tr, l1, &[0], &mut acc, &mut psqt, -1);
         assert!(acc.iter().all(|&v| v == 0));
         assert!(psqt.iter().all(|&v| v == 0));
-        // Scalar tail (l1 not a multiple of 16) also round-trips.
+
         let l1s = 15usize;
         let trs = SfnnTransformer {
             bias: vec![0; l1s],
@@ -4002,19 +3845,19 @@ mod tests {
         let board = BoardState::parse_fen("8/8/8/8/8/8/8/8 w - - 0 1");
         let pos = SfnnPosition::from_board(&board);
         assert!(!kings_present(&pos));
-        // Evaluate bails out before touching any network.
+
         let mut accs = Sfnn16Accs::empty();
         assert!(evaluate_nets(&pos, &mut accs, Side::White).is_none());
-        // Refresh on a kingless board is a no-op.
+
         let mut accs = Sfnn16Accs::empty();
         refresh_all(&pos, &mut accs);
         ensure_fresh(&pos, &mut accs);
-        // Queued deltas on a kingless board are dropped.
+
         let mut pending = SfnnPending::default();
         note_add(&mut pending, Square::E2, Side::White, Piece::Pawn);
         flush_pending(&pos, &mut accs, &mut pending);
         assert_eq!(pending.n_adds, 0);
-        // Incremental apply never panics, whatever the global net state.
+
         let start =
             BoardState::parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1");
         let spos = SfnnPosition::from_board(&start);
@@ -4066,7 +3909,7 @@ mod tests {
                 is_rudi: rudi,
             }],
         };
-        // Rudi with and without threats exercises the /255 vs /512 split.
+
         let rudi_t = mk(true, true);
         let rudi_nt = mk(true, false);
         let (psqt_t, pos_t) = eval_with_net(&pos, &rudi_t, [&base; 2], [&psqt; 2], Side::White, 0);
@@ -4076,16 +3919,16 @@ mod tests {
             (psqt_t, pos_t),
             eval_with_net(&pos, &rudi_t, [&base; 2], [&psqt; 2], Side::White, 0)
         );
-        // Stockfish net without threats takes the no-threat AVX2/scalar tail.
+
         let sf_nt = mk(false, false);
         let _ = eval_with_net(&pos, &sf_nt, [&base; 2], [&psqt; 2], Side::White, 0);
         let _ = eval_with_net(&pos, &sf_nt, [&base; 2], [&psqt; 2], Side::Black, 0);
-        // Threats disabled must ignore threat weights entirely.
+
         assert_eq!(
             (psqt_nt, pos_nt),
             eval_with_net(&pos, &rudi_nt, [&base; 2], [&psqt; 2], Side::White, 0)
         );
-        // Trainer helper stays consistent on the same position.
+
         let (w_h, b_h, w_t, b_t) =
             trainer_features(&pos.pieces, pos.white, pos.black, &pos.mapping);
         assert!(!w_h.is_empty() && !b_h.is_empty());
@@ -4724,9 +4567,6 @@ mod tests {
 
     #[test]
     fn cover_for_each_threat_skips_empty_mapping() {
-        // Lines 469 (pawn) and 499 (non-pawn): `continue` when the victim square
-        // is occupied in the bitboards but empty in `mapping` (> 5). Crafted
-        // inconsistent positions trigger those guards without touching globals.
         let pawn_pos = SfnnPosition {
             pieces: {
                 let mut p = [0u64; 6];
@@ -4745,7 +4585,7 @@ mod tests {
                 m
             },
         };
-        // White pawn on SF 12 attacks SF 19; victim mapping 6 skips the edge.
+
         let mut pawn_edges = 0;
         for_each_threat(&pawn_pos, |_, _, _, _| pawn_edges += 1);
         let mut pawn_fixed = pawn_pos;
@@ -4755,7 +4595,6 @@ mod tests {
         for_each_threat(&pawn_fixed, |_, _, _, _| pawn_fixed_edges += 1);
         assert!(pawn_fixed_edges > pawn_edges);
 
-        // Knight on SF 10 reaches SF 20; victim mapping 6 skips the edge.
         assert_ne!(knight_attacks_sf(10) & (1u64 << 20), 0);
         let knight_pos = SfnnPosition {
             pieces: {
@@ -4787,8 +4626,6 @@ mod tests {
 
     #[test]
     fn cover_threat_index_never_overflows() {
-        // Line 434 `return None` when `index >= THREAT_DIMS` looks defensive:
-        // exhaustive sweep documents that no valid combo reaches it.
         let mut max_seen = 0usize;
         for perspective in [Side::White, Side::Black] {
             for attacker in 0..16usize {
@@ -4818,10 +4655,8 @@ mod tests {
 
     #[test]
     fn cover_load_bytes_truncation_hits_pp_and_combined() {
-        // Lines 1043 (SF17 pp `?`) and 1056 (combined weights `?`): truncate
-        // inside those exact sections so the `?` propagates an error.
         let sf17 = build_tiny_sf17_for_test(2);
-        // Sweep truncations; several must land inside the 36k pp payload and fail.
+
         let mut saw_err = 0;
         let mut len = sf17.len();
         while len > 100 {
@@ -4834,14 +4669,11 @@ mod tests {
             }
         }
         assert!(saw_err > 0);
-        // Targeted cut inside pp: after threat-PSQT + pair-raw, inside pp section.
-        // Offsets for l1=2: header/thash/bias=38, threat-raw=119_616,
-        // threat-PSQT~=478_484, pair-raw=9_120, then pp MAGIC+len+payload.
+
         let pp_start = 38 + THREAT_DIMS * 2 + (16 + 4 + THREAT_DIMS * N_BUCKETS) + PAIR_DIMS * 2;
         assert!(Sfnn16Net::load_bytes(&sf17[..pp_start + 10], true, 2).is_err());
         assert!(Sfnn16Net::load_bytes(&sf17[..pp_start + 30], true, 2).is_err());
 
-        // Combined weights section starts right after header/bias (38).
         let combined = build_tiny_combined_threats_for_test(2);
         let early = 38 + 16 + 4 + 1000;
         assert!(Sfnn16Net::load_bytes(&combined[..early], true, 2).is_err());
@@ -4851,7 +4683,6 @@ mod tests {
 
     #[test]
     fn cover_load_rudi_raw_payload() {
-        // Line 1119 `data` for header-less raw payloads of exact length.
         let raw = vec![0u8; 181_011_108];
         let net = Sfnn16Net::load_rudi(&raw).expect("raw zero payload should parse");
         assert!(net.use_threats);
@@ -4861,9 +4692,6 @@ mod tests {
 
     #[test]
     fn cover_finny_changed_common_overflow() {
-        // Lines 1807 (`break` when diff exceeds 8 via changed_common) and 1854
-        // (fallthrough to refresh when inner `diff <= 8` is false). Same
-        // occupancy, 9 mapping flips on common squares.
         let loaded = dummy_full_loaded_nets_for_test();
         let board = BoardState::parse_fen("6k1/8/8/8/8/P7/PPPPPPPP/1K6 w - - 0 1");
         let pos_a = SfnnPosition::from_board(&board);
@@ -4900,14 +4728,12 @@ mod tests {
 
     #[test]
     fn cover_finny_skips_invalid_mapping() {
-        // Lines 1830/1845: `if pt <= 5` false when entry/pos mapping is 6 for a
-        // square in the incremental del/add sets. Small diff keeps the fast path.
         let loaded = dummy_full_loaded_nets_for_test();
-        // Deletion side: entry has occ bit with mapping 6, then it disappears.
+
         let mut pos_a =
             SfnnPosition::from_board(&BoardState::parse_fen("6k1/8/8/8/8/8/1P6/1K6 w - - 0 1"));
         pos_a.white |= 1u64 << 18;
-        // Keep pieces/white consistent except for the extra occ bit; mapping stays 6.
+
         assert_eq!(pos_a.mapping[18], 6);
         let pos_b =
             SfnnPosition::from_board(&BoardState::parse_fen("6k1/8/8/8/8/8/1P6/1K6 w - - 0 1"));
@@ -4920,7 +4746,7 @@ mod tests {
             acc.halfka[Side::White as usize],
             direct.halfka[Side::White as usize]
         );
-        // Addition side: new occ bit with mapping 6 appears.
+
         let pos_c =
             SfnnPosition::from_board(&BoardState::parse_fen("6k1/8/8/8/8/8/1P6/1K6 w - - 0 1"));
         let mut pos_d = SfnnPosition {
@@ -4944,8 +4770,6 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn cover_add_threat_w_i16_avx2_direct() {
-        // Lines 1941/1944-1952/1954: direct AVX2 add helper, no globals.
-        // Server and CI run on AVX2 x86_64; `cfg` gates compilation, no runtime branch.
         let mut buf = [0i32; L1];
         let w = [1i16; L1];
         unsafe { add_threat_w_i16_avx2(&mut buf, &w) };
@@ -4958,8 +4782,6 @@ mod tests {
     #[cfg(target_arch = "x86_64")]
     #[test]
     fn cover_rudi_1024_threat_pair_avx2() {
-        // Lines 2222-2224/2236-2238: rudi AVX2 call sites need l1==1024 plus
-        // non-empty threat/pair lists. Server runs AVX2 x86_64; no runtime branch.
         let board = BoardState::parse_fen("4k3/8/8/8/2p5/2n5/1PP5/4K3 w - - 0 1");
         let pos = SfnnPosition::from_board(&board);
         let base = [5i16; L1];

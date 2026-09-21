@@ -9,7 +9,7 @@ use crate::common::tt::{self, TranspositionEntryType};
 use crate::search::move_picker::MovePicker;
 use crate::search::pv_table::PvTable;
 use crate::search::search_state::SearchState;
-use crate::search::{alp, cfss, draw, gtp, lmr, nmp, psm, quiescence, tce};
+use crate::search::{alp, cfss, counterplay, draw, gtp, lmr, nmp, psm, quiescence, tce};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 #[inline(always)]
@@ -53,27 +53,19 @@ fn search_internal(
     previous_move: Option<Move>,
     ctx: &mut SearchContext,
 ) -> i16 {
-    // FIX ABORT-PROPAGATION: 0 here is *not* a valid score; every caller must
-    // check `is_cancelled` after a child returns and exit without TT store or
-    // history updates (cf. Reckless search.rs:316-318, Stockfish search.cpp).
     if is_cancelled(ctx) {
         return 0;
     }
 
     let is_pv_node = beta > 1 + alpha;
-    // PERF: the threat snapshot is computed lazily below (after the
-    // TT/syzygy/depth-0 early returns) so cutoffs never pay for it.
+
     let cut_node = ctx.cut_node;
     let halfmove = board_state.half_move_clock;
 
-    // FIX PV-TABLE: only touch the shared PV table on PV nodes; excluded and
-    // helper searches use temp tables / snapshot-restore below.
     if is_pv_node {
         ctx.pv_table.clear(ply as usize);
     }
 
-    // FIX NODES-SELDEPTH: exactly one node count per visit (no double count
-    // on draw/TT-cutoff paths below).
     ctx.search_state.nodes += 1;
     if is_pv_node {
         let sd = ply as u32 + 1;
@@ -86,9 +78,6 @@ fn search_internal(
     let mut best_score = -constants::MAX_CENTIPAWN_EVAL;
 
     if ply > 0 && board_state.is_draw_in_search(ply as u16) {
-        // Learned draw scoring (Stockfish value_draw + Lc0 contempt concepts,
-        // Whale's own formulas in search::draw): parity tweak avoids repetition
-        // blindness, contempt shifts draws when the user asks for it.
         let base = draw::draw_score(ctx.search_state.nodes);
         return draw::apply_contempt(
             base,
@@ -112,9 +101,6 @@ fn search_internal(
         return alpha;
     }
 
-    // FIX EXTENSIONS: no unconditional +1 for being in check (that overextends
-    // every check-evasion line); checking-move extensions are handled per-move
-    // below via gives_check/LMR. Just clamp runaway extended depth.
     let depth = depth.min(constants::MAX_PLY as u8 - 1);
 
     if ply as usize >= constants::MAX_PLY {
@@ -131,9 +117,6 @@ fn search_internal(
     let tt_entry = ctx.search_state.tt.probe(board_state.board_hash);
     let mut tt_best = None;
 
-    // FIX TT-CUTOFF-CONDITIONS (Reckless search.rs:386-406, Stockfish 880-920):
-    // depth margin for fail-low entries, cut-node gating, fifty>=96 skip
-    // (Stockfish rule50 gate concept; see search::draw::allow_tt_cutoff).
     if let Some(entry) = tt_entry {
         if entry.best_move != Move::NO_MOVE {
             tt_best = Some(entry.best_move);
@@ -155,9 +138,6 @@ fn search_internal(
         }
     }
 
-    // FIX SYZYGY-BOUND + M12 GUARDS (Stockfish search.cpp:931-981):
-    // probe only with few pieces, probe-depth respected at the limit,
-    // 50mr respected, no castling rights; cut only on EXACT or matching bound.
     if ply > 0 && ctx.excluded_move.is_none() {
         let pieces = board_state.occupancy().count_ones() as usize;
         let limit = crate::syzygy::probe_limit() as usize;
@@ -190,8 +170,7 @@ fn search_internal(
                 );
                 return tb_value;
             }
-            // PV tightening without cutoff (Stockfish): a lower bound raises
-            // best/alpha so search below never walks out of the TB win.
+
             if is_pv_node && tb_bound == TranspositionEntryType::Beta && tb_value > best_score {
                 best_score = tb_value;
                 if tb_value > alpha {
@@ -218,10 +197,6 @@ fn search_internal(
         );
     }
 
-    // PERF (Stockfish StateInfo / Reckless cached-threats concept): one
-    // threat snapshot per node shared by legality, eval, ordering and TCE.
-    // Placed after every early return above so TT/syzygy cutoffs and
-    // depth-0 entries never pay for it.
     let nt = NodeThreats::compute(board_state);
     let in_check = nt.in_check();
 
@@ -294,9 +269,8 @@ fn search_internal(
                 singular_beta = -constants::MAX_CENTIPAWN_EVAL;
             }
 
-            // FIX PV-TABLE: singular search must not pollute the shared PV.
             let mut se_pv_table = PvTable::new();
-            // Re-borrow split: pv_table and search_state are disjoint fields.
+
             let (se_pv, se_state) = (&mut se_pv_table, &mut *ctx.search_state);
             let mut se_ctx = SearchContext {
                 allow_null_move: false,
@@ -321,7 +295,6 @@ fn search_internal(
                 &mut se_ctx,
             );
 
-            // FIX ABORT-PROPAGATION: never trust se_score after cancellation.
             if is_cancelled(ctx) {
                 return 0;
             }
@@ -357,8 +330,6 @@ fn search_internal(
         is_improving = true;
     }
 
-    // FIX EXCLUDED-MOVE GUARDS (Reckless search.rs:386-570, Stockfish 839-840):
-    // no RFP/futility/LMP/history/ALP/PSM/GTP prune inside singular searches.
     if !is_pv_node && has_static_eval && ctx.excluded_move.is_none() {
         let mut margin = ctx.search_state.params.rfp_margin_mult * depth as i16;
         if !is_improving {
@@ -366,6 +337,18 @@ fn search_internal(
         }
         if momentum < -100 {
             margin += 60;
+        }
+
+        if ctx.search_state.params.cpi_enabled {
+            margin += counterplay::cpi_rfp_adjust(counterplay::compute_cpi_fast(&nt).cpi);
+        }
+
+        if ctx.search_state.reset_mode {
+            margin += 40;
+        }
+
+        if ctx.search_state.simplify_bias {
+            margin = (margin - 30).max(0);
         }
         margin += ctx
             .search_state
@@ -441,7 +424,6 @@ fn search_internal(
                         return 0;
                     }
                     let score = if q_score >= prob_beta && prob_depth > 1 {
-                        // FIX PV-TABLE: probcut verify must not touch shared PV.
                         let mut prob_graph = ctx.gtp_graph;
                         let prob_parent = prob_graph.add_node(gtp::GtpNode {
                             depth: prob_depth,
@@ -502,7 +484,6 @@ fn search_internal(
         }
     }
 
-    // PRUNE: Null Move Pruning (never inside singular search).
     if ctx.excluded_move.is_none()
         && nmp::can_prune(
             is_pv_node,
@@ -520,7 +501,7 @@ fn search_internal(
         let reduction =
             nmp::get_reduction_with_margin(depth, &ctx.search_state.params, momentum, eval_margin);
         let reduced_depth = depth.saturating_sub(reduction).max(1);
-        // FIX PV-TABLE: NMP verify uses a temp table.
+
         let mut nmp_graph = ctx.gtp_graph;
         let nmp_parent = nmp_graph.add_node(gtp::GtpNode {
             depth: reduced_depth,
@@ -532,8 +513,7 @@ fn search_internal(
         });
         let mut nmp_pv_table = PvTable::new();
         let (nmp_pv, nmp_state) = (&mut nmp_pv_table, &mut *ctx.search_state);
-        // EXTENSION CAP: the null path inherits (not extends) the current
-        // streak so the child reads a defined slot instead of a stale one.
+
         if (ply as usize) + 1 < constants::MAX_PLY {
             let own = nmp_state.extension_streak[ply as usize];
             nmp_state.extension_streak[(ply as usize) + 1] = own;
@@ -601,7 +581,7 @@ fn search_internal(
         )
     {
         let coarse_depth = cfss::get_coarse_depth(current_depth);
-        // FIX PV-TABLE: coarse pass must not clobber the shared PV line.
+
         let mut coarse_pv_table = PvTable::new();
         let (coarse_pv, coarse_state) = (&mut coarse_pv_table, &mut *ctx.search_state);
         let coarse_score = search_internal(
@@ -675,7 +655,6 @@ fn search_internal(
             break;
         }
 
-        // FIX LIMIT searchmoves: root filters to the UCI allow-list.
         if ply == 0
             && !ctx.search_state.searchmoves.is_empty()
             && !ctx.search_state.searchmoves.contains(&move_obj)
@@ -705,7 +684,6 @@ fn search_internal(
             }
         }
 
-        // FIX EXCLUDED-MOVE GUARDS: SEE prune never runs inside singular search.
         if !is_pv_node
             && !in_check
             && current_depth <= 8
@@ -732,14 +710,11 @@ fn search_internal(
         ctx.search_state.tt.prefetch(board_state.board_hash);
 
         has_legal_moves = true;
-        // FIX LMR-CHECK: 1-based count BEFORE any prune/LMR (Reckless
-        // search.rs:781), so reduction thresholds are not off by one.
+
         number_of_legal_moves += 1;
 
         let alpha_is_mate = alpha.abs() >= mate_bound;
 
-        // FIX LMR-CHECK: eager gives_check right after make_move, before every
-        // prune and LMR (lazy evaluation over-reduced checking moves).
         let gives_check = board_state.is_in_check(board_state.side_to_move);
 
         let mut extension: i8 = if Some(move_obj) == tt_best {
@@ -748,22 +723,6 @@ fn search_internal(
             0
         };
 
-        // COMPLEXITY-TRAP FIX (Stockfish/Reckless have no pawn-push or
-        // recapture extensions): the old +1s here stacked with singular/TCE
-        // every node along tactical lines, so depth never decreased and the
-        // search dived to MAX_PLY (observed ply 52-64 in Kiwi Pete depth 6).
-        // Threat-based extension is covered once, cheaply, by gated TCE below.
-        //
-        // FIX EXTENSIONS: TCE capped to +1, only at depth>=6, and only
-        // evaluated for tactical moves (captures/promotions/checks) — its
-        // feature extraction (pins x2, threats, checkers) is too costly
-        // to run on every quiet move.
-        //
-        // CORRECTNESS (post-make snapshot): this runs AFTER make_move, so
-        // the threat features must describe the post-make position (as the
-        // original fresh computation did). Reusing the pre-make `nt` here
-        // mixes both sides' data and explodes the tree (observed 60x on
-        // Kiwi Pete). Depth>=6 keeps this rare path affordable.
         let is_tactical_move = cap_or_promo || gives_check;
         let tce_ext =
             if current_depth >= 6 && is_tactical_move && ctx.search_state.params.tce_enabled {
@@ -783,16 +742,10 @@ fn search_internal(
             };
         extension = extension.max(tce_ext).clamp(-1, 2);
 
-        // EXTENSION CAP (Stockfish concept): never extend a third ply in a
-        // row — stacked singular/TCE/check extensions kept depth from
-        // decreasing and dived to MAX_PLY on tactical lines (observed ply
-        // 52-64 in Kiwi Pete). The streak of the path reaching THIS node
-        // lives in extension_streak[ply] (0 at root); the child slot is
-        // written before every search below so the child reads it on entry.
-        // Verification searches (singular/NMP/probcut/coarse) run at the
-        // same ply and never touch the child slot, so their streak is
-        // unaffected. Negative (reducing) extensions always pass through
-        // and reset the streak.
+        if ctx.search_state.verification_budget > 0 && is_tactical_move && extension < 2 {
+            extension = (extension + 1).min(2);
+        }
+
         let parent_streak = if ply as usize >= constants::MAX_PLY {
             2
         } else {
@@ -812,7 +765,6 @@ fn search_internal(
         let depth = (current_depth as i16 + extension as i16).max(1) as u8;
         let excluded_here = ctx.excluded_move.is_some();
 
-        // PRUNE: Futility Pruning (first move protected with 1-based count).
         if !is_pv_node
             && !excluded_here
             && number_of_legal_moves > 1
@@ -830,7 +782,6 @@ fn search_internal(
             continue;
         }
 
-        // PRUNE: Late Move Pruning
         let mut lmp_threshold = if is_improving {
             3 + (depth as usize * depth as usize)
         } else {
@@ -838,6 +789,18 @@ fn search_internal(
         };
         if !found_pv && number_of_legal_moves >= 8 {
             lmp_threshold = lmp_threshold.saturating_sub(2).max(4);
+        }
+        if ctx.search_state.params.risk_enabled
+            && (ctx.search_state.last_musttry
+                || ctx.search_state.last_state == crate::search::position_state::PositionState::Attack)
+        {
+            lmp_threshold = lmp_threshold.saturating_add(2);
+        } else if ctx.search_state.simplify_bias {
+            lmp_threshold = lmp_threshold.saturating_sub(2).max(3);
+        } else if ctx.search_state.params.state_enabled
+            && ctx.search_state.last_state == crate::search::position_state::PositionState::Defend
+        {
+            lmp_threshold = lmp_threshold.saturating_sub(1).max(3);
         }
         if !is_pv_node
             && !excluded_here
@@ -966,7 +929,6 @@ fn search_internal(
                     history_score,
                 ));
 
-        // PRUNE: History-based Pruning (Late Move Pruning)
         if depth <= 3
             && number_of_legal_moves > 3
             && !is_pv_node
@@ -984,9 +946,7 @@ fn search_internal(
         let mut score;
         let next_on_pv = ctx.on_pv_path && Some(move_obj) == pv_move;
         let move_nodes_start = ctx.search_state.nodes;
-        // Child cut-node: LMR-reduced searches are cut-nodes; full searches
-        // flip the parent flag (Stockfish: reduced=true, re-search=!cutNode,
-        // PV search=false).
+
         let child_cut = !cut_node;
 
         if (ply as usize + 1) < constants::MAX_PLY {
@@ -1004,7 +964,6 @@ fn search_internal(
                 psm::PsmEngine::step(&ctx.search_state.psm_stack.stack[ply as usize], &psm_feat);
         }
 
-        // REDUCTION: Late Move Reductions
         if needs_lmr {
             let lmr_query = lmr::LmrQuery {
                 depth,
@@ -1020,9 +979,7 @@ fn search_internal(
                 momentum,
                 found_pv,
                 structural_disagreement,
-                // Stockfish cut-node / tt-pv concept with Whale's own weights
-                // (see lmr::compute_reduction). No TT pv-flag yet, so PV nodes
-                // act as the conservative tt-pv proxy.
+
                 cut_node: ctx.cut_node,
                 tt_pv: is_pv_node,
             };
@@ -1038,8 +995,21 @@ fn search_internal(
             } else {
                 0
             };
-            let reduction =
+            let mut reduction =
                 (base_reduction as i8 + ras_perturbation).clamp(0, depth as i8 - 1) as u8;
+
+            if ctx.search_state.params.risk_enabled && ctx.search_state.last_musttry && ply <= 4 {
+                reduction = reduction.saturating_sub(1);
+            } else if ctx.search_state.params.state_enabled
+                && ctx.search_state.last_state == crate::search::position_state::PositionState::Attack
+                && is_tactical
+            {
+                reduction = reduction.saturating_sub(1);
+            } else if ctx.search_state.reset_mode && !is_tactical {
+                reduction = reduction.saturating_add(1).min(depth.saturating_sub(1));
+            } else if ctx.search_state.params.cpi_enabled && nt.checkers.count_ones() > 0 {
+                reduction = reduction.saturating_sub(1);
+            }
             score = -search_internal(
                 board_state,
                 depth.saturating_sub(1 + reduction),
@@ -1061,7 +1031,6 @@ fn search_internal(
                 },
             );
 
-            // FIX ABORT-PROPAGATION: discard reduced-search scores on abort.
             if is_cancelled(ctx) {
                 board_state.unmake_move(move_obj);
                 return 0;
@@ -1118,7 +1087,6 @@ fn search_internal(
 
         board_state.unmake_move(move_obj);
 
-        // FIX ABORT-PROPAGATION: propagate without touching TT/history/PV.
         if is_cancelled(ctx) {
             return 0;
         }
@@ -1129,8 +1097,6 @@ fn search_internal(
             consecutive_fail_lows = 0;
         }
 
-        // FIX FAIL-LOW-NOMOVE (Stockfish search.cpp:1529-1540): best move tracks
-        // best score even below alpha; alpha/PV update only above alpha.
         if score > best_score {
             best_score = score;
             best_move = move_obj;
@@ -1140,7 +1106,6 @@ fn search_internal(
                 entry_type = TranspositionEntryType::Exact;
                 found_pv = true;
 
-                // FIX PV-TABLE: shared table updated on PV nodes only.
                 if is_pv_node {
                     ctx.pv_table.update(ply as usize, move_obj);
                 }
@@ -1161,9 +1126,7 @@ fn search_internal(
                     .bmo
                     .update(current_depth, bandit_arm, early_cutoff);
             }
-            // FIX ABORT-PROPAGATION + LMR-CHECK: no store/update after abort;
-            // TT stores the parent depth (current_depth), same variable as the
-            // fail-low path below.
+
             if is_cancelled(ctx) {
                 return score;
             }
@@ -1191,8 +1154,6 @@ fn search_internal(
         }
     }
 
-    // FIX ABORT-PROPAGATION: a break above means cancellation; exit now with
-    // no TT store and no history updates.
     if is_cancelled(ctx) {
         return 0;
     }
@@ -1217,8 +1178,6 @@ fn search_internal(
         );
     }
 
-    // FIX EXCLUDED-MOVE GUARDS: singular searches update nothing (Stockfish
-    // search.cpp:1634-1642 writes TT only when !excludedMove; histories likewise).
     if !is_cancelled(ctx) {
         if ctx.excluded_move.is_none() {
             ctx.search_state.tt.submit_entry(
@@ -1444,8 +1403,6 @@ fn beta_cutoff(
     tried_captures: &[Move],
     excluded_move: Option<Move>,
 ) -> i16 {
-    // FIX ABORT-PROPAGATION + EXCLUDED-MOVE GUARDS: cancelled or singular
-    // searches submit nothing and update no histories (Stockfish 1634-1642).
     if cancellation_token.load(Ordering::Relaxed) {
         return score;
     }
@@ -1530,9 +1487,7 @@ pub struct SearchContext<'a> {
     pub on_pv_path: bool,
     pub previous_pv: &'a [Move],
     pub excluded_move: Option<Move>,
-    /// Stockfish cut-node flag: expected cut-node (fail-high) or all-node.
-    /// Root starts false; LMR-reduced children are cut-nodes, re-searches flip
-    /// the parent flag, PV searches are never cut-nodes.
+
     pub cut_node: bool,
     gtp_graph: gtp::GtpTreeGraph,
     gtp_parent: Option<usize>,
@@ -1593,7 +1548,7 @@ mod tests {
     #[test]
     fn stalemate_returns_zero() {
         let (score, _) = run_search(STALEMATE, 1, i16::MIN + 1, i16::MAX - 1);
-        // Draw score with node parity (search::draw): near-zero, not always 0.
+
         assert!(score.abs() <= 2, "stalemate score {score}");
     }
 
@@ -1786,8 +1741,6 @@ mod tests {
 
     #[test]
     fn tt_cutoff_skipped_when_halfmove_above_90() {
-        // TT cutoff gate is 96 (search::draw::allow_tt_cutoff, Stockfish 50mr
-        // concept): halfmove 97 must skip the cutoff and fall back to search.
         let mut board = BoardState::parse_fen("7k/5K2/6Q1/8/8/8/8/8 b - - 97 150");
         let cancel = AtomicBool::new(false);
         let mut pv_table = PvTable::new();
@@ -1890,12 +1843,6 @@ mod tests {
 
     #[test]
     fn extension_cap_never_exceeds_two_in_a_row() {
-        // Kiwi Pete dives to ply 52-64 via stacked singular/TCE/check
-        // extensions without the cap (>15 min at depth 8, hundreds of M
-        // nodes); with the cap it finishes in seconds. Depth 8 is needed
-        // because at depth 6 the streak never reaches 3 (verified: cap
-        // on/off gives identical 27k nodes there). Bounds are generous so
-        // both the embedded test net and whale_big pass.
         let mut board = BoardState::parse_fen(crate::common::helpers::KIWI_PETE_FEN);
         let cancel = AtomicBool::new(false);
         let mut debug = false;

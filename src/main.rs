@@ -41,12 +41,9 @@ fn real_main() {
             train_smoke_run(dataset_path);
         }
         Some("--profile") => {
-            // Intended to be used when profiling as reqd to debug CPU usage
             run_searches();
         }
         Some("bench") | Some("--bench") => {
-            // bench [hashMB] [threads] [depth] over a fixed set of positions
-            // with stable output (Reckless tools/bench.rs, SF benchmark.cpp).
             init();
             let hash_mb: usize = raw_args
                 .get(2)
@@ -226,7 +223,6 @@ fn run_searches() {
         println!("\nProfiling Position: {}", name);
         println!("FEN: {}", fen);
 
-        // Reset search state
         search_state.tt.clear();
         search_state.reset_heuristics();
         search_state.reset_search();

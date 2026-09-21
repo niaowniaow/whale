@@ -23,8 +23,7 @@ pub struct SearchParameters {
     pub psm_enabled: bool,
     pub gtp_enabled: bool,
     pub gtp_threshold: u8,
-    /// One UCI switch per experimental heuristic so A/B tuning never needs
-    /// code changes (all default to current behavior = true).
+
     pub cfss_enabled: bool,
     pub ras_enabled: bool,
     pub bmo_enabled: bool,
@@ -33,6 +32,20 @@ pub struct SearchParameters {
     pub sps_enabled: bool,
     pub dad_enabled: bool,
     pub extension_cap_enabled: bool,
+
+    pub cpi_enabled: bool,
+
+    pub state_enabled: bool,
+
+    pub risk_enabled: bool,
+
+    pub pressure_enabled: bool,
+
+    pub attack_enabled: bool,
+
+    pub conversion_enabled: bool,
+
+    pub qs_checks_enabled: bool,
 }
 
 impl Default for SearchParameters {
@@ -65,6 +78,13 @@ impl Default for SearchParameters {
             sps_enabled: true,
             dad_enabled: true,
             extension_cap_enabled: true,
+            cpi_enabled: true,
+            state_enabled: true,
+            risk_enabled: true,
+            pressure_enabled: true,
+            attack_enabled: true,
+            conversion_enabled: true,
+            qs_checks_enabled: true,
         }
     }
 }
@@ -82,7 +102,7 @@ pub struct SearchState {
     pub seldepth: u32,
     pub tbhits: u64,
     pub root_best_move_nodes: u64,
-    // FIX LIMIT FIELDS (exact names for team UCI wave): 0/empty = off/all.
+
     pub max_nodes: u64,
     pub mate_in: u8,
     pub searchmoves: Vec<Move>,
@@ -90,20 +110,13 @@ pub struct SearchState {
     pub previous_time_reduction: f64,
     pub best_move_changes: i32,
     pub optimism: [i32; 2],
-    /// Side the engine plays in this search (root side to move). Draw scoring
-    /// needs it so contempt is engine-relative: `apply_contempt` returns a value
-    /// from the side-to-move view, so the same draw must be scored *below* the
-    /// draw baseline for us and *above* it for the opponent.
-    /// Written by `iterative_deepening::search` before the first node is
-    /// visited, and inherited by helper threads via `clone_for_worker`.
+
     pub engine_side: Side,
-    /// Lc0-style draw aversion (cp, -200..200, 0 = off). Positive values make
-    /// the engine prefer playing on instead of taking draws (engine-relative:
-    /// the opponent then likes the draw just as much).
+
     pub contempt_cp: i16,
-    /// Absolute draw-value override (cp). Added to near-zero scores.
+
     pub draw_score_cp: i16,
-    /// Emit `wdl w d l` on info lines (Lc0 `info wdl` concept).
+
     pub show_wdl: bool,
     pub move_ordering: MoveOrdering,
     pub tt: Arc<TranspositionTable>,
@@ -111,11 +124,7 @@ pub struct SearchState {
     pub captures_stack: Box<[MoveList; MAX_PLY]>,
     pub quiets_stack: Box<[MoveList; MAX_PLY]>,
     pub eval_stack: Box<[i16; MAX_PLY]>,
-    /// Consecutive extension count per ply (Stockfish extension-cap concept):
-    /// slot `ply` holds the streak of the path reaching the node AT `ply`
-    /// (0 = arrived without extension). Written by the parent before each
-    /// child search, read by the child. Same single-writer pattern as
-    /// `eval_stack`, so no save/restore is needed across make/unmake.
+
     pub extension_streak: Box<[u8; MAX_PLY]>,
 
     pub lmr_table: crate::search::lmr::LmrTable,
@@ -124,6 +133,35 @@ pub struct SearchState {
     pub ras: crate::search::ras::RuntimeAnnealer,
     pub persona: crate::search::sps::SearchPersona,
     pub psm_stack: Box<crate::search::psm::PsmStack>,
+
+    pub multipv: usize,
+
+    pub multipv_lines: Vec<crate::search::multipv::MultipvLine>,
+
+    pub pressure_state: crate::search::pressure::PressureState,
+    pub state_thresholds: crate::search::position_state::StateThresholds,
+    pub risk_envelope: crate::search::risk::RiskEnvelope,
+    pub conversion_params: crate::search::conversion::ConversionParams,
+
+    pub prev_root_score: Option<i16>,
+    pub prev_opp_cpi: Option<i32>,
+    pub prev_opp_freedom: Option<u32>,
+
+    pub prev_opp_breaks: Option<u32>,
+
+    pub verification_budget: u8,
+
+    pub reset_mode: bool,
+
+    pub simplify_bias: bool,
+
+    pub last_musttry: bool,
+
+    pub last_verified: Option<i16>,
+
+    pub last_state: crate::search::position_state::PositionState,
+
+    pub last_concession: Option<crate::search::concession::Concession>,
 }
 
 impl SearchState {
@@ -166,19 +204,27 @@ impl SearchState {
             ras: crate::search::ras::RuntimeAnnealer::new(),
             persona: crate::search::sps::SearchPersona::Standard,
             psm_stack: Box::new(crate::search::psm::PsmStack::new()),
+            multipv: 1,
+            multipv_lines: Vec::new(),
+            pressure_state: crate::search::pressure::PressureState::default(),
+            state_thresholds: crate::search::position_state::StateThresholds::default(),
+            risk_envelope: crate::search::risk::RiskEnvelope::default(),
+            conversion_params: crate::search::conversion::ConversionParams::default(),
+            prev_root_score: None,
+            prev_opp_cpi: None,
+            prev_opp_freedom: None,
+            prev_opp_breaks: None,
+            verification_budget: 0,
+            reset_mode: false,
+            simplify_bias: false,
+            last_musttry: false,
+            last_verified: None,
+            last_state: crate::search::position_state::PositionState::default(),
+            last_concession: None,
         }
     }
 
     pub fn clone_for_worker(&self, thread_id: usize) -> Self {
-        // SPS v2: each helper searches under its own persona for diversity
-        // (on top of the odd/even depth stagger in worker_search). This is
-        // TT-safe by construction: personas only reshape pruning/LMR, which
-        // preserves bound validity, while optimism — the one knob that shifts
-        // stored scores — stays uniform across all threads (see sps.rs).
-        // The TT itself stays shared so helpers keep warming it for primary.
-        // SPS personas only reshape pruning/LMR when the switch is on;
-        // otherwise every helper searches like the primary (depth stagger
-        // alone still diversifies, TT stays shared either way).
         let persona = if self.params.sps_enabled {
             crate::search::sps::persona_for_thread(thread_id)
         } else {
@@ -221,6 +267,25 @@ impl SearchState {
             ras: crate::search::ras::RuntimeAnnealer::new(),
             persona,
             psm_stack: Box::new(crate::search::psm::PsmStack::new()),
+
+            multipv: 1,
+            multipv_lines: Vec::new(),
+            pressure_state: crate::search::pressure::PressureState::default(),
+            state_thresholds: self.state_thresholds,
+            risk_envelope: self.risk_envelope,
+            conversion_params: self.conversion_params,
+            prev_root_score: None,
+            prev_opp_cpi: None,
+            prev_opp_freedom: None,
+            prev_opp_breaks: None,
+
+            verification_budget: self.verification_budget,
+            reset_mode: self.reset_mode,
+            simplify_bias: self.simplify_bias,
+            last_musttry: false,
+            last_verified: None,
+            last_state: crate::search::position_state::PositionState::default(),
+            last_concession: None,
         }
     }
 
@@ -234,7 +299,20 @@ impl SearchState {
         self.root_best_move_nodes = 0;
         self.best_move_changes = 0;
         self.optimism = [0; 2];
-        // contempt/draw_score/show_wdl persist across searches (UCI options).
+
+        self.multipv_lines.clear();
+        self.pressure_state = crate::search::pressure::PressureState::default();
+        self.prev_root_score = None;
+        self.prev_opp_cpi = None;
+        self.prev_opp_freedom = None;
+        self.prev_opp_breaks = None;
+        self.verification_budget = 0;
+        self.reset_mode = false;
+        self.simplify_bias = false;
+        self.last_musttry = false;
+        self.last_verified = None;
+        self.last_state = crate::search::position_state::PositionState::default();
+        self.last_concession = None;
         *self.eval_stack = [i16::MIN; MAX_PLY];
         *self.extension_streak = [0u8; MAX_PLY];
         self.bmo.reset();
@@ -284,7 +362,6 @@ mod tests {
         assert_eq!(w3.persona, SearchPersona::Aggressive);
         assert_eq!(w3.params.futility_margin_mult, 140);
 
-        // Thread ids wrap every 4 workers.
         assert_eq!(primary.clone_for_worker(4).persona, SearchPersona::Standard);
     }
 
@@ -299,8 +376,7 @@ mod tests {
         assert_eq!(worker.contempt_cp, 25);
         assert_eq!(worker.draw_score_cp, -5);
         assert!(!worker.show_wdl);
-        // Helpers must score draws for the same side as the primary, otherwise
-        // the shared TT would mix contempt-relative scores (see sps.rs).
+
         assert_eq!(worker.engine_side, Side::Black);
     }
 
@@ -310,15 +386,14 @@ mod tests {
 
         let mut primary = SearchState::new();
         primary.optimism = [12, -12];
-        // A custom primary margin must survive verbatim on Standard workers.
+
         primary.params.futility_margin_mult = 111;
 
         for thread_id in 0..8 {
             let worker = primary.clone_for_worker(thread_id);
-            // TT stays shared so helpers keep warming it for primary...
+
             assert!(Arc::ptr_eq(&worker.tt, &primary.tt));
-            // ...while optimism stays uniform so stored scores keep one eval
-            // semantic across threads (the TT-pollution invariant).
+
             assert_eq!(worker.optimism, [12, -12]);
             if worker.persona == SearchPersona::Standard {
                 assert_eq!(worker.params.futility_margin_mult, 111);

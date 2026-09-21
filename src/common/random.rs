@@ -5,11 +5,9 @@ use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 static ULONG_STATE: AtomicU64 = AtomicU64::new(1804289383);
 static INT_STATE: AtomicI32 = AtomicI32::new(1804289383);
 
-// Ensure tests don't interleave seed resets
 #[cfg(test)]
 static TEST_MUTEX: Mutex<()> = Mutex::new(());
 
-// TODO: can be moved into build.rs
 pub fn next_u64() -> u64 {
     let mut current = ULONG_STATE.load(Ordering::Relaxed);
     loop {
@@ -60,7 +58,7 @@ pub fn choose<T>(slice: &[T]) -> Option<&T> {
 
 #[cfg(test)]
 mod tests {
-    // TODO: improve these tests
+
     use super::*;
     use std::collections::HashSet;
 

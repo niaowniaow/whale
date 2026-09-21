@@ -1,27 +1,3 @@
-//! SFNNv16 trainer (single big net) on the old bullet value API.
-//!
-//! Structural match with Stockfish SFNNv16:
-//! - inputs: HalfKAv2_hm (22_528) ++ FullThreats (59_808) ++ PP_3Wide (4_560).
-//! - feature emission is paired per element: one `f(white_idx, black_idx)`
-//!   call per piece / threat / pawn-pair (the framework fills stm/ntm tensors).
-//! - buckets: 8 material buckets `(popcount - 1) / 4`, selected in-graph.
-//! - transformer with pairwise products of accumulator halves (/512).
-//! - per-bucket fc_0 (1024 -> 32), pair [sqr, clip] (64 -> 32) on fc_1,
-//!   fc_2 (128 -> 1) plus the forwarded fc_0[30] - fc_0[31] term.
-//! - PSQT as a second output (no bias) with a small auxiliary loss.
-//!
-//! CONVERTER CONTRACT (GPU session): bullet checkpoints use float-friendly
-//! scales (see save_format below). A converter must map them to the exact
-//! SF .nnue layout (version + file/transformer/arch hashes, LEB128 sections,
-//! raw threat then pair weights, split PSQ/threat/pair columns, i8 threat and
-//! pair weights, 8 arch stacks, no trailing bytes) and then verify with a
-//! roundtrip test comparing converted-net evals against
-//! `ValueTrainer::eval_raw_output` on test FENs.
-//! Known calibration points: transformer QA=255, linears QB=64, the fixed
-//! /512 product divisor, fwd scale 9600/16384, PSQT save scale 16 with aux
-//! target `sigmoid(psqt / 600)`. Bullet save fails hard on out-of-range
-//! values, so per-weight clipping ranges must be set before a long run.
-
 use bullet_lib::game::inputs::SparseInputType;
 use bullet_lib::game::outputs::OutputBuckets;
 use bullet_lib::nn::optimiser::AdamWOptimiser;
@@ -58,13 +34,11 @@ impl OutputBuckets<ChessBoard> for SfnnBuckets {
     const BUCKETS: usize = N_BUCKETS;
 
     fn bucket(&self, pos: &ChessBoard) -> u8 {
-        // Stockfish bucket formula (NOT bullet's MaterialCount).
         ((pos.occ().count_ones() as usize).saturating_sub(1) / 4).min(N_BUCKETS - 1) as u8
     }
 }
 
 fn chessboard_to_sfnn(pos: &ChessBoard) -> SfnnPosition {
-    // Bullet squares are A1=0, identical to Stockfish numbering: no conversion.
     let mut pieces = [0u64; 6];
     let mut white = 0u64;
     let mut black = 0u64;
@@ -113,7 +87,7 @@ impl SparseInputType for Sfnn16BigInput {
         let sfnn = chessboard_to_sfnn(pos);
         let w_ksq = sfnn.king_square(Side::White);
         let b_ksq = sfnn.king_square(Side::Black);
-        // One paired call per piece (framework contract).
+
         let mut bb = sfnn.white | sfnn.black;
         while bb != 0 {
             let s = bb.trailing_zeros() as usize;
@@ -135,7 +109,7 @@ impl SparseInputType for Sfnn16BigInput {
                 f(w, b);
             }
         }
-        // One paired call per threat.
+
         for_each_threat(&sfnn, |attacker, from, to, attacked| {
             if let (Some(w), Some(b)) = (
                 threat_index_for(Side::White, attacker, from, to, attacked, w_ksq),
@@ -144,7 +118,7 @@ impl SparseInputType for Sfnn16BigInput {
                 f(PSQ_DIMS + w, PSQ_DIMS + b);
             }
         });
-        // One paired call per pawn-pair.
+
         for_each_pair(&sfnn, |color, from, to, paired| {
             let w = pair_index_for(Side::White, color, from, to, paired, w_ksq);
             let b = pair_index_for(Side::Black, color, from, to, paired, b_ksq);
@@ -270,18 +244,15 @@ fn build_big_trainer() -> BigTrainer {
                 bullet_lib::nn::InitSettings::Zeroed,
             );
 
-            // Transformer with pairwise products of accumulator halves.
             let stm_p = l0.forward(stm_inputs).max(0.0).min(1.0).pairwise_mul();
             let ntm_p = l0.forward(ntm_inputs).max(0.0).min(1.0).pairwise_mul();
             let trans = stm_p.concat(ntm_p);
 
-            // Per-bucket fc_0, pair [sqr, clip] over all 32 outputs.
             let fc0 = l1.forward(trans).select(buckets);
             let pair = fc0_activation_pair(fc0);
             let fc1 = l2.forward(pair).crelu();
             let final_out = out.forward(fc1);
 
-            // PSQT second output (stm - ntm over the selected bucket).
             let psqt_stm = psqt_w.matmul(stm_inputs).select(buckets);
             let psqt_ntm = psqt_w.matmul(ntm_inputs).select(buckets);
             let psqt_out = (psqt_stm - psqt_ntm) / 2.0;

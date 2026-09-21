@@ -691,11 +691,6 @@ impl BoardState {
         self.is_legal_with(m, self.checkers(us).0, self.pinned_pieces(us).0)
     }
 
-    /// Legality with caller-provided `checkers`/`pinned` bitboards for the
-    /// side to move (Stockfish `st->checkersBB` / `blockers_for_king` caching
-    /// concept, Reckless cached-threats concept). Compute both once per
-    /// search node and reuse for every move instead of recomputing per move.
-    /// Behavior is identical to [`Self::is_legal`].
     pub fn is_legal_with(&self, m: Move, checkers: u64, pinned: u64) -> bool {
         if !self.is_pseudo_legal(m) {
             return false;
@@ -713,9 +708,6 @@ impl BoardState {
 
         if from_piece == Piece::King {
             if m.move_type == MoveType::Castle {
-                // Castling must originate from the king's home square with the
-                // right still available, an empty path and the rook on its
-                // home square (cf. Reckless board.rs is_legal castling branch).
                 let occ = self.occupancy();
                 let castle_ok = if us == Side::White {
                     if from != Square::E1 {
@@ -816,9 +808,6 @@ impl BoardState {
             return false;
         }
 
-        // A pinned piece may still resolve a single check by moving along the
-        // pin ray (to capture the checker or interpose), cf. Stockfish
-        // position.cpp legal() and Reckless board.rs is_legal().
         if (pinned & (1u64 << from as usize)) != 0
             && (LINE_BB[ksq as usize][from as usize] & (1u64 << to as usize)) == 0
         {
@@ -961,7 +950,7 @@ mod tests {
     fn is_in_check_detects_knight_check() {
         let mut board = BoardState::new();
         board.add_piece(Square::E4, Side::White, Piece::King, false);
-        // D6 knight attacks E4
+
         board.add_piece(Square::D6, Side::Black, Piece::Knight, false);
         assert!(board.is_in_check(Side::White));
     }
@@ -1029,7 +1018,6 @@ mod tests {
                 break;
             }
 
-            // Find the first legal move
             let mut legal_move = None;
             for m_entry in moves.iter() {
                 let m = m_entry.mv;
@@ -1117,7 +1105,6 @@ mod tests {
             let mut moves = MoveList::new();
             board.generate_moves(&mut moves);
 
-            // Node-cached checkers/pinners, exactly as search uses them.
             let stm = board.side_to_move;
             let node_checkers = board.checkers(stm).0;
             let node_pinned = board.pinned_pieces(stm).0;
@@ -1179,7 +1166,6 @@ mod tests {
             1
         );
 
-        // Black pawn on D5 attacks E4, so it is no longer passed.
         board.add_piece(Square::D5, Side::Black, Piece::Pawn, false);
         assert!(!board.is_passed_pawn(Square::E4 as usize, Side::White));
         assert!(board.get_passed_pawns(Side::White).is_empty());
@@ -1200,7 +1186,7 @@ mod tests {
         use crate::common::helpers::STARTING_FEN;
 
         let board = BoardState::parse_fen(STARTING_FEN);
-        // White pawn on D2 attacks C3 and E3.
+
         assert!(board.is_square_attacked(Square::E3, Side::White));
         assert!(board.is_square_attacked(Square::C3, Side::White));
         assert!(!board.is_square_attacked(Square::E4, Side::White));
@@ -1210,7 +1196,6 @@ mod tests {
         assert!(board.is_square_attacked_with_occ(Square::E3, Side::White, occ));
         assert!(!board.is_square_attacked_with_occ(Square::E4, Side::White, occ));
 
-        // Knight, king and slider branches with a custom occupancy.
         let mut custom = BoardState::new();
         custom.add_piece(Square::E1, Side::White, Piece::King, false);
         custom.add_piece(Square::D3, Side::Black, Piece::Knight, false);
@@ -1236,7 +1221,6 @@ mod tests {
         assert!(BoardState::new().pinned_pieces(Side::White).is_empty());
         assert!(BoardState::new().checkers(Side::White).is_empty());
 
-        // White queen on E2 is pinned to the king by a black rook on E8.
         let mut board = BoardState::new();
         board.add_piece(Square::E1, Side::White, Piece::King, false);
         board.add_piece(Square::E2, Side::White, Piece::Queen, false);
@@ -1247,7 +1231,6 @@ mod tests {
         );
         assert!(board.pinned_pieces(Side::Black).is_empty());
 
-        // Open E file: the same rook gives check.
         let mut check = BoardState::new();
         check.add_piece(Square::E1, Side::White, Piece::King, false);
         check.add_piece(Square::E8, Side::Black, Piece::Rook, false);
@@ -1308,27 +1291,27 @@ mod tests {
         }
 
         assert!(!board.is_pseudo_legal(Move::NO_MOVE));
-        // Source == target.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::E2, Square::E2, MoveType::Quiet)));
-        // From an empty square.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::E4, Square::E5, MoveType::Quiet)));
-        // Opponent piece (black pawn on A7, white to move).
+
         assert!(!board.is_pseudo_legal(Move::new(Square::A7, Square::A6, MoveType::Quiet)));
-        // Capturing our own piece (queen takes own pawn).
+
         assert!(!board.is_pseudo_legal(Move::new(Square::D1, Square::D2, MoveType::Capture)));
-        // Pawn flagged as castle.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::E2, Square::E4, MoveType::Castle)));
-        // B1-B3 is not a knight move.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::B1, Square::B3, MoveType::Quiet)));
-        // B1-C3 lands on an empty square, so the capture flag mismatches.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::B1, Square::C3, MoveType::Capture)));
-        // Double push without the flag.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::E2, Square::E4, MoveType::Quiet)));
-        // Double push with the flag from the starting square.
+
         assert!(board.is_pseudo_legal(Move::new(Square::E2, Square::E4, MoveType::DoublePush)));
-        // Single push.
+
         assert!(board.is_pseudo_legal(Move::new(Square::E2, Square::E3, MoveType::Quiet)));
-        // Promotion flag away from the promotion rank.
+
         assert!(!board.is_pseudo_legal(Move::new(
             Square::E2,
             Square::E3,
@@ -1352,10 +1335,9 @@ mod tests {
 
         let start = BoardState::parse_fen(STARTING_FEN);
         assert!(start.is_pseudo_legal(Move::new(Square::E2, Square::E3, MoveType::Quiet)));
-        // Pawn flagged as a capture on an empty push square.
+
         assert!(!start.is_pseudo_legal(Move::new(Square::E2, Square::E3, MoveType::Capture)));
 
-        // Blocked single push and double push.
         let mut blocked = BoardState::new();
         blocked.add_piece(Square::E4, Side::White, Piece::Pawn, false);
         blocked.add_piece(Square::E1, Side::White, Piece::King, false);
@@ -1365,13 +1347,11 @@ mod tests {
         assert!(!blocked.is_pseudo_legal(Move::new(Square::E2, Square::E3, MoveType::Quiet)));
         assert!(!blocked.is_pseudo_legal(Move::new(Square::E2, Square::E4, MoveType::DoublePush)));
 
-        // Push onto an occupied square.
         let mut occupied = BoardState::new();
         occupied.add_piece(Square::E2, Side::White, Piece::Pawn, false);
         occupied.add_piece(Square::E3, Side::Black, Piece::Pawn, false);
         assert!(!occupied.is_pseudo_legal(Move::new(Square::E2, Square::E3, MoveType::Quiet)));
 
-        // Double push onto an occupied target.
         let mut target_busy = BoardState::new();
         target_busy.add_piece(Square::E2, Side::White, Piece::Pawn, false);
         target_busy.add_piece(Square::E4, Side::Black, Piece::Knight, false);
@@ -1381,19 +1361,16 @@ mod tests {
             MoveType::DoublePush
         )));
 
-        // Double push from outside the starting rank.
         let mut mistimed = BoardState::new();
         mistimed.add_piece(Square::E3, Side::White, Piece::Pawn, false);
         assert!(!mistimed.is_pseudo_legal(Move::new(Square::E3, Square::E5, MoveType::DoublePush)));
 
-        // Black pawn directions.
         let mut black = BoardState::new();
         black.add_piece(Square::E7, Side::Black, Piece::Pawn, false);
         black.side_to_move = Side::Black;
         assert!(black.is_pseudo_legal(Move::new(Square::E7, Square::E6, MoveType::Quiet)));
         assert!(black.is_pseudo_legal(Move::new(Square::E7, Square::E5, MoveType::DoublePush)));
 
-        // Corrupt mapping: occupancy without a piece entry.
         let mut broken = BoardState::new();
         broken.add_piece(Square::E4, Side::White, Piece::Pawn, false);
         broken.piece_mapping[Square::E4 as usize] = Piece::None;
@@ -1402,19 +1379,16 @@ mod tests {
 
     #[test]
     fn pawn_pseudo_legal_captures_promotions_and_en_passant() {
-        // Diagonal capture needs a victim; pseudo-legality is lenient about
-        // the quiet flag once a victim is present.
         let mut board = BoardState::new();
         board.add_piece(Square::E4, Side::White, Piece::Pawn, false);
         board.add_piece(Square::D5, Side::Black, Piece::Pawn, false);
         assert!(board.is_pseudo_legal(Move::new(Square::E4, Square::D5, MoveType::Capture)));
         assert!(board.is_pseudo_legal(Move::new(Square::E4, Square::D5, MoveType::Quiet)));
-        // Non-diagonal, non-push offset is not a pawn move.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::E4, Square::E6, MoveType::Quiet)));
-        // Diagonal without a victim.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::E4, Square::F5, MoveType::Capture)));
 
-        // Promotion targets require the promotion flag, in both colours.
         let mut promo = BoardState::new();
         promo.add_piece(Square::E7, Side::White, Piece::Pawn, false);
         assert!(promo.is_pseudo_legal(Move::new(Square::E7, Square::E8, MoveType::QueenPromotion)));
@@ -1434,7 +1408,6 @@ mod tests {
         )));
         assert!(!black_promo.is_pseudo_legal(Move::new(Square::E2, Square::E1, MoveType::Quiet)));
 
-        // Promotion capture on the last rank.
         let mut promo_cap = BoardState::new();
         promo_cap.add_piece(Square::F7, Side::White, Piece::Pawn, false);
         promo_cap.add_piece(Square::G8, Side::Black, Piece::Rook, false);
@@ -1444,7 +1417,6 @@ mod tests {
             MoveType::QueenPromotionCapture
         )));
 
-        // En passant must name the recorded square.
         let ep = BoardState::parse_fen("4k3/8/8/3pP3/8/8/8/4K3 w - d6 0 1");
         assert!(ep.is_pseudo_legal(Move::new(Square::E5, Square::D6, MoveType::EnPassant)));
         let mut no_ep = BoardState::new();
@@ -1460,11 +1432,11 @@ mod tests {
         board.add_piece(Square::E1, Side::White, Piece::King, false);
         board.add_piece(Square::E8, Side::Black, Piece::King, false);
         assert!(board.is_pseudo_legal(Move::new(Square::B1, Square::C3, MoveType::Capture)));
-        // Quiet flag on an occupied square mismatches.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::B1, Square::C3, MoveType::Quiet)));
-        // Not a knight offset.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::B1, Square::B3, MoveType::Quiet)));
-        // Knights cannot castle or promote.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::B1, Square::C3, MoveType::Castle)));
         assert!(!board.is_pseudo_legal(Move::new(
             Square::B1,
@@ -1483,11 +1455,11 @@ mod tests {
         board.add_piece(Square::D1, Side::White, Piece::Queen, false);
         board.add_piece(Square::E1, Side::White, Piece::King, false);
         board.add_piece(Square::E8, Side::Black, Piece::King, false);
-        // Blocked diagonals/files.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::C1, Square::E3, MoveType::Quiet)));
         assert!(!board.is_pseudo_legal(Move::new(Square::A1, Square::A4, MoveType::Quiet)));
         assert!(!board.is_pseudo_legal(Move::new(Square::D1, Square::D3, MoveType::Quiet)));
-        // Sliders cannot castle or promote.
+
         assert!(!board.is_pseudo_legal(Move::new(Square::C1, Square::E3, MoveType::Castle)));
         assert!(!board.is_pseudo_legal(Move::new(Square::A1, Square::A3, MoveType::RookPromotion)));
         assert!(!board.is_pseudo_legal(Move::new(
@@ -1496,19 +1468,16 @@ mod tests {
             MoveType::QueenPromotion
         )));
 
-        // Open the diagonal with an enemy on the target.
         board.remove_piece(Square::D2, false);
         board.add_piece(Square::E3, Side::Black, Piece::Pawn, false);
         assert!(board.is_pseudo_legal(Move::new(Square::C1, Square::E3, MoveType::Capture)));
         assert!(!board.is_pseudo_legal(Move::new(Square::C1, Square::E3, MoveType::Quiet)));
 
-        // Open the file with an enemy rook target.
         board.remove_piece(Square::A2, false);
         board.add_piece(Square::A4, Side::Black, Piece::Rook, false);
         assert!(board.is_pseudo_legal(Move::new(Square::A1, Square::A4, MoveType::Capture)));
         assert!(board.is_pseudo_legal(Move::new(Square::A1, Square::A2, MoveType::Quiet)));
 
-        // Queen captures along the rank.
         board.remove_piece(Square::D2, false);
         board.add_piece(Square::D3, Side::Black, Piece::Knight, false);
         assert!(board.is_pseudo_legal(Move::new(Square::D1, Square::D3, MoveType::Capture)));
@@ -1519,18 +1488,16 @@ mod tests {
     fn king_pseudo_legal_castle_branches() {
         use crate::common::helpers::STARTING_FEN;
 
-        // Promotion flags are illegal on a king.
         let mut open = BoardState::new();
         open.add_piece(Square::E1, Side::White, Piece::King, false);
         open.add_piece(Square::E8, Side::Black, Piece::King, false);
         assert!(!open.is_pseudo_legal(Move::new(Square::E1, Square::E2, MoveType::QueenPromotion)));
-        // Two-square king step is not a quiet move.
+
         assert!(!open.is_pseudo_legal(Move::new(Square::E1, Square::E3, MoveType::Quiet)));
-        // Capture flag on an empty square mismatches.
+
         assert!(!open.is_pseudo_legal(Move::new(Square::E1, Square::E2, MoveType::Capture)));
         assert!(open.is_pseudo_legal(Move::new(Square::E1, Square::E2, MoveType::Quiet)));
 
-        // Castle from the wrong source or to a non-castle target.
         let mut off = BoardState::new();
         off.add_piece(Square::E2, Side::White, Piece::King, false);
         off.add_piece(Square::E8, Side::Black, Piece::King, false);
@@ -1539,20 +1506,17 @@ mod tests {
         let home = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1");
         assert!(!home.is_pseudo_legal(Move::new(Square::E1, Square::F1, MoveType::Castle)));
 
-        // Missing rights and blocked paths.
         let no_rights = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w - - 0 1");
         assert!(!no_rights.is_pseudo_legal(Move::new(Square::E1, Square::G1, MoveType::Castle)));
         let start = BoardState::parse_fen(STARTING_FEN);
         assert!(!start.is_pseudo_legal(Move::new(Square::E1, Square::G1, MoveType::Castle)));
         assert!(!start.is_pseudo_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
 
-        // Attacked transit square blocks short castling, long stays legal.
         let attacked =
             BoardState::parse_fen("r3k2r/pppppppp/8/8/2b5/8/PPPP1PPP/R3K2R w KQkq - 0 1");
         assert!(!attacked.is_pseudo_legal(Move::new(Square::E1, Square::G1, MoveType::Castle)));
         assert!(attacked.is_pseudo_legal(Move::new(Square::E1, Square::C1, MoveType::Castle)));
 
-        // Clear paths with rights are pseudo-legal for both colours.
         assert!(home.is_pseudo_legal(Move::new(Square::E1, Square::G1, MoveType::Castle)));
         assert!(home.is_pseudo_legal(Move::new(Square::E1, Square::C1, MoveType::Castle)));
         let black = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1");
@@ -1573,7 +1537,6 @@ mod tests {
         kingless.add_piece(Square::E4, Side::White, Piece::Pawn, false);
         assert!(!kingless.is_legal(Move::new(Square::E4, Square::E5, MoveType::Quiet)));
 
-        // Generated moves on an empty board are trivially consistent.
         let mut moves = MoveList::new();
         kingless.generate_moves(&mut moves);
         for entry in moves.iter() {
@@ -1583,7 +1546,6 @@ mod tests {
 
     #[test]
     fn is_legal_castling_needs_rook_rights_and_quiet_path() {
-        // Rights with a clear path: all four castles are legal.
         let white = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w KQkq - 0 1");
         assert!(white.is_legal(Move::new(Square::E1, Square::G1, MoveType::Castle)));
         assert!(white.is_legal(Move::new(Square::E1, Square::C1, MoveType::Castle)));
@@ -1591,14 +1553,12 @@ mod tests {
         assert!(black.is_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
         assert!(black.is_legal(Move::new(Square::E8, Square::C8, MoveType::Castle)));
 
-        // Stricter than pseudo-legality: the rook must still stand at home.
         let mut rookless = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R w K - 0 1");
         rookless.remove_piece(Square::H1, false);
         let castle = Move::new(Square::E1, Square::G1, MoveType::Castle);
         assert!(rookless.is_pseudo_legal(castle));
         assert!(!rookless.is_legal(castle));
 
-        // Wrong home square, wrong target, missing rights, blocked path.
         let mut off_home = BoardState::new();
         off_home.add_piece(Square::E2, Side::White, Piece::King, false);
         off_home.add_piece(Square::E8, Side::Black, Piece::King, false);
@@ -1616,15 +1576,14 @@ mod tests {
 
     #[test]
     fn is_legal_castling_respects_checks() {
-        // In check: no castling.
         let in_check = BoardState::parse_fen("4r1k1/8/8/8/8/8/8/R3K2R w K - 0 1");
         assert!(in_check.is_in_check(Side::White));
         assert!(!in_check.is_legal(Move::new(Square::E1, Square::G1, MoveType::Castle)));
-        // Transit square F1 attacked by the C4 bishop.
+
         let transit = BoardState::parse_fen("r3k2r/pppppppp/8/8/2b5/8/PPPP1PPP/R3K2R w KQkq - 0 1");
         assert!(!transit.is_legal(Move::new(Square::E1, Square::G1, MoveType::Castle)));
         assert!(transit.is_legal(Move::new(Square::E1, Square::C1, MoveType::Castle)));
-        // Destination G1 attacked by the H2 bishop while F1 stays quiet.
+
         let dest = BoardState::parse_fen("4k3/8/8/8/8/8/7b/R3K2R w K - 0 1");
         assert!(!dest.is_legal(Move::new(Square::E1, Square::G1, MoveType::Castle)));
         assert!(dest.is_legal(Move::new(Square::E1, Square::F1, MoveType::Quiet)));
@@ -1632,59 +1591,50 @@ mod tests {
 
     #[test]
     fn is_legal_king_steps_out_of_check() {
-        // Rook check down the open E file.
         let board = BoardState::parse_fen("4r1k1/8/8/8/8/8/8/R3K2R w KQkq - 0 1");
         assert!(board.is_in_check(Side::White));
-        // F1 is off the file and unattacked.
+
         assert!(board.is_legal(Move::new(Square::E1, Square::F1, MoveType::Quiet)));
-        // E2 stays on the file and remains attacked.
+
         assert!(!board.is_legal(Move::new(Square::E1, Square::E2, MoveType::Quiet)));
     }
 
     #[test]
     fn is_legal_en_passant_pin_and_precheck_branches() {
-        // Legal baseline: no enemy attacker appears after dxe6.
         let free = BoardState::parse_fen("4k3/8/8/3Pp3/4K3/8/8/8 w - e6 0 1");
         let mv = Move::new(Square::D5, Square::E6, MoveType::EnPassant);
         assert!(free.is_pseudo_legal(mv));
         assert!(free.is_legal(mv));
 
-        // Rook on the fifth rank is uncovered by the double capture.
         let rook = BoardState::parse_fen("7k/8/8/r2Pp2K/8/8/8/8 w - e6 0 1");
         let rm = Move::new(Square::D5, Square::E6, MoveType::EnPassant);
         assert!(rook.is_pseudo_legal(rm));
         assert!(!rook.is_legal(rm));
 
-        // Bishop on B7 is uncovered through the vacated D5 square.
         let bishop = BoardState::parse_fen("4k3/1b6/8/3Pp3/4K3/8/8/8 w - e6 0 1");
         assert!(!bishop.is_legal(Move::new(Square::D5, Square::E6, MoveType::EnPassant)));
 
-        // Knight pre-check cannot be resolved by an en passant capture.
         let knight = BoardState::parse_fen("4k3/8/3n4/3Pp3/4K3/8/8/8 w - e6 0 1");
         assert!(knight.is_in_check(Side::White));
         assert!(!knight.is_legal(Move::new(Square::D5, Square::E6, MoveType::EnPassant)));
 
-        // Pawn pre-check from F5 survives the capture.
         let pawn = BoardState::parse_fen("4k3/8/8/3Ppp2/4K3/8/8/8 w - e6 0 1");
         assert!(!pawn.is_legal(Move::new(Square::D5, Square::E6, MoveType::EnPassant)));
     }
 
     #[test]
     fn is_legal_single_and_double_check() {
-        // Double check: only king moves survive.
         let dbl = BoardState::parse_fen("4rk2/8/8/8/1b6/8/8/4K1N1 w - - 0 1");
         assert!(dbl.is_in_check(Side::White));
         assert!(!dbl.is_legal(Move::new(Square::G1, Square::F3, MoveType::Quiet)));
         assert!(dbl.is_legal(Move::new(Square::E1, Square::F1, MoveType::Quiet)));
 
-        // Pinned queen: slides along the file, never off the ray.
         let pin = BoardState::parse_fen("4r1k1/8/8/8/8/8/4Q3/4K3 w - - 0 1");
         assert!(!pin.is_in_check(Side::White));
         assert!(pin.is_legal(Move::new(Square::E2, Square::E3, MoveType::Quiet)));
         assert!(!pin.is_legal(Move::new(Square::E2, Square::D3, MoveType::Quiet)));
         assert!(pin.is_legal(Move::new(Square::E2, Square::E8, MoveType::Capture)));
 
-        // Single bishop check: block it, don't wander.
         let block = BoardState::parse_fen("4k3/8/8/8/1b6/8/P1P5/4K3 w - - 0 1");
         assert!(block.is_legal(Move::new(Square::C2, Square::C3, MoveType::Quiet)));
         assert!(!block.is_legal(Move::new(Square::A2, Square::A3, MoveType::Quiet)));
@@ -1692,11 +1642,9 @@ mod tests {
 
     #[test]
     fn square_attacked_covers_every_piece_type() {
-        // Pawn attacks from the starting position.
         let start = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
         assert!(start.is_square_attacked(Square::E3, Side::White));
 
-        // Knight, king and queen attacks on E1.
         let knight = BoardState::parse_fen("4k3/8/8/8/8/3n4/8/4K3 w - - 0 1");
         assert!(knight.is_square_attacked(Square::E1, Side::Black));
         let king = BoardState::parse_fen("4k3/8/8/8/8/8/3k4/4K3 w - - 0 1");
@@ -1704,7 +1652,6 @@ mod tests {
         let queen = BoardState::parse_fen("4k3/8/8/8/8/8/3q4/4K3 w - - 0 1");
         assert!(queen.is_square_attacked(Square::E1, Side::Black));
 
-        // Bare kings: nothing attacks the middle of the board.
         let bare = BoardState::parse_fen("4k3/8/8/8/8/8/8/4K3 w - - 0 1");
         assert!(!bare.is_square_attacked(Square::E4, Side::Black));
         assert!(!bare.is_square_attacked(Square::E4, Side::White));
@@ -1712,23 +1659,21 @@ mod tests {
 
     #[test]
     fn checkers_cover_all_piece_types() {
-        // Pawn check.
         let pawn = BoardState::parse_fen("4k3/8/8/3p4/4K3/8/8/8 w - - 0 1");
         assert_eq!(pawn.checkers(Side::White).0, 1u64 << Square::D5 as usize);
-        // Knight check.
+
         let knight = BoardState::parse_fen("4k3/8/3n4/8/4K3/8/8/8 w - - 0 1");
         assert_eq!(knight.checkers(Side::White).0, 1u64 << Square::D6 as usize);
-        // Bishop check down the long diagonal.
+
         let bishop = BoardState::parse_fen("4k3/1b6/8/8/4K3/8/8/8 w - - 0 1");
         assert_eq!(bishop.checkers(Side::White).0, 1u64 << Square::B7 as usize);
-        // Queen check down the open file.
+
         let queen = BoardState::parse_fen("4q3/8/8/8/4K3/8/8/8 w - - 0 1");
         assert_eq!(queen.checkers(Side::White).0, 1u64 << Square::E8 as usize);
     }
 
     #[test]
     fn pinned_pieces_with_two_blockers_is_empty() {
-        // Two own pieces on the file: no single pin.
         let mut board = BoardState::new();
         board.add_piece(Square::E1, Side::White, Piece::King, false);
         board.add_piece(Square::E2, Side::White, Piece::Pawn, false);
@@ -1736,7 +1681,6 @@ mod tests {
         board.add_piece(Square::E8, Side::Black, Piece::Rook, false);
         assert!(board.pinned_pieces(Side::White).is_empty());
 
-        // Diagonal pin through a single blocker.
         let mut diag = BoardState::new();
         diag.add_piece(Square::E1, Side::White, Piece::King, false);
         diag.add_piece(Square::D2, Side::White, Piece::Bishop, false);
@@ -1749,40 +1693,37 @@ mod tests {
 
     #[test]
     fn pseudo_legal_black_castle_edges() {
-        // Wrong source square for black.
         let mut off = BoardState::new();
         off.add_piece(Square::E7, Side::Black, Piece::King, false);
         off.add_piece(Square::E1, Side::White, Piece::King, false);
         off.side_to_move = Side::Black;
         off.castle = Castle::BLACK_SHORT;
         assert!(!off.is_pseudo_legal(Move::new(Square::E7, Square::G8, MoveType::Castle)));
-        // Wrong target square for black.
+
         let black = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1");
         assert!(!black.is_pseudo_legal(Move::new(Square::E8, Square::F8, MoveType::Castle)));
-        // Transit square F8 attacked by the C5 bishop blocks short castling,
-        // long castling stays pseudo-legal.
+
         let transit = BoardState::parse_fen("r3k2r/8/8/2B5/8/8/8/4K3 b kq - 0 1");
         assert!(!transit.is_pseudo_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
         assert!(transit.is_pseudo_legal(Move::new(Square::E8, Square::C8, MoveType::Castle)));
-        // Destination G8 attacked by the A2 bishop while F8 stays quiet.
+
         let dest = BoardState::parse_fen("4k3/8/8/8/8/8/B7/4K3 b k - 0 1");
         assert!(!dest.is_pseudo_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
     }
 
     #[test]
     fn is_legal_black_castling_attack_and_check_branches() {
-        // Transit square F8 attacked by the C5 bishop.
         let transit = BoardState::parse_fen("r3k2r/8/8/2B5/8/8/8/4K3 b kq - 0 1");
         assert!(!transit.is_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
         assert!(transit.is_legal(Move::new(Square::E8, Square::C8, MoveType::Castle)));
-        // Destination G8 attacked by the A2 bishop while F8 stays quiet.
+
         let dest = BoardState::parse_fen("4k3/8/8/8/8/8/B7/4K3 b k - 0 1");
         assert!(!dest.is_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
-        // In check: no castling.
+
         let in_check = BoardState::parse_fen("4k3/4Q3/8/8/8/8/8/4K3 b k - 0 1");
         assert!(in_check.is_in_check(Side::Black));
         assert!(!in_check.is_legal(Move::new(Square::E8, Square::G8, MoveType::Castle)));
-        // Wrong home square and wrong target.
+
         let mut off_home = BoardState::new();
         off_home.add_piece(Square::E7, Side::Black, Piece::King, false);
         off_home.add_piece(Square::E1, Side::White, Piece::King, false);
@@ -1791,7 +1732,7 @@ mod tests {
         assert!(!off_home.is_legal(Move::new(Square::E7, Square::G8, MoveType::Castle)));
         let home = BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b KQkq - 0 1");
         assert!(!home.is_legal(Move::new(Square::E8, Square::F8, MoveType::Castle)));
-        // Stricter than pseudo-legality: the A8 rook must still stand at home.
+
         let mut rookless =
             BoardState::parse_fen("r3k2r/pppppppp/8/8/8/8/PPPPPPPP/R3K2R b kq - 0 1");
         rookless.remove_piece(Square::A8, false);
@@ -1802,11 +1743,10 @@ mod tests {
 
     #[test]
     fn pin_edge_cases_adjacent_pinner_and_enemy_blocker() {
-        // Adjacent rook gives check but pins nothing (empty between-squares).
         let adj = BoardState::parse_fen("4k3/8/8/8/8/8/4r3/4K3 w - - 0 1");
         assert!(adj.pinned_pieces(Side::White).is_empty());
         assert_eq!(adj.checkers(Side::White).0, 1u64 << Square::E2 as usize);
-        // A single enemy blocker on the ray is not a pin either.
+
         let enemy = BoardState::parse_fen("k3r3/8/8/8/8/8/4p3/4K3 w - - 0 1");
         assert!(!enemy.is_in_check(Side::White));
         assert!(enemy.pinned_pieces(Side::White).is_empty());
@@ -1814,10 +1754,9 @@ mod tests {
 
     #[test]
     fn queen_attacks_and_checkers_on_files_and_diagonals() {
-        // Queen on the file exercises the rook branch of is_square_attacked.
         let file = BoardState::parse_fen("k3q3/8/8/8/8/8/8/4K3 w - - 0 1");
         assert!(file.is_square_attacked(Square::E1, Side::Black));
-        // Queen on the diagonal is reported as the checker.
+
         let diag = BoardState::parse_fen("4k3/1q6/8/8/4K3/8/8/8 w - - 0 1");
         assert_eq!(diag.checkers(Side::White).0, 1u64 << Square::B7 as usize);
         assert!(diag.is_in_check(Side::White));
@@ -1833,14 +1772,13 @@ mod tests {
         board.add_piece(Square::B5, Side::Black, Piece::Pawn, false);
         board.add_piece(Square::H5, Side::Black, Piece::Pawn, false);
 
-        // B5 attacks A4, so only E4 is passed for White ...
         assert!(!board.is_passed_pawn(Square::A4 as usize, Side::White));
         assert!(board.is_passed_pawn(Square::E4 as usize, Side::White));
         assert_eq!(
             board.get_passed_pawns(Side::White).0,
             1u64 << Square::E4 as usize
         );
-        // ... and A4 blocks B5, so only H5 is passed for Black.
+
         assert!(!board.is_passed_pawn(Square::B5 as usize, Side::Black));
         assert!(board.is_passed_pawn(Square::H5 as usize, Side::Black));
         assert_eq!(
@@ -1851,16 +1789,15 @@ mod tests {
 
     #[test]
     fn is_legal_pinned_piece_in_single_knight_check() {
-        // Queen E2 is pinned to the king by the E8 rook; the D3 knight checks.
         let board = BoardState::parse_fen("k3r3/8/8/8/8/3n4/2P1Q3/4K3 w - - 0 1");
         assert!(board.is_in_check(Side::White));
-        // Capturing the checker leaves the pin ray, so it stays illegal.
+
         assert!(!board.is_legal(Move::new(Square::E2, Square::D3, MoveType::Capture)));
-        // Sliding along the pin ray does not answer a knight check.
+
         assert!(!board.is_legal(Move::new(Square::E2, Square::E3, MoveType::Quiet)));
-        // An unpinned pawn captures the checker ...
+
         assert!(board.is_legal(Move::new(Square::C2, Square::D3, MoveType::Capture)));
-        // ... while a quiet pawn push answers nothing.
+
         assert!(!board.is_legal(Move::new(Square::C2, Square::C3, MoveType::Quiet)));
     }
 
@@ -1887,12 +1824,10 @@ mod tests {
 
     #[test]
     fn pawn_pseudo_legal_black_en_passant_and_blocked_double_push() {
-        // Black en passant must name the recorded square.
         let ep = BoardState::parse_fen("4k3/8/8/8/3pP3/8/8/4K3 b - e3 0 1");
         assert!(ep.is_pseudo_legal(Move::new(Square::D4, Square::E3, MoveType::EnPassant)));
         assert!(!ep.is_pseudo_legal(Move::new(Square::D4, Square::C3, MoveType::EnPassant)));
 
-        // A blocked intermediate square stops the black double push.
         let mut blocked = BoardState::new();
         blocked.add_piece(Square::E7, Side::Black, Piece::Pawn, false);
         blocked.add_piece(Square::E6, Side::White, Piece::Pawn, false);
@@ -1916,7 +1851,7 @@ mod tests {
             threats[Piece::Queen as usize] & threats[Piece::Rook as usize],
             threats[Piece::Rook as usize]
         );
-        // Queen on D5 attacks D1 down the file and A2 on the diagonal.
+
         assert_ne!(
             threats[Piece::Queen as usize] & (1u64 << Square::D1 as usize),
             0

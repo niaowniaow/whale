@@ -1,4 +1,3 @@
-// TODO: isolate all build.rs code so that the rest of the binary can make use of other abstractions (e.g. Index for Piece)
 const NETWORK_NAME: &str = "v4-gen2";
 
 pub mod common {
@@ -20,7 +19,6 @@ pub mod common {
     }
 }
 
-// TODO: Clean? Circular Dependency if included
 pub mod bitboard {
     #![allow(dead_code)]
     #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
@@ -84,7 +82,6 @@ fn main() {
     use std::io::Write;
     use std::path::Path;
 
-    // 1. Compute basic arrays
     let mut bishop_mask_bits = [0u32; 64];
     for (sq, item) in bishop_mask_bits.iter_mut().enumerate() {
         *item = get_bishop_mask(Square::from(sq)).0.count_ones();
@@ -123,7 +120,6 @@ fn main() {
         *item = get_king_attacks(Square::from(sq)).0;
     }
 
-    // 2. Compute sliding attack tables
     let mut bishop_attacks = vec![[0u64; 512]; 64];
     for sq in 0..64 {
         let mask = get_bishop_mask(Square::from(sq));
@@ -160,7 +156,6 @@ fn main() {
         }
     }
 
-    // 3. Write lookups_gen.rs to OUT_DIR
     let out_dir = var("OUT_DIR").unwrap();
     let dest_path = Path::new(&out_dir).join("lookups_gen.rs");
     let mut f = File::create(&dest_path).unwrap();
@@ -195,7 +190,7 @@ fn download_nnue_if_needed() {
     let acc_size = 256;
     let input_size = 768;
     let struct_size: usize = (input_size * acc_size + acc_size + acc_size * 2 + 1) * 2;
-    // Align up to 64 bytes
+
     let expected_size = struct_size.div_ceil(64) * 64;
 
     let needs_recreate = if !dest_path.exists() {
@@ -230,7 +225,6 @@ fn download_nnue_if_needed() {
         let success = match status {
             Ok(exit_status) => {
                 if exit_status.success() {
-                    // Validate downloaded file size
                     match metadata(dest_path) {
                         Ok(meta) => meta.len() == expected_size as u64,
                         Err(_) => false,

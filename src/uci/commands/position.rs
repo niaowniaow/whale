@@ -21,8 +21,6 @@ impl UciClient {
                 self.parse_startpos(moves);
             }
             "fen" => {
-                // FEN runs until the `moves` token (if any), not a hardcoded
-                // 6 fields, so halfmove/fullmove-omitting GUIs keep working.
                 let moves_idx = parameters[1..]
                     .iter()
                     .position(|&t| t == "moves")
@@ -56,8 +54,6 @@ impl UciClient {
 
     fn parse_moves(&mut self, moves: &[&str]) {
         for &move_string in moves {
-            // Illegal/unparseable moves are skipped silently: stdout must stay
-            // valid UCI (Reckless uci.rs silently ignores them too).
             let move_obj = match Move::parse_long_algebraic(move_string) {
                 Some(m) => m,
                 None => return,
@@ -181,7 +177,6 @@ mod tests {
         uci_client.run_position(&["unknown"]);
         assert!(*uci_client.board.lock().unwrap() == original);
 
-        // Truncated fen form is ignored.
         uci_client.run_position(&["fen"]);
         assert!(*uci_client.board.lock().unwrap() == original);
     }
@@ -215,11 +210,10 @@ mod tests {
     #[test]
     fn illegal_first_move_leaves_startpos_unchanged() {
         let mut uci_client = UciClient::new();
-        // e2e5 is not a legal pawn move from the start position.
+
         uci_client.run_position(&["startpos", "moves", "e2e5", "e7e5"]);
         assert_eq!(BoardState::default(), *uci_client.board.lock().unwrap());
 
-        // Unparseable tokens stop move application as well.
         let mut uci_client = UciClient::new();
         uci_client.run_position(&["startpos", "moves", "xxxx"]);
         assert_eq!(BoardState::default(), *uci_client.board.lock().unwrap());

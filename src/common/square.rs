@@ -1,6 +1,5 @@
 use std::fmt;
 
-// TODO: Relook at optimizations here if reqd.
 #[rustfmt::skip]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]

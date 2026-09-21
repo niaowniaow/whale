@@ -29,7 +29,6 @@ const fn generate_zobrist_table() -> [[u64; 64]; 14] {
     table
 }
 
-// TODO: flatten
 pub static ZOBRIST_TABLE: [[u64; 64]; 14] = generate_zobrist_table();
 
 pub fn init() {}
@@ -57,7 +56,6 @@ pub fn get_board_hash(board_state: &BoardState) -> u64 {
 }
 
 pub fn hash_castling_rights(board_state: &BoardState, current_hash: u64) -> u64 {
-    // Offset by 2 to avoid collision with side-to-move keys (which use [13][0] and [13][1])
     current_hash ^ zobrist_table()[13][2 + board_state.castle.bits() as usize]
 }
 
@@ -139,7 +137,7 @@ mod tests {
         let white_hash = get_board_hash(&white);
         let black_hash = get_board_hash(&black);
         assert_ne!(white_hash, black_hash);
-        // Same pieces, only the side differs: flipping reproduces it.
+
         assert_eq!(flip_side_to_move_hashes(&white, white_hash), black_hash);
         assert_eq!(
             flip_side_to_move_hashes(&white, flip_side_to_move_hashes(&white, white_hash)),
@@ -149,8 +147,6 @@ mod tests {
 
     #[test]
     fn test_en_passant_and_castling_enter_hash() {
-        // Legal EP claim: white just pushed e2e4 and a black pawn on d4
-        // can capture (otherwise the parser rightly drops the square).
         let no_ep =
             BoardState::parse_fen("rnbqkbnr/ppp1pppp/8/8/3pP3/8/PPPP1PPP/RNBQKBNR b KQkq - 0 1");
         let with_ep =
