@@ -352,11 +352,11 @@ fn search_primary(
                 let baseline = search_state
                     .prev_root_score
                     .or(search_state.best_previous_score);
-                if let Some(prev) = baseline {
-                    if let Some(c) = concession::detect_concession(prev, current_score, 0) {
-                        aprm_concession_txt = format!(" concession={:?}+{}", c.kind, c.swing_cp);
-                        search_state.last_concession = Some(c);
-                    }
+                if let Some(c) =
+                    baseline.and_then(|prev| concession::detect_concession(prev, current_score, 0))
+                {
+                    aprm_concession_txt = format!(" concession={:?}+{}", c.kind, c.swing_cp);
+                    search_state.last_concession = Some(c);
                 }
 
                 if search_state.params.pressure_enabled {

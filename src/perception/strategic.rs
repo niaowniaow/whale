@@ -201,11 +201,7 @@ fn king_shelter_score(board: &BoardState, side: Side, our_pawns: u64) -> u8 {
             } else {
                 pawns_on_file.trailing_zeros() as usize / 8
             };
-            let dist = if closest_rank >= k_rank {
-                closest_rank - k_rank
-            } else {
-                k_rank - closest_rank
-            };
+            let dist = closest_rank.abs_diff(k_rank);
             if dist <= 1 {
                 score += 1;
             }

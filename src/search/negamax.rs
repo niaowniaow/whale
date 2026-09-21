@@ -792,7 +792,8 @@ fn search_internal(
         }
         if ctx.search_state.params.risk_enabled
             && (ctx.search_state.last_musttry
-                || ctx.search_state.last_state == crate::search::position_state::PositionState::Attack)
+                || ctx.search_state.last_state
+                    == crate::search::position_state::PositionState::Attack)
         {
             lmp_threshold = lmp_threshold.saturating_add(2);
         } else if ctx.search_state.simplify_bias {
@@ -998,11 +999,11 @@ fn search_internal(
             let mut reduction =
                 (base_reduction as i8 + ras_perturbation).clamp(0, depth as i8 - 1) as u8;
 
-            if ctx.search_state.params.risk_enabled && ctx.search_state.last_musttry && ply <= 4 {
-                reduction = reduction.saturating_sub(1);
-            } else if ctx.search_state.params.state_enabled
-                && ctx.search_state.last_state == crate::search::position_state::PositionState::Attack
-                && is_tactical
+            if (ctx.search_state.params.risk_enabled && ctx.search_state.last_musttry && ply <= 4)
+                || (ctx.search_state.params.state_enabled
+                    && ctx.search_state.last_state
+                        == crate::search::position_state::PositionState::Attack
+                    && is_tactical)
             {
                 reduction = reduction.saturating_sub(1);
             } else if ctx.search_state.reset_mode && !is_tactical {

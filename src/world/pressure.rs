@@ -1,17 +1,8 @@
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct PressureState {
     pub pressure: i32,
 
     pub sustained_plies: u32,
-}
-
-impl Default for PressureState {
-    fn default() -> Self {
-        Self {
-            pressure: 0,
-            sustained_plies: 0,
-        }
-    }
 }
 
 pub fn update_pressure(

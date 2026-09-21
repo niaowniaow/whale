@@ -333,9 +333,7 @@ fn build_threat_luts() -> ThreatLuts {
         let mut piece_offset = 0u32;
         for (from, slot) in offsets[code].iter_mut().enumerate().take(64) {
             *slot = piece_offset;
-            if pt != 1 {
-                piece_offset += pseudo_attacks_sf(code, from).count_ones();
-            } else if (8..56).contains(&from) {
+            if pt != 1 || (8..56).contains(&from) {
                 piece_offset += pseudo_attacks_sf(code, from).count_ones();
             }
         }

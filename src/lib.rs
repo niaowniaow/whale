@@ -14,7 +14,6 @@ pub mod teacher;
 pub mod uci;
 pub mod world;
 
-
 #[cfg(feature = "train")]
 pub mod datagen;
 #[cfg(not(feature = "train"))]

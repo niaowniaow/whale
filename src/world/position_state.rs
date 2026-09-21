@@ -78,23 +78,22 @@ pub fn classify_with_hysteresis(
 ) -> PositionState {
     if let Some(prev) = prev_state {
         match prev {
-            PositionState::Defend => {
+            PositionState::Defend
                 if input.in_check
                     || input.score <= th.defend_score + 30
-                    || input.opp_cpi >= th.defend_cpi - 20
-                {
-                    return PositionState::Defend;
-                }
+                    || input.opp_cpi >= th.defend_cpi - 20 =>
+            {
+                return PositionState::Defend;
             }
-            PositionState::Attack => {
-                if input.score >= th.attack_score - 25 && input.own_cpi >= th.attack_cpi - 15 {
-                    return PositionState::Attack;
-                }
+            PositionState::Attack
+                if input.score >= th.attack_score - 25 && input.own_cpi >= th.attack_cpi - 15 =>
+            {
+                return PositionState::Attack;
             }
-            PositionState::Convert => {
-                if input.score >= th.convert_score - 30 && input.opp_cpi <= th.convert_cpi + 15 {
-                    return PositionState::Convert;
-                }
+            PositionState::Convert
+                if input.score >= th.convert_score - 30 && input.opp_cpi <= th.convert_cpi + 15 =>
+            {
+                return PositionState::Convert;
             }
             _ => {}
         }

@@ -28,7 +28,7 @@ impl MultipvLine {
             .mv
             .promotion_char()
             .map(|c| c.to_string())
-            .unwrap_or_else(String::new);
+            .unwrap_or_default();
         format!("{}{}{}", self.mv.source, self.mv.target, promotion)
     }
 }

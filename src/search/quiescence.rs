@@ -748,7 +748,9 @@ mod tests {
 
     #[test]
     fn verification_budget_allows_ply1_quiet_checks() {
-        let mut board = BoardState::parse_fen("r1bqk2r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 4");
+        let mut board = BoardState::parse_fen(
+            "r1bqk2r/pppp1ppp/2n5/4p3/2B1n3/5Q2/PPPP1PPP/RNB1K1NR w KQkq - 0 4",
+        );
         let mut state = SearchState::new();
         state.verification_budget = 2;
         state.last_musttry = true;

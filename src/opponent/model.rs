@@ -43,7 +43,10 @@ pub fn evaluate_opponent(board: &BoardState) -> OpponentModel {
 }
 
 impl BoardState {
-    pub fn get_king_square_safe(&self, side: crate::common::side::Side) -> Option<crate::common::square::Square> {
+    pub fn get_king_square_safe(
+        &self,
+        side: crate::common::side::Side,
+    ) -> Option<crate::common::square::Square> {
         let bb = self.get_pieces(side, crate::common::piece::Piece::King);
         if bb.is_empty() {
             None

@@ -194,7 +194,9 @@ impl UciClient {
             if name.eq_ignore_ascii_case("Conversion_Enabled") {
                 state.params.conversion_enabled = flag_on;
             }
-            if name.eq_ignore_ascii_case("QS_Checks_Enabled") || name.eq_ignore_ascii_case("QS_Checks") {
+            if name.eq_ignore_ascii_case("QS_Checks_Enabled")
+                || name.eq_ignore_ascii_case("QS_Checks")
+            {
                 state.params.qs_checks_enabled = flag_on;
             }
 
