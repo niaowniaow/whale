@@ -27,6 +27,98 @@ pub struct SelfPlayPosition {
     pub side_to_move: WhaleSide,
     pub mv: Move,
     pub engine_eval: i16,
+    pub fen: String,
+    pub behavior_state: u8,
+    pub behavior_intent: u8,
+    pub behavior_pressure: i32,
+    pub behavior_opp_cpi: i32,
+    pub behavior_own_cpi: i32,
+    pub behavior_urgency: u8,
+    pub behavior_risk: i32,
+    pub behavior_musttry: bool,
+    pub behavior_concession: i16,
+}
+
+pub fn behavior_state_id(state: crate::world::position_state::PositionState) -> u8 {
+    use crate::world::position_state::PositionState;
+    match state {
+        PositionState::Defend => 0,
+        PositionState::Stabilize => 1,
+        PositionState::Improve => 2,
+        PositionState::Press => 3,
+        PositionState::Attack => 4,
+        PositionState::Reset => 5,
+        PositionState::Crush => 6,
+        PositionState::Convert => 7,
+    }
+}
+
+pub fn behavior_intent_id(intent: crate::world::intent::SearchIntent) -> u8 {
+    use crate::world::intent::SearchIntent;
+    match intent {
+        SearchIntent::Survival => 0,
+        SearchIntent::Stabilization => 1,
+        SearchIntent::Improvement => 2,
+        SearchIntent::Pressure => 3,
+        SearchIntent::Attack => 4,
+        SearchIntent::Verification => 5,
+        SearchIntent::Recovery => 6,
+        SearchIntent::Conversion => 7,
+    }
+}
+
+pub fn behavior_urgency_id(urgency: crate::risk::Urgency) -> u8 {
+    use crate::risk::Urgency;
+    match urgency {
+        Urgency::Low => 0,
+        Urgency::Medium => 1,
+        Urgency::High => 2,
+        Urgency::MustTry => 3,
+    }
+}
+
+pub fn move_to_uci(m: &Move) -> String {
+    let promo = m
+        .promotion_char()
+        .map(|c| c.to_string())
+        .unwrap_or_default();
+    format!("{}{}{}", m.source, m.target, promo)
+}
+
+pub fn write_behavior_jsonl<W: Write>(
+    positions: &[SelfPlayPosition],
+    writer: &mut W,
+) -> Result<()> {
+    for pos in positions {
+        let side = match pos.side_to_move {
+            WhaleSide::White => "w",
+            WhaleSide::Black => "b",
+            _ => "d",
+        };
+        let white_pov = if pos.side_to_move == WhaleSide::White {
+            pos.engine_eval
+        } else {
+            -pos.engine_eval
+        };
+        writeln!(
+            writer,
+            "{{\"fen\":\"{}\",\"side\":\"{}\",\"move\":\"{}\",\"eval\":{},\"state\":{},\"intent\":{},\"pressure\":{},\"opp_cpi\":{},\"own_cpi\":{},\"urgency\":{},\"risk\":{},\"musttry\":{},\"concession\":{}}}",
+            pos.fen,
+            side,
+            move_to_uci(&pos.mv),
+            white_pov,
+            pos.behavior_state,
+            pos.behavior_intent,
+            pos.behavior_pressure,
+            pos.behavior_opp_cpi,
+            pos.behavior_own_cpi,
+            pos.behavior_urgency,
+            pos.behavior_risk,
+            pos.behavior_musttry,
+            pos.behavior_concession,
+        )?;
+    }
+    Ok(())
 }
 
 struct CompletedGame {
@@ -284,6 +376,19 @@ pub fn run_with_teacher(
         }
     };
     let mut writer = BufWriter::new(file);
+    let behavior_path = format!("{}.behavior.jsonl", output_path);
+    let behavior_file = match OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&behavior_path)
+    {
+        Ok(f) => f,
+        Err(e) => {
+            println!("Error opening behavior file: {}", e);
+            return;
+        }
+    };
+    let mut behavior_writer = BufWriter::new(behavior_file);
 
     let (tx, rx) = mpsc::sync_channel(256);
 
@@ -375,6 +480,19 @@ pub fn run_with_teacher(
                             side_to_move: board_state.side_to_move,
                             mv: best_move,
                             engine_eval: score,
+                            fen: board_state.to_fen(),
+                            behavior_state: behavior_state_id(search_state.last_state),
+                            behavior_intent: behavior_intent_id(search_state.last_intent),
+                            behavior_pressure: search_state.pressure_state.pressure,
+                            behavior_opp_cpi: search_state.prev_opp_cpi.unwrap_or(0),
+                            behavior_own_cpi: search_state.prev_own_cpi.unwrap_or(0),
+                            behavior_urgency: behavior_urgency_id(search_state.last_urgency),
+                            behavior_risk: search_state.last_risk,
+                            behavior_musttry: search_state.last_musttry,
+                            behavior_concession: search_state
+                                .last_concession
+                                .map(|c| c.swing_cp)
+                                .unwrap_or(0),
                         });
 
                         board_state.make_move(best_move);
@@ -413,6 +531,10 @@ pub fn run_with_teacher(
                     println!("Error writing game to file: {}", e);
                     break;
                 }
+                if let Err(e) = write_behavior_jsonl(&game.positions, &mut behavior_writer) {
+                    println!("Error writing behavior file: {}", e);
+                    break;
+                }
                 games_written += 1;
                 total_positions += game.positions.len();
                 batch_positions += game.positions.len();
@@ -425,6 +547,7 @@ pub fn run_with_teacher(
 
                 if games_written % 2500 == 0 {
                     let _ = writer.flush();
+                    let _ = behavior_writer.flush();
                     let updated_metadata = DatagenMetadata {
                         games_completed: initial_metadata.games_completed + games_written,
                         total_positions: initial_metadata.total_positions + total_positions,
@@ -497,6 +620,7 @@ pub fn run_with_teacher(
             }
 
             let _ = writer.flush();
+            let _ = behavior_writer.flush();
             let updated_metadata = DatagenMetadata {
                 games_completed: initial_metadata.games_completed + games_written,
                 total_positions: initial_metadata.total_positions + total_positions,
@@ -560,6 +684,48 @@ pub fn run_with_teacher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn behavior_jsonl_roundtrip_fields() {
+        use crate::common::helpers::STARTING_FEN;
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let mut moves = crate::common::move_list::MoveList::new();
+        board.generate_moves(&mut moves);
+        let mv = moves[0].mv;
+        let positions = vec![SelfPlayPosition {
+            side_to_move: WhaleSide::White,
+            mv,
+            engine_eval: 24,
+            fen: board.to_fen(),
+            behavior_state: 3,
+            behavior_intent: 3,
+            behavior_pressure: 12,
+            behavior_opp_cpi: 18,
+            behavior_own_cpi: 22,
+            behavior_urgency: 2,
+            behavior_risk: 40,
+            behavior_musttry: true,
+            behavior_concession: 25,
+        }];
+        let mut buf: Vec<u8> = Vec::new();
+        write_behavior_jsonl(&positions, &mut buf).unwrap();
+        let line = String::from_utf8(buf).unwrap();
+        assert!(line.contains("\"move\":\""));
+        assert!(line.contains("\"state\":3"));
+        assert!(line.contains("\"musttry\":true"));
+        assert!(line.contains("\"concession\":25"));
+        assert!(line.contains("rnbqkbnr"));
+        assert_eq!(
+            behavior_state_id(crate::world::position_state::PositionState::Reset),
+            5
+        );
+        assert_eq!(
+            behavior_intent_id(crate::world::intent::SearchIntent::Recovery),
+            6
+        );
+        assert_eq!(behavior_urgency_id(crate::risk::Urgency::MustTry), 3);
+        assert_eq!(move_to_uci(&mv).len(), 4);
+    }
 
     #[test]
     fn parse_metadata_handles_multiline_json() {

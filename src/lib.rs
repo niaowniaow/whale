@@ -3,6 +3,7 @@ pub mod board;
 pub mod common;
 pub mod endgame;
 pub mod eval;
+pub mod opening;
 pub mod opponent;
 pub mod opportunity;
 pub mod perception;

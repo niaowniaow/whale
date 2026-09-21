@@ -38,10 +38,10 @@ const SUITE: &[SuiteEntry] = &[
         depth: 1,
     },
     SuiteEntry {
-        name: "pressure-startpos",
+        name: "pressure-fools-line",
         fen: STARTING_FEN,
         category: SuiteCategory::Pressure,
-        depth: 3,
+        depth: 1,
     },
     SuiteEntry {
         name: "conversion-kqk",
@@ -108,6 +108,45 @@ fn style_suite_categories_behave() {
             continue;
         }
         let m = run_entry(e);
+        if e.category == SuiteCategory::Pressure {
+            use whale::common::move_list::MoveList;
+            use whale::common::square::Square;
+            let mut board = BoardState::parse_fen(e.fen);
+            let mut state = SearchState::new();
+            let token = AtomicBool::new(false);
+            let mut debug = false;
+            iterative_deepening::search(&mut board, 1, &token, &mut debug, &mut state, 1);
+            for (from, to) in [
+                (Square::F2, Square::F3),
+                (Square::E7, Square::E5),
+                (Square::G2, Square::G4),
+            ] {
+                let mut list = MoveList::new();
+                board.generate_moves(&mut list);
+                let mv = list
+                    .iter()
+                    .map(|en| en.mv)
+                    .find(|mv| mv.source == from && mv.target == to)
+                    .expect("pressure line must be legal");
+                board.make_move(mv);
+            }
+            iterative_deepening::search(&mut board, e.depth, &token, &mut debug, &mut state, 1);
+            assert!(
+                board.is_legal(state.best_move),
+                "{}: bestmove must be legal",
+                e.name
+            );
+            let pm = metrics::collect(&state);
+            assert!(
+                pm.sustained_plies >= 1 && pm.pressure > 0,
+                "{}: sustained denial must register pressure, got {} sustained {}",
+                e.name,
+                pm.pressure,
+                pm.sustained_plies
+            );
+            samples.push((pm, e.category));
+            continue;
+        }
         match e.category {
             SuiteCategory::Defensive => assert_eq!(
                 m.state,
@@ -173,6 +212,8 @@ fn ultimate_behavior_twelve_step_chain() {
             momentum: 0,
             in_check: false,
             volatility: position_state::VolatilityLevel::Low,
+            score_drop: 0,
+            attack_failed: false,
         },
         &th,
     );

@@ -28,14 +28,16 @@ impl Default for DcnConfig {
 pub struct DcnModel;
 
 impl DcnModel {
-    pub const EMBED_DIM: usize = 16;
-    pub const MAX_DEPTH: usize = 64;
-
     #[inline(always)]
     pub fn get_regime(depth: u8) -> DepthRegime {
-        if depth < 5 {
+        Self::regime_for(depth, 5, 15)
+    }
+
+    #[inline(always)]
+    pub fn regime_for(depth: u8, tactical_threshold: u8, strategic_threshold: u8) -> DepthRegime {
+        if depth < tactical_threshold {
             DepthRegime::Tactical
-        } else if depth <= 15 {
+        } else if depth <= strategic_threshold {
             DepthRegime::Blended
         } else {
             DepthRegime::Strategic
@@ -44,20 +46,11 @@ impl DcnModel {
 
     #[inline(always)]
     pub fn compute_film_params(depth: u8) -> (i32, i32) {
-        let d = (depth as usize).min(Self::MAX_DEPTH - 1);
-        let embed = &DEPTH_EMBEDDINGS[d];
-
-        let mut gamma_raw = 0i32;
-        let mut beta_raw = 0i32;
-
-        for (i, &val) in embed.iter().enumerate() {
-            gamma_raw += val as i32 * FILM_GAMMA_WEIGHTS[i] as i32;
-            beta_raw += val as i32 * FILM_BETA_WEIGHTS[i] as i32;
-        }
-
-        let gamma = 256 + (gamma_raw / 128).clamp(-64, 64);
-        let beta = (beta_raw / 128).clamp(-120, 120);
-
+        let d = depth as i32;
+        let tactical_pull = (15 - d).clamp(0, 15);
+        let strategic_pull = (d - 4).clamp(0, 15);
+        let gamma = 256 + (tactical_pull * 4 - strategic_pull * 2).clamp(-64, 64);
+        let beta = (strategic_pull * 8 - tactical_pull * 4).clamp(-120, 120);
         (gamma, beta)
     }
 
@@ -98,7 +91,7 @@ impl DcnModel {
         let (gamma, beta) = Self::compute_film_params(depth);
         let modulated = (raw_eval as i64 * gamma as i64) / 256 + beta as i64;
 
-        let regime = Self::get_regime(depth);
+        let regime = Self::regime_for(depth, config.tactical_threshold, config.strategic_threshold);
         let positional_adjustment = match regime {
             DepthRegime::Tactical => {
                 (queen_threat_them as i64 - queen_threat_us as i64) * 28 - checks as i64 * 32
@@ -123,8 +116,8 @@ impl DcnModel {
             }
             DepthRegime::Blended => {
                 let d = depth as i64;
-                let tactical_weight = (15 - d).max(0);
-                let strategic_weight = (d - 4).max(0);
+                let tactical_weight = (config.strategic_threshold as i64 - d).max(0);
+                let strategic_weight = (d - config.tactical_threshold as i64).max(0);
 
                 let us = board.side_to_move;
                 let checks = board.checkers(us).0.count_ones() as i64;
@@ -141,28 +134,6 @@ impl DcnModel {
         (modulated + positional_adjustment).clamp(-29000, 29000) as i16
     }
 }
-
-const DEPTH_EMBEDDINGS: [[i16; DcnModel::EMBED_DIM]; DcnModel::MAX_DEPTH] = {
-    let mut table = [[0i16; DcnModel::EMBED_DIM]; DcnModel::MAX_DEPTH];
-    let mut d = 0usize;
-    while d < DcnModel::MAX_DEPTH {
-        let mut i = 0usize;
-        while i < DcnModel::EMBED_DIM {
-            let freq = i as i32 * 3 + 1;
-            let val = ((d as i32 * freq * 13) % 255) - 127;
-            table[d][i] = val as i16;
-            i += 1;
-        }
-        d += 1;
-    }
-    table
-};
-
-const FILM_GAMMA_WEIGHTS: [i16; DcnModel::EMBED_DIM] =
-    [12, 10, -8, 6, -4, 9, 7, -5, 8, -6, 11, -7, 5, -4, 8, -6];
-
-const FILM_BETA_WEIGHTS: [i16; DcnModel::EMBED_DIM] =
-    [-6, 8, 14, -10, 5, -8, 12, -7, 6, -9, 8, -12, 7, -5, 10, -8];
 
 #[cfg(test)]
 mod tests {
@@ -186,6 +157,21 @@ mod tests {
             assert!((192..=320).contains(&gamma));
             assert!((-120..=120).contains(&beta));
         }
+    }
+
+    #[test]
+    fn test_film_ramps_with_depth() {
+        let (g0, b0) = DcnModel::compute_film_params(0);
+        let (g30, b30) = DcnModel::compute_film_params(30);
+        assert!(g0 >= g30);
+        assert!(b30 >= b0);
+    }
+
+    #[test]
+    fn test_regime_follows_config_thresholds() {
+        assert_eq!(DcnModel::regime_for(10, 5, 15), DepthRegime::Blended);
+        assert_eq!(DcnModel::regime_for(10, 11, 15), DepthRegime::Tactical);
+        assert_eq!(DcnModel::regime_for(10, 5, 9), DepthRegime::Strategic);
     }
 
     #[test]

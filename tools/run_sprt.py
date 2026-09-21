@@ -2,6 +2,7 @@ import subprocess
 import time
 import sys
 import os
+import json
 import chess
 import chess.pgn
 
@@ -170,7 +171,23 @@ def main():
     print(f"Games saved to '{out_pgn}'. Running 16-Metrics Game Analyzer...")
     print("#" * 65)
 
-    os.system(f"python tools/aprm_game_analyzer.py {out_pgn}")
+    os.system(f"python tools/aprm_game_analyzer.py {out_pgn} --json aprm_metrics.json")
+    try:
+        with open("aprm_metrics.json", "r", encoding="utf-8") as f:
+            metrics = json.load(f)
+    except Exception:
+        metrics = {}
+    report = {
+        "engine": engine_bin,
+        "games": num_games,
+        "movetime_ms": movetime,
+        "aprm_score": score_aprm,
+        "baseline_score": score_base,
+        "metrics": metrics,
+    }
+    with open("sprt_report.json", "w", encoding="utf-8") as f:
+        json.dump(report, f, indent=2)
+    print("Wrote evidence report to 'sprt_report.json'.")
 
 if __name__ == "__main__":
     main()

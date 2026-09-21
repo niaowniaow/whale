@@ -144,6 +144,7 @@ impl UciClient {
         cli::write_line("option name History_Weight type spin default 2 min 1 max 4");
         cli::write_line("option name ALP_Enabled type check default true");
         cli::write_line("option name ALP_Threshold type spin default 75 min 50 max 95");
+        cli::write_line("option name LQT_Threshold type spin default 620 min 300 max 900");
         cli::write_line("option name PSM_Enabled type check default true");
         cli::write_line("option name GTP_Enabled type check default true");
         cli::write_line("option name GTP_Threshold type spin default 15 min 5 max 50");
@@ -168,6 +169,20 @@ impl UciClient {
         cli::write_line("option name ConvertScore type spin default 250 min 100 max 600");
         cli::write_line("option name CrushScore type spin default 600 min 300 max 1200");
         cli::write_line("option name DefendCPI type spin default 120 min 40 max 250");
+        cli::write_line("option name DefendScore type spin default -150 min -400 max 0");
+        cli::write_line("option name AttackScore type spin default 80 min 0 max 300");
+        cli::write_line("option name AttackCPI type spin default 60 min 10 max 250");
+        cli::write_line("option name ConvertCPI type spin default 30 min 0 max 150");
+        cli::write_line("option name ResetDrop type spin default 50 min 10 max 150");
+        cli::write_line("option name RiskNormal type spin default 30 min 0 max 150");
+        cli::write_line("option name RiskElevated type spin default 70 min 10 max 250");
+        cli::write_line("option name PressureMomDiv type spin default 2 min 1 max 8");
+        cli::write_line("option name PressureCpiW type spin default 1 min 0 max 4");
+        cli::write_line("option name PressureFreeW type spin default 2 min 0 max 4");
+        cli::write_line("option name PressurePlanW type spin default 3 min 0 max 6");
+        cli::write_line("option name UrgencyMinGain type spin default 30 min 5 max 100");
+        cli::write_line("option name UrgencyMustTryGain type spin default 50 min 10 max 200");
+        cli::write_line("option name VerifyTolerance type spin default 30 min 5 max 100");
         cli::write_line("option name DualNet type check default true");
 
         if let Some(path) = crate::eval::nnue::v16::try_load_default_path() {
@@ -236,11 +251,22 @@ impl UciClient {
             );
             let elapsed = start.elapsed();
             total_nodes += state.nodes;
+            let sample = crate::search::perf::PerfSample {
+                nodes: state.nodes,
+                tbhits: state.tbhits,
+                elapsed_ms: elapsed.as_millis(),
+                behavior_us: state.behavior_us,
+                depth,
+            };
             cli::write_line(&format!(
-                "info string bench {}: {} nodes in {} ms",
+                "info string bench {}: {} nodes in {} ms ({} nps, tbhit {:.2}%, behavior {:.2}%, branch {:.2})",
                 index + 1,
                 state.nodes,
-                elapsed.as_millis()
+                elapsed.as_millis(),
+                sample.nps(),
+                sample.tt_hit_pct(),
+                sample.behavior_overhead_pct(),
+                sample.branching_estimate(),
             ));
         }
         let total_elapsed = total_start.elapsed();

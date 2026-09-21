@@ -67,3 +67,9 @@ checksum.md5
 /probe_*.py
 /scratch_test.py
 /in.txt
+
+# Test fixtures: tiny EPD suites required by tests/epd_suite.rs (keep tracked)
+!/data/
+!/data/benchmarks/
+!/data/benchmarks/*.epd
+!/resources/openings.epd

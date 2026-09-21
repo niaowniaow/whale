@@ -160,6 +160,7 @@ pub fn search(
                     alpha,
                     beta,
                     ply,
+                    search_state.params.lqt_threshold,
                 );
             if !continue_qs {
                 let mut stand_pat = beta;

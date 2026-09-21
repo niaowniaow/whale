@@ -20,6 +20,7 @@ pub struct SearchParameters {
     pub history_weight_max: i32,
     pub alp_enabled: bool,
     pub alp_threshold: u8,
+    pub lqt_threshold: i16,
     pub psm_enabled: bool,
     pub gtp_enabled: bool,
     pub gtp_threshold: u8,
@@ -67,6 +68,7 @@ impl Default for SearchParameters {
             history_weight_max: 16,
             alp_enabled: true,
             alp_threshold: 75,
+            lqt_threshold: 620,
             psm_enabled: true,
             gtp_enabled: true,
             gtp_threshold: 15,
@@ -142,6 +144,9 @@ pub struct SearchState {
     pub state_thresholds: crate::search::position_state::StateThresholds,
     pub risk_envelope: crate::search::risk::RiskEnvelope,
     pub conversion_params: crate::search::conversion::ConversionParams,
+    pub pressure_weights: crate::search::pressure::PressureWeights,
+    pub urgency_thresholds: crate::search::attack::UrgencyThresholds,
+    pub verify_tolerance_cp: i16,
 
     pub prev_root_score: Option<i16>,
     pub prev_opp_cpi: Option<i32>,
@@ -162,6 +167,18 @@ pub struct SearchState {
     pub last_state: crate::search::position_state::PositionState,
 
     pub last_concession: Option<crate::search::concession::Concession>,
+
+    pub last_intent: crate::search::intent::SearchIntent,
+
+    pub last_risk: i32,
+
+    pub last_urgency: crate::search::risk::Urgency,
+
+    pub last_attack_failed: bool,
+
+    pub prev_own_cpi: Option<i32>,
+
+    pub behavior_us: u64,
 }
 
 impl SearchState {
@@ -210,6 +227,9 @@ impl SearchState {
             state_thresholds: crate::search::position_state::StateThresholds::default(),
             risk_envelope: crate::search::risk::RiskEnvelope::default(),
             conversion_params: crate::search::conversion::ConversionParams::default(),
+            pressure_weights: crate::search::pressure::PressureWeights::default(),
+            urgency_thresholds: crate::search::attack::UrgencyThresholds::default(),
+            verify_tolerance_cp: crate::search::attack::VerifyParams::default().tolerance_cp,
             prev_root_score: None,
             prev_opp_cpi: None,
             prev_opp_freedom: None,
@@ -221,6 +241,12 @@ impl SearchState {
             last_verified: None,
             last_state: crate::search::position_state::PositionState::default(),
             last_concession: None,
+            last_intent: crate::search::intent::SearchIntent::default(),
+            last_risk: 0,
+            last_urgency: crate::search::risk::Urgency::Low,
+            last_attack_failed: false,
+            prev_own_cpi: None,
+            behavior_us: 0,
         }
     }
 
@@ -274,6 +300,9 @@ impl SearchState {
             state_thresholds: self.state_thresholds,
             risk_envelope: self.risk_envelope,
             conversion_params: self.conversion_params,
+            pressure_weights: self.pressure_weights,
+            urgency_thresholds: self.urgency_thresholds,
+            verify_tolerance_cp: self.verify_tolerance_cp,
             prev_root_score: None,
             prev_opp_cpi: None,
             prev_opp_freedom: None,
@@ -286,6 +315,12 @@ impl SearchState {
             last_verified: None,
             last_state: crate::search::position_state::PositionState::default(),
             last_concession: None,
+            last_intent: crate::search::intent::SearchIntent::default(),
+            last_risk: 0,
+            last_urgency: crate::search::risk::Urgency::Low,
+            last_attack_failed: false,
+            prev_own_cpi: None,
+            behavior_us: 0,
         }
     }
 
@@ -301,18 +336,13 @@ impl SearchState {
         self.optimism = [0; 2];
 
         self.multipv_lines.clear();
-        self.pressure_state = crate::search::pressure::PressureState::default();
-        self.prev_root_score = None;
-        self.prev_opp_cpi = None;
-        self.prev_opp_freedom = None;
-        self.prev_opp_breaks = None;
         self.verification_budget = 0;
         self.reset_mode = false;
         self.simplify_bias = false;
         self.last_musttry = false;
         self.last_verified = None;
-        self.last_state = crate::search::position_state::PositionState::default();
-        self.last_concession = None;
+        self.last_risk = 0;
+        self.last_urgency = crate::search::risk::Urgency::Low;
         *self.eval_stack = [i16::MIN; MAX_PLY];
         *self.extension_streak = [0u8; MAX_PLY];
         self.bmo.reset();
@@ -324,6 +354,16 @@ impl SearchState {
         self.best_previous_score = None;
         self.move_ordering.reset();
         self.correction_history.clear();
+        self.pressure_state = crate::search::pressure::PressureState::default();
+        self.prev_root_score = None;
+        self.prev_opp_cpi = None;
+        self.prev_own_cpi = None;
+        self.prev_opp_freedom = None;
+        self.prev_opp_breaks = None;
+        self.last_state = crate::search::position_state::PositionState::default();
+        self.last_concession = None;
+        self.last_intent = crate::search::intent::SearchIntent::default();
+        self.last_attack_failed = false;
     }
 }
 

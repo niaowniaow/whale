@@ -19,100 +19,44 @@ pub struct ThreatFeatures {
     pub is_pawn_advance: bool,
 }
 
-pub struct TceModel;
+pub struct TceScorer;
 
-impl TceModel {
-    pub const INPUT_DIM: usize = 10;
-    pub const HIDDEN_DIM: usize = 16;
-    pub const OUTPUT_DIM: usize = 3;
-
-    pub fn forward(features: &ThreatFeatures) -> [i32; Self::OUTPUT_DIM] {
-        let x: [i32; Self::INPUT_DIM] = [
-            features.num_pins,
-            features.num_threatened_pieces,
-            if features.is_check { 1 } else { 0 },
-            features.num_checkers,
-            if features.is_capture { 1 } else { 0 },
-            features.material_imbalance.clamp(-10, 10),
-            features.king_danger,
-            features.depth_remaining.clamp(0, 30),
-            if features.is_recapture { 1 } else { 0 },
-            if features.is_pawn_advance { 1 } else { 0 },
-        ];
-
-        let mut hidden = [0i32; Self::HIDDEN_DIM];
-        for (i, h) in hidden.iter_mut().enumerate() {
-            let mut sum = TCE_BIAS_1[i];
-            for (j, val) in x.iter().enumerate() {
-                sum += val * TCE_WEIGHTS_1[i][j];
-            }
-            *h = sum.max(0);
+impl TceScorer {
+    pub fn threat_score(features: &ThreatFeatures) -> i32 {
+        let mut score = 0i32;
+        score += features.num_pins * 2;
+        score += features.num_threatened_pieces;
+        if features.is_check {
+            score += 3;
         }
-
-        let mut output = [0i32; Self::OUTPUT_DIM];
-        for (k, out) in output.iter_mut().enumerate() {
-            let mut sum = TCE_BIAS_2[k];
-            for (i, h) in hidden.iter().enumerate() {
-                sum += h * TCE_WEIGHTS_2[k][i];
-            }
-            *out = sum;
+        score += features.num_checkers;
+        if features.is_capture {
+            score += 1;
         }
-
-        output
+        score += features.king_danger * 2;
+        if features.is_recapture {
+            score += 2;
+        }
+        if features.is_pawn_advance {
+            score += 1;
+        }
+        score += (features.depth_remaining / 4).clamp(0, 3);
+        score
     }
 
     pub fn predict_extension(features: &ThreatFeatures) -> u8 {
-        let scores = Self::forward(features);
-        let mut best_idx = 0usize;
-        let mut best_score = scores[0];
-
-        for (i, &score) in scores.iter().enumerate().skip(1) {
-            if score > best_score {
-                best_score = score;
-                best_idx = i;
-            }
+        let score = Self::threat_score(features);
+        if score >= 12 {
+            2
+        } else if score >= 6 {
+            1
+        } else {
+            0
         }
-
-        best_idx as u8
     }
 }
 
-const TCE_WEIGHTS_1: [[i32; TceModel::INPUT_DIM]; TceModel::HIDDEN_DIM] = [
-    [12, 10, 25, 30, 8, -4, 18, 5, 14, 12],
-    [5, 4, 15, 20, 2, -2, 10, 3, 8, 6],
-    [18, 14, 5, 2, 4, 1, 12, 4, 2, 8],
-    [8, 16, 20, 25, 12, -6, 22, 6, 10, 15],
-    [2, 3, 35, 40, 5, 2, 16, 2, 6, 4],
-    [14, 8, 4, 6, 16, -1, 8, 7, 18, 10],
-    [4, 12, 18, 22, 6, -5, 24, 4, 4, 8],
-    [20, 6, 8, 10, 10, 0, 14, 5, 12, 16],
-    [-8, -6, -15, -20, -4, 8, -12, -3, -6, -4],
-    [-12, -10, -25, -30, -8, 12, -18, -5, -10, -8],
-    [6, 5, 12, 15, 4, -2, 8, 2, 6, 5],
-    [10, 15, 8, 10, 14, -3, 16, 6, 15, 12],
-    [3, 2, 28, 32, 4, 1, 14, 3, 5, 3],
-    [15, 12, 16, 20, 8, -4, 20, 5, 11, 14],
-    [-5, -4, -10, -12, -2, 5, -8, -2, -4, -3],
-    [7, 9, 14, 18, 5, -3, 15, 4, 7, 9],
-];
-
-const TCE_BIAS_1: [i32; TceModel::HIDDEN_DIM] = [
-    -40, -20, -30, -50, -35, -25, -45, -30, 50, 80, -15, -35, -30, -45, 40, -25,
-];
-
-const TCE_WEIGHTS_2: [[i32; TceModel::HIDDEN_DIM]; TceModel::OUTPUT_DIM] = [
-    [
-        -12, -8, -10, -15, -14, -8, -16, -10, 24, 32, -6, -12, -11, -15, 18, -8,
-    ],
-    [
-        14, 10, 12, 16, 15, 10, 18, 12, -15, -20, 8, 14, 12, 16, -12, 10,
-    ],
-    [
-        18, 12, 15, 22, 20, 12, 24, 14, -25, -35, 10, 18, 16, 22, -18, 12,
-    ],
-];
-
-const TCE_BIAS_2: [i32; TceModel::OUTPUT_DIM] = [40, -10, -90];
+pub use TceScorer as TceModel;
 
 pub fn extract_threat_features(
     board: &BoardState,
@@ -320,7 +264,7 @@ mod tests {
     }
 
     #[test]
-    fn forward_clamps_and_stays_in_range() {
+    fn score_clamps_and_stays_in_range() {
         let features = ThreatFeatures {
             num_pins: 99,
             num_threatened_pieces: 99,
@@ -333,8 +277,8 @@ mod tests {
             is_recapture: true,
             is_pawn_advance: true,
         };
-        let out = TceModel::forward(&features);
-        assert_eq!(out.len(), 3);
+        let score = TceModel::threat_score(&features);
+        assert!(score > 12);
         let cat = TceModel::predict_extension(&features);
         assert!(cat <= 2);
     }

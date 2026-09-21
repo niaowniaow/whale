@@ -1,3 +1,5 @@
+pub mod backend;
+pub mod heads;
 pub mod move_ordering;
 pub mod nnue;
 

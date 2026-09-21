@@ -137,6 +137,11 @@ impl UciClient {
             {
                 state.params.alp_threshold = v.clamp(50, 95);
             }
+            if name.eq_ignore_ascii_case("LQT_Threshold")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.params.lqt_threshold = v.clamp(300, 900);
+            }
             if name.eq_ignore_ascii_case("PSM_Enabled") {
                 state.params.psm_enabled = value.eq_ignore_ascii_case("true");
             }
@@ -224,6 +229,77 @@ impl UciClient {
                 && let Ok(v) = value.parse::<i32>()
             {
                 state.state_thresholds.defend_cpi = v.clamp(40, 250);
+            }
+            if name.eq_ignore_ascii_case("DefendScore")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.state_thresholds.defend_score = v.clamp(-400, 0);
+            }
+            if name.eq_ignore_ascii_case("AttackScore")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.state_thresholds.attack_score = v.clamp(0, 300);
+            }
+            if name.eq_ignore_ascii_case("AttackCPI")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.state_thresholds.attack_cpi = v.clamp(10, 250);
+            }
+            if name.eq_ignore_ascii_case("ConvertCPI")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.state_thresholds.convert_cpi = v.clamp(0, 150);
+                state.conversion_params.max_opp_cpi = v.clamp(0, 150);
+            }
+            if name.eq_ignore_ascii_case("ResetDrop")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.state_thresholds.reset_drop = v.clamp(10, 150);
+            }
+            if name.eq_ignore_ascii_case("RiskNormal")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.risk_envelope.normal_max = v.clamp(0, 150);
+            }
+            if name.eq_ignore_ascii_case("RiskElevated")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.risk_envelope.elevated_max = v.clamp(10, 250);
+            }
+            if name.eq_ignore_ascii_case("PressureMomDiv")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.pressure_weights.momentum_div = v.clamp(1, 8);
+            }
+            if name.eq_ignore_ascii_case("PressureCpiW")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.pressure_weights.cpi_w = v.clamp(0, 4);
+            }
+            if name.eq_ignore_ascii_case("PressureFreeW")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.pressure_weights.freedom_w = v.clamp(0, 4);
+            }
+            if name.eq_ignore_ascii_case("PressurePlanW")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.pressure_weights.plans_w = v.clamp(0, 6);
+            }
+            if name.eq_ignore_ascii_case("UrgencyMinGain")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.urgency_thresholds.min_gain = v.clamp(5, 100);
+            }
+            if name.eq_ignore_ascii_case("UrgencyMustTryGain")
+                && let Ok(v) = value.parse::<i32>()
+            {
+                state.urgency_thresholds.musttry_gain = v.clamp(10, 200);
+            }
+            if name.eq_ignore_ascii_case("VerifyTolerance")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.verify_tolerance_cp = v.clamp(5, 100);
             }
             if name.eq_ignore_ascii_case("Extension_Cap_Enabled")
                 || name.eq_ignore_ascii_case("Extension_Cap")
@@ -431,6 +507,7 @@ mod tests {
             client.run_setoption(&["name", name, "value", "true"]);
         }
         client.run_setoption(&["name", "ALP_Threshold", "value", "1"]);
+        client.run_setoption(&["name", "LQT_Threshold", "value", "500"]);
         client.run_setoption(&["name", "GTP_Threshold", "value", "99"]);
         {
             let state = client.search_state.lock().unwrap();
@@ -438,6 +515,7 @@ mod tests {
             assert!(state.params.psm_enabled);
             assert!(state.params.gtp_enabled);
             assert_eq!(state.params.alp_threshold, 50);
+            assert_eq!(state.params.lqt_threshold, 500);
             assert_eq!(state.params.gtp_threshold, 50);
         }
         client.run_setoption(&["name", "ALP_Enabled", "value", "false"]);
@@ -453,6 +531,20 @@ mod tests {
         client.run_setoption(&["name", "ConvertScore", "value", "300"]);
         client.run_setoption(&["name", "CrushScore", "value", "800"]);
         client.run_setoption(&["name", "DefendCPI", "value", "100"]);
+        client.run_setoption(&["name", "DefendScore", "value", "-100"]);
+        client.run_setoption(&["name", "AttackScore", "value", "90"]);
+        client.run_setoption(&["name", "AttackCPI", "value", "70"]);
+        client.run_setoption(&["name", "ConvertCPI", "value", "35"]);
+        client.run_setoption(&["name", "ResetDrop", "value", "60"]);
+        client.run_setoption(&["name", "RiskNormal", "value", "25"]);
+        client.run_setoption(&["name", "RiskElevated", "value", "80"]);
+        client.run_setoption(&["name", "PressureMomDiv", "value", "3"]);
+        client.run_setoption(&["name", "PressureCpiW", "value", "2"]);
+        client.run_setoption(&["name", "PressureFreeW", "value", "1"]);
+        client.run_setoption(&["name", "PressurePlanW", "value", "4"]);
+        client.run_setoption(&["name", "UrgencyMinGain", "value", "40"]);
+        client.run_setoption(&["name", "UrgencyMustTryGain", "value", "70"]);
+        client.run_setoption(&["name", "VerifyTolerance", "value", "25"]);
         {
             let state = client.search_state.lock().unwrap();
             assert_eq!(state.multipv, 3);
@@ -461,14 +553,35 @@ mod tests {
             assert_eq!(state.conversion_params.convert_min_cp, 300);
             assert_eq!(state.conversion_params.crush_min_cp, 800);
             assert_eq!(state.state_thresholds.defend_cpi, 100);
+            assert_eq!(state.state_thresholds.defend_score, -100);
+            assert_eq!(state.state_thresholds.attack_score, 90);
+            assert_eq!(state.state_thresholds.attack_cpi, 70);
+            assert_eq!(state.state_thresholds.convert_cpi, 35);
+            assert_eq!(state.conversion_params.max_opp_cpi, 35);
+            assert_eq!(state.state_thresholds.reset_drop, 60);
+            assert_eq!(state.risk_envelope.normal_max, 25);
+            assert_eq!(state.risk_envelope.elevated_max, 80);
+            assert_eq!(state.pressure_weights.momentum_div, 3);
+            assert_eq!(state.pressure_weights.cpi_w, 2);
+            assert_eq!(state.pressure_weights.freedom_w, 1);
+            assert_eq!(state.pressure_weights.plans_w, 4);
+            assert_eq!(state.urgency_thresholds.min_gain, 40);
+            assert_eq!(state.urgency_thresholds.musttry_gain, 70);
+            assert_eq!(state.verify_tolerance_cp, 25);
         }
 
         client.run_setoption(&["name", "MultiPV", "value", "99"]);
         client.run_setoption(&["name", "MustTryGain", "value", "9999"]);
+        client.run_setoption(&["name", "DefendScore", "value", "-9999"]);
+        client.run_setoption(&["name", "PressureMomDiv", "value", "0"]);
+        client.run_setoption(&["name", "VerifyTolerance", "value", "9999"]);
         {
             let state = client.search_state.lock().unwrap();
             assert_eq!(state.multipv, 8);
             assert_eq!(state.risk_envelope.min_gain_cp, 100);
+            assert_eq!(state.state_thresholds.defend_score, -400);
+            assert_eq!(state.pressure_weights.momentum_div, 1);
+            assert_eq!(state.verify_tolerance_cp, 100);
         }
     }
 

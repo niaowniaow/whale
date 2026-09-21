@@ -1,6 +1,4 @@
 pub const MAX_GTP_NODES: usize = 16;
-pub const GTP_HIDDEN_DIM: usize = 32;
-pub const GTP_INPUT_DIM: usize = 6;
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct GtpNode {
@@ -65,76 +63,51 @@ impl GtpTreeGraph {
     }
 }
 
-pub struct GtpModel;
+pub struct GtpPruner;
 
-impl GtpModel {
+impl GtpPruner {
+    pub fn node_score(graph: &GtpTreeGraph, idx: usize) -> i32 {
+        let node = &graph.nodes[idx];
+        let mut score = 50i32;
+        score += (node.eval_margin as i32 / 64).clamp(-30, 30);
+        score += (node.history_score / 512).clamp(-20, 20);
+        if node.is_capture {
+            score += 12;
+        }
+        if node.in_check {
+            score -= 25;
+        }
+        let degree = (graph.adjacency[idx].count_ones() as i32).min(4);
+        score += degree * 4;
+        score += (node.depth.min(8) as i32) * 2;
+        score.clamp(0, 100)
+    }
+
     pub fn message_passing(graph: &GtpTreeGraph) -> [u8; MAX_GTP_NODES] {
         let mut importance = [50u8; MAX_GTP_NODES];
         if graph.count == 0 {
             return importance;
         }
-
-        let mut h0 = [[0i32; GTP_INPUT_DIM]; MAX_GTP_NODES];
-        for (i, node) in graph.nodes[..graph.count].iter().enumerate() {
-            h0[i][0] = (node.depth as i32).clamp(0, 32);
-            h0[i][1] = (node.eval_margin / 32).clamp(-128, 128) as i32;
-            h0[i][2] = if node.is_capture { 64 } else { 0 };
-            h0[i][3] = if node.in_check { 64 } else { 0 };
-            h0[i][4] = (node.history_score / 512).clamp(-64, 64);
-            h0[i][5] = (graph.adjacency[i].count_ones() as i32) * 16;
-        }
-
-        let mut h1 = [[0i16; GTP_HIDDEN_DIM]; MAX_GTP_NODES];
         for i in 0..graph.count {
-            for j in 0..GTP_HIDDEN_DIM {
-                let mut self_sum = GTP_BIAS_1[j];
-                for k in 0..GTP_INPUT_DIM {
-                    self_sum += h0[i][k] * GTP_WEIGHTS_SELF[j][k];
+            let own = Self::node_score(graph, i);
+            let adj = graph.adjacency[i];
+            let mut neighbor_sum = 0i32;
+            let mut neighbor_count = 0i32;
+            let mut n_idx = 0usize;
+            while n_idx < graph.count {
+                if (adj & (1 << n_idx)) != 0 {
+                    neighbor_sum += Self::node_score(graph, n_idx);
+                    neighbor_count += 1;
                 }
-
-                let mut neighbor_sum = 0i32;
-                let adj = graph.adjacency[i];
-                let mut n_idx = 0usize;
-                while n_idx < graph.count {
-                    if (adj & (1 << n_idx)) != 0 {
-                        for k in 0..GTP_INPUT_DIM {
-                            neighbor_sum += h0[n_idx][k] * GTP_WEIGHTS_NEIGHBOR[j][k];
-                        }
-                    }
-                    n_idx += 1;
-                }
-
-                let activated = ((self_sum + neighbor_sum / 2) / 16).clamp(0, 255);
-                h1[i][j] = activated as i16;
+                n_idx += 1;
             }
+            let smoothed = if neighbor_count > 0 {
+                (2 * own + neighbor_sum / neighbor_count) / 3
+            } else {
+                own
+            };
+            importance[i] = smoothed.clamp(0, 100) as u8;
         }
-
-        let mut h2 = [[0i16; GTP_HIDDEN_DIM]; MAX_GTP_NODES];
-        for i in 0..graph.count {
-            for j in 0..GTP_HIDDEN_DIM {
-                let mut agg = GTP_BIAS_2[j];
-                let adj = graph.adjacency[i];
-                for (k, &val) in h1[i].iter().enumerate() {
-                    agg += (val as i32) * GTP_WEIGHTS_L2[j % 8][k % 8];
-                }
-                for (n_idx, neighbor) in h1.iter().enumerate().take(graph.count) {
-                    if (adj & (1 << n_idx)) != 0 {
-                        agg += (neighbor[j] as i32) * 2;
-                    }
-                }
-                h2[i][j] = (agg / 32).clamp(0, 255) as i16;
-            }
-        }
-
-        for i in 0..graph.count {
-            let mut score = 512i32;
-            for j in 0..GTP_HIDDEN_DIM {
-                score += (h2[i][j] as i32) * GTP_READOUT[j % 8];
-            }
-            let imp = (score / 32).clamp(0, 100);
-            importance[i] = imp as u8;
-        }
-
         importance
     }
 
@@ -145,111 +118,9 @@ impl GtpModel {
         let scores = Self::message_passing(graph);
         scores[node_idx] < threshold
     }
-
-    pub fn gnn_loss(predicted: &[f32], target: &[f32]) -> f32 {
-        if predicted.is_empty() || predicted.len() != target.len() {
-            return 0.0;
-        }
-        let mut mse = 0.0f32;
-        for (p, t) in predicted.iter().zip(target.iter()) {
-            let diff = p - t;
-            mse += diff * diff;
-        }
-        mse / (predicted.len() as f32)
-    }
 }
 
-const GTP_WEIGHTS_SELF: [[i32; GTP_INPUT_DIM]; GTP_HIDDEN_DIM] = [
-    [4, 3, 5, 6, 2, 1],
-    [2, 4, 3, 5, 3, 2],
-    [5, 2, 6, 4, 1, 3],
-    [3, 5, 2, 6, 4, 1],
-    [4, 4, 5, 3, 2, 2],
-    [1, 3, 4, 5, 5, 4],
-    [6, 2, 3, 4, 1, 2],
-    [2, 5, 4, 3, 3, 3],
-    [3, 1, 5, 6, 2, 4],
-    [4, 6, 2, 3, 4, 1],
-    [5, 3, 4, 2, 1, 5],
-    [2, 4, 6, 5, 3, 2],
-    [3, 2, 3, 4, 5, 1],
-    [6, 5, 1, 2, 2, 3],
-    [1, 4, 5, 6, 4, 2],
-    [4, 2, 4, 3, 1, 4],
-    [2, 6, 3, 5, 2, 1],
-    [5, 1, 6, 4, 3, 2],
-    [3, 4, 2, 3, 5, 4],
-    [4, 3, 5, 2, 1, 3],
-    [1, 5, 4, 6, 2, 2],
-    [6, 2, 3, 1, 4, 5],
-    [2, 4, 1, 5, 3, 1],
-    [3, 3, 5, 4, 2, 4],
-    [4, 1, 2, 6, 5, 2],
-    [5, 6, 4, 2, 1, 3],
-    [2, 3, 5, 4, 3, 1],
-    [3, 5, 1, 3, 4, 2],
-    [4, 2, 6, 5, 2, 5],
-    [1, 4, 3, 2, 5, 1],
-    [6, 1, 4, 5, 1, 3],
-    [2, 5, 2, 4, 3, 2],
-];
-
-const GTP_WEIGHTS_NEIGHBOR: [[i32; GTP_INPUT_DIM]; GTP_HIDDEN_DIM] = [
-    [2, 1, 3, 4, 1, 2],
-    [1, 3, 2, 3, 2, 1],
-    [3, 2, 4, 2, 1, 2],
-    [2, 4, 1, 4, 3, 1],
-    [3, 1, 3, 2, 2, 1],
-    [1, 2, 3, 4, 4, 2],
-    [4, 1, 2, 3, 1, 1],
-    [1, 3, 2, 2, 2, 2],
-    [2, 1, 4, 4, 1, 3],
-    [3, 4, 1, 2, 3, 1],
-    [4, 2, 3, 1, 1, 4],
-    [1, 3, 4, 4, 2, 1],
-    [2, 1, 2, 3, 4, 1],
-    [4, 3, 1, 1, 1, 2],
-    [1, 3, 4, 4, 3, 1],
-    [3, 1, 3, 2, 1, 3],
-    [1, 4, 2, 4, 1, 1],
-    [4, 1, 4, 3, 2, 1],
-    [2, 3, 1, 2, 4, 3],
-    [3, 2, 4, 1, 1, 2],
-    [1, 4, 3, 4, 1, 1],
-    [4, 1, 2, 1, 3, 4],
-    [1, 3, 1, 4, 2, 1],
-    [2, 2, 4, 3, 1, 3],
-    [3, 1, 1, 4, 4, 1],
-    [4, 4, 3, 1, 1, 2],
-    [1, 2, 4, 3, 2, 1],
-    [2, 4, 1, 2, 3, 1],
-    [3, 1, 4, 4, 1, 4],
-    [1, 3, 2, 1, 4, 1],
-    [4, 1, 3, 4, 1, 2],
-    [1, 4, 1, 3, 2, 1],
-];
-
-const GTP_BIAS_1: [i32; GTP_HIDDEN_DIM] = [
-    8, 12, 10, 14, 6, 9, 11, 13, 7, 15, 8, 12, 10, 11, 9, 14, 6, 13, 8, 10, 12, 7, 14, 9, 11, 8,
-    13, 10, 7, 12, 9, 11,
-];
-
-const GTP_WEIGHTS_L2: [[i32; 8]; 8] = [
-    [2, 3, 1, 2, 4, 1, 2, 3],
-    [1, 2, 3, 1, 2, 4, 1, 2],
-    [3, 1, 2, 4, 1, 2, 3, 1],
-    [2, 4, 1, 2, 3, 1, 2, 4],
-    [4, 1, 2, 3, 1, 2, 4, 1],
-    [1, 3, 4, 1, 2, 3, 1, 2],
-    [2, 1, 3, 4, 1, 2, 3, 1],
-    [3, 2, 1, 2, 4, 1, 2, 3],
-];
-
-const GTP_BIAS_2: [i32; GTP_HIDDEN_DIM] = [
-    4, 6, 5, 7, 3, 5, 6, 8, 4, 7, 5, 6, 4, 5, 6, 7, 3, 6, 4, 5, 7, 4, 6, 5, 6, 4, 7, 5, 3, 6, 5, 6,
-];
-
-const GTP_READOUT: [i32; 8] = [2, -1, 3, 1, -2, 2, 1, -1];
+pub use GtpPruner as GtpModel;
 
 #[cfg(test)]
 mod tests {
@@ -349,14 +220,6 @@ mod tests {
     }
 
     #[test]
-    fn test_gtp_gnn_loss() {
-        let pred = [0.8f32, 0.4f32];
-        let target = [1.0f32, 0.5f32];
-        let loss = GtpModel::gnn_loss(&pred, &target);
-        assert!((loss - 0.025f32).abs() < 1e-4);
-    }
-
-    #[test]
     fn empty_graph_uses_default_importance() {
         let graph = GtpTreeGraph::new();
         assert_eq!(GtpModel::message_passing(&graph), [50u8; MAX_GTP_NODES]);
@@ -402,14 +265,6 @@ mod tests {
     }
 
     #[test]
-    fn gnn_loss_rejects_bad_shapes() {
-        assert_eq!(GtpModel::gnn_loss(&[], &[]), 0.0);
-        assert_eq!(GtpModel::gnn_loss(&[1.0], &[1.0, 2.0]), 0.0);
-        assert_eq!(GtpModel::gnn_loss(&[1.0, 2.0], &[1.0]), 0.0);
-        assert_eq!(GtpModel::gnn_loss(&[2.0], &[2.0]), 0.0);
-    }
-
-    #[test]
     fn message_passing_covers_flags_and_clamps() {
         let mut graph = GtpTreeGraph::new();
         let a = graph.add_node(GtpNode {
@@ -432,5 +287,26 @@ mod tests {
         assert!(importance[a] <= 100);
         assert!(importance[b] <= 100);
         assert_eq!(importance[MAX_GTP_NODES - 1], 50);
+    }
+
+    #[test]
+    fn connected_nodes_pull_toward_each_other() {
+        let mut graph = GtpTreeGraph::new();
+        let a = graph.add_node(GtpNode {
+            depth: 4,
+            eval_margin: 2000,
+            history_score: 8000,
+            ..GtpNode::default()
+        });
+        let _ = graph.add_node(GtpNode {
+            depth: 4,
+            eval_margin: -2000,
+            history_score: -8000,
+            parent_idx: Some(a),
+            ..GtpNode::default()
+        });
+        let importance = GtpModel::message_passing(&graph);
+        let solo_a = GtpPruner::node_score(&graph, a);
+        assert!((importance[a] as i32 - solo_a).abs() <= 34);
     }
 }

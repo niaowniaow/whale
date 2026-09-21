@@ -23,6 +23,21 @@ PARAMETERS = {
     "ConvertScore": {"default": 250, "min": 100, "max": 600, "step": 25},
     "CrushScore": {"default": 600, "min": 300, "max": 1200, "step": 50},
     "DefendCPI": {"default": 120, "min": 40, "max": 250, "step": 10},
+    "DefendScore": {"default": -150, "min": -400, "max": 0, "step": 15},
+    "AttackScore": {"default": 80, "min": 0, "max": 300, "step": 10},
+    "AttackCPI": {"default": 60, "min": 10, "max": 250, "step": 10},
+    "ConvertCPI": {"default": 30, "min": 0, "max": 150, "step": 5},
+    "ResetDrop": {"default": 50, "min": 10, "max": 150, "step": 5},
+    "RiskNormal": {"default": 30, "min": 0, "max": 150, "step": 5},
+    "RiskElevated": {"default": 70, "min": 10, "max": 250, "step": 10},
+    "PressureMomDiv": {"default": 2, "min": 1, "max": 8, "step": 1},
+    "PressureCpiW": {"default": 1, "min": 0, "max": 4, "step": 1},
+    "PressureFreeW": {"default": 2, "min": 0, "max": 4, "step": 1},
+    "PressurePlanW": {"default": 3, "min": 0, "max": 6, "step": 1},
+    "UrgencyMinGain": {"default": 30, "min": 5, "max": 100, "step": 5},
+    "UrgencyMustTryGain": {"default": 50, "min": 10, "max": 200, "step": 5},
+    "VerifyTolerance": {"default": 30, "min": 5, "max": 100, "step": 5},
+    "LQT_Threshold": {"default": 620, "min": 300, "max": 900, "step": 20},
 }
 
 class SpsaTuner:

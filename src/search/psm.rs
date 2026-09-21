@@ -1,7 +1,6 @@
 use crate::common::constants::MAX_PLY;
 
 pub const PSM_HIDDEN_DIM: usize = 128;
-pub const PSM_INPUT_DIM: usize = 8;
 
 #[derive(Clone, Copy, Debug)]
 pub struct PsmHiddenState {
@@ -44,50 +43,24 @@ pub struct PsmFeatures {
     pub failed_low: bool,
 }
 
-pub struct PsmEngine;
+pub struct PsmTracker;
 
-impl PsmEngine {
+impl PsmTracker {
     pub fn step(parent: &PsmHiddenState, features: &PsmFeatures) -> PsmHiddenState {
-        let norm_eval = (features.static_eval / 32).clamp(-128, 128) as i32;
-        let norm_depth = (features.depth as i32).clamp(0, 64);
-        let norm_window =
-            ((features.beta.saturating_sub(features.alpha)) / 32).clamp(0, 128) as i32;
-        let norm_history = (features.move_history / 512).clamp(-128, 128);
-        let is_cap = if features.is_capture { 64 } else { 0 };
-        let norm_sibling = (features.sibling_index as i32).clamp(0, 64);
-        let alpha_diff =
-            ((features.static_eval.saturating_sub(features.alpha)) / 32).clamp(-128, 128) as i32;
-        let beta_diff =
-            ((features.static_eval.saturating_sub(features.beta)) / 32).clamp(-128, 128) as i32;
-
-        let x = [
-            norm_eval,
-            norm_depth,
-            norm_window,
-            norm_history,
-            is_cap,
-            norm_sibling,
-            alpha_diff,
-            beta_diff,
-        ];
+        let tilt = ((features.static_eval.saturating_sub(features.alpha)) as i32 / 32)
+            .clamp(-64, 64)
+            + ((features.static_eval.saturating_sub(features.beta)) as i32 / 32).clamp(-64, 64);
+        let load = ((features.beta.saturating_sub(features.alpha)) as i32 / 32).clamp(0, 64)
+            + (features.depth.min(16) as i32) * 2
+            + (features.sibling_index.min(32) as i32);
+        let base = tilt - load / 2
+            + if features.is_capture { 16 } else { 0 }
+            + (features.move_history / 1024).clamp(-16, 16);
 
         let mut next_hidden = [0i16; PSM_HIDDEN_DIM];
-
-        for i in 0..PSM_HIDDEN_DIM {
-            let p_val = parent.hidden[i] as i32;
-            let mut gate_input = 0i32;
-            for j in 0..PSM_INPUT_DIM {
-                let weight = PSM_GATE_WEIGHTS[(i + j * 7) % PSM_GATE_WEIGHTS.len()];
-                gate_input += x[j] * weight;
-            }
-
-            let update_gate = ((gate_input + p_val * 3) / 16).clamp(-128, 128);
-            let candidate = ((gate_input * 2 - p_val) / 20).clamp(-128, 128);
-
-            let z = (update_gate + 128).clamp(0, 256);
-            let blended = (p_val * (256 - z) + candidate * z) / 256;
-
-            next_hidden[i] = blended.clamp(-256, 256) as i16;
+        for (i, h) in next_hidden.iter_mut().enumerate() {
+            let lane = ((i % 16) as i32 - 8) * 2;
+            *h = ((parent.hidden[i] as i32 * 3 + base + lane) / 4).clamp(-256, 256) as i16;
         }
 
         let fails = if features.failed_low {
@@ -104,12 +77,10 @@ impl PsmEngine {
 
     pub fn readout(state: &PsmHiddenState) -> i16 {
         let mut sum = 0i32;
-        for (i, &val) in state.hidden.iter().enumerate() {
-            let w = PSM_READOUT_WEIGHTS[i % PSM_READOUT_WEIGHTS.len()];
-            sum += (val as i32) * w;
+        for &val in state.hidden.iter() {
+            sum += val as i32;
         }
-
-        (sum / 2048).clamp(-60, 60) as i16
+        (sum / PSM_HIDDEN_DIM as i32 / 4).clamp(-60, 60) as i16
     }
 
     pub fn should_prune_sibling(
@@ -138,6 +109,8 @@ impl PsmEngine {
     }
 }
 
+pub use PsmTracker as PsmEngine;
+
 pub struct PsmStack {
     pub stack: [PsmHiddenState; MAX_PLY],
 }
@@ -163,13 +136,6 @@ impl PsmStack {
         }
     }
 }
-
-const PSM_GATE_WEIGHTS: [i32; 32] = [
-    3, -2, 4, 1, -3, 2, 5, -1, 2, -4, 3, 2, -2, 4, 1, -3, 4, -1, 2, 3, -4, 2, 1, -2, 3, 1, -3, 2,
-    4, -2, 3, 1,
-];
-
-const PSM_READOUT_WEIGHTS: [i32; 16] = [5, -3, 6, 2, -4, 3, 7, -2, 4, -5, 3, 4, -3, 6, 2, -4];
 
 #[cfg(test)]
 mod tests {
@@ -304,5 +270,23 @@ mod tests {
             assert!(PsmEngine::readout(&next).abs() <= 60);
             assert!(next.hidden.iter().all(|&v| (-256..=256).contains(&v)));
         }
+    }
+
+    #[test]
+    fn lanes_converge_toward_signal() {
+        let parent = PsmHiddenState::new();
+        let hot = PsmFeatures {
+            static_eval: 500,
+            depth: 2,
+            alpha: 0,
+            beta: 100,
+            move_history: 0,
+            is_capture: false,
+            sibling_index: 0,
+            failed_low: false,
+        };
+        let warm = PsmEngine::step(&parent, &hot);
+        let warmer = PsmEngine::step(&warm, &hot);
+        assert!(PsmEngine::readout(&warmer) >= PsmEngine::readout(&warm));
     }
 }

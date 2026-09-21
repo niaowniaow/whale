@@ -64,6 +64,7 @@ pub fn classify_candidate_rich(
             PositionState::Press => "press",
             PositionState::Improve => "improve",
             PositionState::Stabilize => "stabilize",
+            PositionState::Reset => "reset",
         }
     } else if mv.is_capture() || mv.is_promotion() {
         "tactical-alt"
@@ -105,6 +106,14 @@ mod tests {
         assert_eq!(
             classify_candidate_rich(q, 100, 100, false, PositionState::Defend),
             "defensive"
+        );
+        assert_eq!(
+            classify_candidate_rich(q, 100, 100, false, PositionState::Reset),
+            "reset"
+        );
+        assert_eq!(
+            classify_candidate_rich(q, 100, 100, false, PositionState::Stabilize),
+            "stabilize"
         );
     }
 }

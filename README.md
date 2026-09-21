@@ -33,10 +33,10 @@ The search engine uses a multi-threaded Principal Variation Search (PVS) with it
   * **Disagreement-Allocated Depth (DAD):** Adjusts depth and time for tactical positions based on score disagreements.
   * **Speculative Persona Search (SPS):** Helper threads search under different strategies (Aggressive, Tactical, Solid, Standard) on top of the usual depth stagger. Personas only reshape pruning/LMR — never eval optimism — so shared Transposition Table entries stay sound across threads.
 
-* **Neural & Adaptive Pruning:**
+* **Heuristic & Adaptive Pruning (transparent formulas, SPSA-tunable thresholds):**
 
-  * **Adversarial Learned Pruner (ALP):** Predicts safe pruning chances based on various factors.
-  * **GNN Tree Pruner (GTP):** Uses a graph neural network to prune less important branches.
+  * **Adaptive Late-move Pruner (ALP):** Scores safe pruning chances from move index, eval margin, history and momentum.
+  * **Graph-guided Tree Pruner (GTP):** Ranks subtree importance by node quality averaged over tree neighbors.
   * **Eval Momentum (Δ static eval over 2 plies):** Feeds RFP/NMP/LMR margins; late-move LMR reduction also keys on sibling-cutoff rate at all-nodes.
   * **Reverse Futility Pruning (RFP)** & **ProbCut:** Dynamically adjusts margins.
   * **Null Move Pruning (NMP):** Verifies searches with adaptive reductions.
@@ -44,7 +44,7 @@ The search engine uses a multi-threaded Principal Variation Search (PVS) with it
 * **Extensions & Quiescence:**
 
   * **Threat-Conditioned Extension (TCE):** Predicts extensions for threats.
-  * **Learned Quiescence Termination (LQT):** Prevents early termination during tactical shifts.
+  * **Tactical Quiescence Control (LQT):** Prevents early termination during tactical shifts.
 
 * **Memory, Ordering & Multi-Resolution Search:**
 
@@ -191,7 +191,7 @@ cargo run --release -- --generate-magics
 | `RAS_Enabled`   | check  |     true     | Runtime annealing LMR perturbation.                    |
 | `BMO_Enabled`   | check  |     true     | Bandit move ordering arm selection.                    |
 | `TCE_Enabled`   | check  |     true     | Threat-conditioned extensions.                         |
-| `LQT_Enabled`   | check  |     true     | Learned quiescence termination.                        |
+| `LQT_Enabled`   | check  |     true     | Tactical quiescence termination.                       |
 | `SPS_Enabled`   | check  |     true     | Speculative persona search (helper threads).           |
 | `DAD_Enabled`           | check  |     true     | Disagreement-allocated depth time factor.              |
 | `Extension_Cap_Enabled` | check  |     true     | Consecutive extension cap (prevents tactical dive).    |

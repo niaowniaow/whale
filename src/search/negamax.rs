@@ -222,13 +222,7 @@ fn search_internal(
             .correction_history
             .get_correction(board_state, previous_move);
 
-        let psm_delta =
-            if ctx.search_state.params.psm_enabled && (ply as usize) < constants::MAX_PLY {
-                psm::PsmEngine::readout(&ctx.search_state.psm_stack.stack[ply as usize])
-            } else {
-                0
-            };
-        static_eval = (raw_static_eval as i32 + correction as i32 + psm_delta as i32 / 2)
+        static_eval = (raw_static_eval as i32 + correction as i32)
             .clamp(-mate_bound as i32, mate_bound as i32) as i16;
         ctx.search_state.eval_stack[ply as usize] = static_eval;
     }
@@ -343,12 +337,10 @@ fn search_internal(
             margin += counterplay::cpi_rfp_adjust(counterplay::compute_cpi_fast(&nt).cpi);
         }
 
-        if ctx.search_state.reset_mode {
-            margin += 40;
-        }
-
-        if ctx.search_state.simplify_bias {
-            margin = (margin - 30).max(0);
+        let intent_eff = crate::search::intent::effects(ctx.search_state.last_intent);
+        margin += intent_eff.rfp_adjust;
+        if ctx.search_state.last_intent == crate::search::intent::SearchIntent::Conversion {
+            margin = margin.max(0);
         }
         margin += ctx
             .search_state
@@ -790,18 +782,11 @@ fn search_internal(
         if !found_pv && number_of_legal_moves >= 8 {
             lmp_threshold = lmp_threshold.saturating_sub(2).max(4);
         }
-        if ctx.search_state.params.risk_enabled
-            && (ctx.search_state.last_musttry
-                || ctx.search_state.last_state
-                    == crate::search::position_state::PositionState::Attack)
-        {
-            lmp_threshold = lmp_threshold.saturating_add(2);
-        } else if ctx.search_state.simplify_bias {
-            lmp_threshold = lmp_threshold.saturating_sub(2).max(3);
-        } else if ctx.search_state.params.state_enabled
-            && ctx.search_state.last_state == crate::search::position_state::PositionState::Defend
-        {
-            lmp_threshold = lmp_threshold.saturating_sub(1).max(3);
+        let lmp_adj = crate::search::intent::effects(ctx.search_state.last_intent).lmp_adjust;
+        if lmp_adj > 0 {
+            lmp_threshold = lmp_threshold.saturating_add(lmp_adj as usize);
+        } else if lmp_adj < 0 {
+            lmp_threshold = lmp_threshold.saturating_sub((-lmp_adj) as usize).max(3);
         }
         if !is_pv_node
             && !excluded_here
@@ -999,15 +984,13 @@ fn search_internal(
             let mut reduction =
                 (base_reduction as i8 + ras_perturbation).clamp(0, depth as i8 - 1) as u8;
 
-            if (ctx.search_state.params.risk_enabled && ctx.search_state.last_musttry && ply <= 4)
-                || (ctx.search_state.params.state_enabled
-                    && ctx.search_state.last_state
-                        == crate::search::position_state::PositionState::Attack
-                    && is_tactical)
-            {
-                reduction = reduction.saturating_sub(1);
-            } else if ctx.search_state.reset_mode && !is_tactical {
-                reduction = reduction.saturating_add(1).min(depth.saturating_sub(1));
+            let lmr_adj = crate::search::intent::effects(ctx.search_state.last_intent).lmr_adjust;
+            if lmr_adj < 0 && (ply <= 4 || is_tactical) {
+                reduction = reduction.saturating_sub((-lmr_adj) as u8);
+            } else if lmr_adj > 0 && !is_tactical {
+                reduction = reduction
+                    .saturating_add(lmr_adj as u8)
+                    .min(depth.saturating_sub(1));
             } else if ctx.search_state.params.cpi_enabled && nt.checkers.count_ones() > 0 {
                 reduction = reduction.saturating_sub(1);
             }

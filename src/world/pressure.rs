@@ -5,6 +5,25 @@ pub struct PressureState {
     pub sustained_plies: u32,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PressureWeights {
+    pub momentum_div: i32,
+    pub cpi_w: i32,
+    pub freedom_w: i32,
+    pub plans_w: i32,
+}
+
+impl Default for PressureWeights {
+    fn default() -> Self {
+        Self {
+            momentum_div: 2,
+            cpi_w: 1,
+            freedom_w: 2,
+            plans_w: 3,
+        }
+    }
+}
+
 pub fn update_pressure(
     prev: &PressureState,
     momentum: i16,
@@ -21,7 +40,27 @@ pub fn update_pressure_with_plans(
     freedom_delta_opp: i32,
     plans_denied_opp: i32,
 ) -> PressureState {
-    let step = momentum as i32 / 2 - cpi_delta_opp - freedom_delta_opp * 2 + plans_denied_opp * 3;
+    update_pressure_weighted(
+        prev,
+        momentum,
+        cpi_delta_opp,
+        freedom_delta_opp,
+        plans_denied_opp,
+        &PressureWeights::default(),
+    )
+}
+
+pub fn update_pressure_weighted(
+    prev: &PressureState,
+    momentum: i16,
+    cpi_delta_opp: i32,
+    freedom_delta_opp: i32,
+    plans_denied_opp: i32,
+    w: &PressureWeights,
+) -> PressureState {
+    let div = w.momentum_div.max(1);
+    let step = momentum as i32 / div - cpi_delta_opp * w.cpi_w - freedom_delta_opp * w.freedom_w
+        + plans_denied_opp * w.plans_w;
     let pressure = prev.pressure + step.clamp(-60, 60);
     let sustained_plies = if step >= 0 {
         prev.sustained_plies + 1
