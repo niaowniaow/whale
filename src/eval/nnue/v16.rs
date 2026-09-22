@@ -1514,6 +1514,7 @@ static ACTIVE_NET: std::sync::atomic::AtomicPtr<LoadedNets> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 static NETS_GEN: AtomicU64 = AtomicU64::new(0);
 static PENDING_PATH: RwLock<Option<String>> = RwLock::new(None);
+#[cfg(test)]
 pub(crate) static EVAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(target_arch = "x86_64")]
