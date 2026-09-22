@@ -32,13 +32,13 @@ fn sigmoid(z: f32) -> f32 {
 impl HeadWeights {
     pub fn predict(&self, features: [f32; 11]) -> f32 {
         let mut z = self.b;
-        for i in 0..11 {
+        for (i, &feat) in features.iter().enumerate() {
             let std = if self.stds[i].abs() < 1e-9 {
                 1.0
             } else {
                 self.stds[i]
             };
-            z += (features[i] - self.means[i]) / std * self.w[i];
+            z += (feat - self.means[i]) / std * self.w[i];
         }
         sigmoid(z)
     }
@@ -203,8 +203,8 @@ mod tests {
         high[0] = 3.0;
         let p_low = weights.predict(low);
         let p_high = weights.predict(high);
-        assert!(p_low >= 0.0 && p_low <= 1.0);
-        assert!(p_high >= 0.0 && p_high <= 1.0);
+        assert!((0.0..=1.0).contains(&p_low));
+        assert!((0.0..=1.0).contains(&p_high));
         assert!(p_high > p_low);
         assert!((weights.predict([0f32; 11]) - 0.5).abs() < 1e-6);
     }
