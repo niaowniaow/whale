@@ -47,6 +47,8 @@ pub struct SearchParameters {
     pub conversion_enabled: bool,
 
     pub qs_checks_enabled: bool,
+
+    pub learned_enabled: bool,
 }
 
 impl Default for SearchParameters {
@@ -87,6 +89,7 @@ impl Default for SearchParameters {
             attack_enabled: true,
             conversion_enabled: true,
             qs_checks_enabled: true,
+            learned_enabled: false,
         }
     }
 }

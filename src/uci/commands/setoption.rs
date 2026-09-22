@@ -204,6 +204,11 @@ impl UciClient {
             {
                 state.params.qs_checks_enabled = flag_on;
             }
+            if name.eq_ignore_ascii_case("LearnedHeads_Enabled")
+                || name.eq_ignore_ascii_case("Learned_Enabled")
+            {
+                state.params.learned_enabled = flag_on;
+            }
 
             if name.eq_ignore_ascii_case("MustTryGain")
                 && let Ok(v) = value.parse::<i32>()
@@ -463,6 +468,7 @@ mod tests {
             "Pressure_Enabled",
             "Attack_Enabled",
             "Conversion_Enabled",
+            "LearnedHeads_Enabled",
         ] {
             client.run_setoption(&["name", name, "value", "false"]);
         }
@@ -482,6 +488,7 @@ mod tests {
             assert!(!state.params.pressure_enabled);
             assert!(!state.params.attack_enabled);
             assert!(!state.params.conversion_enabled);
+            assert!(!state.params.learned_enabled);
         }
         client.run_setoption(&["name", "CFSS_Enabled", "value", "1"]);
         assert!(client.search_state.lock().unwrap().params.cfss_enabled);

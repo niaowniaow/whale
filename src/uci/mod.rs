@@ -164,6 +164,7 @@ impl UciClient {
         cli::write_line("option name Attack_Enabled type check default true");
         cli::write_line("option name Conversion_Enabled type check default true");
         cli::write_line("option name QS_Checks_Enabled type check default true");
+        cli::write_line("option name LearnedHeads_Enabled type check default false");
         cli::write_line("option name MustTryGain type spin default 30 min 10 max 100");
         cli::write_line("option name MustTryRisk type spin default 120 min 40 max 250");
         cli::write_line("option name ConvertScore type spin default 250 min 100 max 600");

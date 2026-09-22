@@ -1,5 +1,6 @@
 
 import argparse
+import json
 import math
 import os
 import random
@@ -42,14 +43,32 @@ PARAMETERS = {
 }
 
 class SpsaTuner:
-    def __init__(self, engine_path, games_per_eval=20, alpha=0.602, gamma=0.101, a=10.0, c=5.0):
+    def __init__(self, engine_path, games_per_eval=20, alpha=0.602, gamma=0.101, a=10.0, c=5.0,
+                 seed=None, dry_run=False, save_path=None):
         self.engine_path = engine_path
         self.games_per_eval = games_per_eval
         self.alpha = alpha
         self.gamma = gamma
         self.a = a
         self.c = c
+        self.dry_run = dry_run
+        self.save_path = save_path
+        if seed is not None:
+            random.seed(seed)
         self.theta = {k: float(v["default"]) for k, v in PARAMETERS.items()}
+
+    def save(self):
+        if self.save_path:
+            with open(self.save_path, "w", encoding="utf-8") as f:
+                json.dump({k: int(v) for k, v in self.theta.items()}, f, indent=2)
+
+    def load(self, path):
+        with open(path, "r", encoding="utf-8") as f:
+            saved = json.load(f)
+        for k, v in saved.items():
+            if k in PARAMETERS:
+                cfg = PARAMETERS[k]
+                self.theta[k] = float(max(cfg["min"], min(cfg["max"], int(v))))
 
     def perturb(self, k):
         ck = self.c / ((k + 1) ** self.gamma)
@@ -73,6 +92,10 @@ class SpsaTuner:
         return opts
 
     def run_fast_chess_match(self, theta_plus, theta_minus, book_path=None):
+        if self.dry_run:
+            print(f"  [dry-run] plus={theta_plus}")
+            print(f"  [dry-run] minus={theta_minus}")
+            return 0.5
         cmd = [
             "fast-chess",
             "-engine", f"cmd={self.engine_path}", "name=EnginePlus", *self.format_options(theta_plus),
@@ -114,6 +137,7 @@ class SpsaTuner:
             self.theta[param] = max(cfg["min"], min(cfg["max"], round(self.theta[param])))
 
         print(f"Iteration {k+1:03d} | Diff: {diff:+.3f} | Current Params: {self.theta}")
+        self.save()
 
 def main():
     parser = argparse.ArgumentParser(description="Turnkey SPSA Tuner for Whale")
@@ -121,9 +145,17 @@ def main():
     parser.add_argument("--book", default="resources/openings.epd", help="Path to openings book")
     parser.add_argument("--iterations", type=int, default=100, help="Number of SPSA iterations")
     parser.add_argument("--games", type=int, default=20, help="Games per iteration")
+    parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducibility")
+    parser.add_argument("--dry-run", action="store_true", help="Print matches without running engines")
+    parser.add_argument("--save", default="spsa_theta.json", help="Save theta JSON after each iteration")
+    parser.add_argument("--load", default=None, help="Resume theta from JSON file")
     args = parser.parse_args()
 
-    tuner = SpsaTuner(engine_path=args.engine, games_per_eval=args.games)
+    tuner = SpsaTuner(engine_path=args.engine, games_per_eval=args.games,
+                      seed=args.seed, dry_run=args.dry_run, save_path=args.save)
+    if args.load and os.path.exists(args.load):
+        tuner.load(args.load)
+        print(f"Resumed theta from {args.load}")
     print("Starting SPSA tuning session...")
     for it in range(args.iterations):
         tuner.step(it, book_path=args.book)

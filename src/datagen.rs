@@ -85,8 +85,16 @@ pub fn move_to_uci(m: &Move) -> String {
     format!("{}{}{}", m.source, m.target, promo)
 }
 
+pub fn outcome_for_side(outcome: WhaleSide, side: WhaleSide) -> f32 {
+    if outcome == WhaleSide::Both {
+        return 0.5;
+    }
+    if outcome == side { 1.0 } else { 0.0 }
+}
+
 pub fn write_behavior_jsonl<W: Write>(
     positions: &[SelfPlayPosition],
+    outcome: WhaleSide,
     writer: &mut W,
 ) -> Result<()> {
     for pos in positions {
@@ -102,7 +110,7 @@ pub fn write_behavior_jsonl<W: Write>(
         };
         writeln!(
             writer,
-            "{{\"fen\":\"{}\",\"side\":\"{}\",\"move\":\"{}\",\"eval\":{},\"state\":{},\"intent\":{},\"pressure\":{},\"opp_cpi\":{},\"own_cpi\":{},\"urgency\":{},\"risk\":{},\"musttry\":{},\"concession\":{}}}",
+            "{{\"fen\":\"{}\",\"side\":\"{}\",\"move\":\"{}\",\"eval\":{},\"state\":{},\"intent\":{},\"pressure\":{},\"opp_cpi\":{},\"own_cpi\":{},\"urgency\":{},\"risk\":{},\"musttry\":{},\"concession\":{},\"result\":{}}}",
             pos.fen,
             side,
             move_to_uci(&pos.mv),
@@ -116,6 +124,7 @@ pub fn write_behavior_jsonl<W: Write>(
             pos.behavior_risk,
             pos.behavior_musttry,
             pos.behavior_concession,
+            outcome_for_side(outcome, pos.side_to_move),
         )?;
     }
     Ok(())
@@ -531,7 +540,9 @@ pub fn run_with_teacher(
                     println!("Error writing game to file: {}", e);
                     break;
                 }
-                if let Err(e) = write_behavior_jsonl(&game.positions, &mut behavior_writer) {
+                if let Err(e) =
+                    write_behavior_jsonl(&game.positions, game.outcome, &mut behavior_writer)
+                {
                     println!("Error writing behavior file: {}", e);
                     break;
                 }
@@ -708,13 +719,16 @@ mod tests {
             behavior_concession: 25,
         }];
         let mut buf: Vec<u8> = Vec::new();
-        write_behavior_jsonl(&positions, &mut buf).unwrap();
+        write_behavior_jsonl(&positions, WhaleSide::White, &mut buf).unwrap();
         let line = String::from_utf8(buf).unwrap();
         assert!(line.contains("\"move\":\""));
         assert!(line.contains("\"state\":3"));
         assert!(line.contains("\"musttry\":true"));
         assert!(line.contains("\"concession\":25"));
         assert!(line.contains("rnbqkbnr"));
+        assert!(line.contains("\"result\":1"));
+        assert_eq!(outcome_for_side(WhaleSide::Black, WhaleSide::White), 0.0);
+        assert_eq!(outcome_for_side(WhaleSide::Both, WhaleSide::Black), 0.5);
         assert_eq!(
             behavior_state_id(crate::world::position_state::PositionState::Reset),
             5

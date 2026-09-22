@@ -747,8 +747,39 @@ fn search_primary(
                 } else {
                     ""
                 };
+                let learned_txt = if search_state.params.learned_enabled
+                    && crate::search::learned::ensure_loaded()
+                {
+                    let side = if board_state.side_to_move == Side::White {
+                        1.0
+                    } else {
+                        -1.0
+                    };
+                    let features = [
+                        current_score as f32 / 100.0,
+                        search_state.pressure_state.pressure as f32 / 50.0,
+                        aprm_cpi_opp as f32 / 50.0,
+                        aprm_cpi_us as f32 / 50.0,
+                        crate::search::learned::urgency_id(search_state.last_urgency) as f32,
+                        search_state.last_risk as f32 / 100.0,
+                        if search_state.last_musttry { 1.0 } else { 0.0 },
+                        search_state
+                            .last_concession
+                            .map(|c| c.swing_cp as f32 / 50.0)
+                            .unwrap_or(0.0),
+                        crate::search::learned::state_id(search_state.last_state) as f32,
+                        crate::search::learned::intent_id(search_state.last_intent) as f32,
+                        side,
+                    ];
+                    match crate::search::learned::predict_cached(features) {
+                        Some(p) => format!(" learned={:.2}", p),
+                        None => String::new(),
+                    }
+                } else {
+                    String::new()
+                };
                 println!(
-                    "info string aprm depth {} state={} intent={} cpi_us={} cpi_opp={} freedom_us={} freedom_them={} plans_opp={} momentum={} pressure={} sustained={} vbudget={} risk={}{}{}{}{}{}{}",
+                    "info string aprm depth {} state={} intent={} cpi_us={} cpi_opp={} freedom_us={} freedom_them={} plans_opp={} momentum={} pressure={} sustained={} vbudget={} risk={}{}{}{}{}{}{}{}",
                     current_depth,
                     aprm_state_txt,
                     search_state.last_intent.as_str(),
@@ -767,7 +798,8 @@ fn search_primary(
                     conv_txt,
                     reset_txt,
                     simpl_txt,
-                    verified_txt
+                    verified_txt,
+                    learned_txt
                 );
                 let _ = std::io::Write::flush(&mut std::io::stdout());
             }

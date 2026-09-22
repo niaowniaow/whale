@@ -12,6 +12,7 @@ pub use crate::world::intent;
 pub mod iterative_deepening;
 pub mod lmr;
 pub mod lqt;
+pub use crate::root::learned;
 pub use crate::root::metrics;
 pub mod move_picker;
 pub use crate::root::multipv;

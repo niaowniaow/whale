@@ -172,11 +172,17 @@ def main():
     print("#" * 65)
 
     os.system(f"python tools/aprm_game_analyzer.py {out_pgn} --json aprm_metrics.json")
+    os.system(f"python tools/sprt.py {out_pgn} --elo0 0 --elo1 5 --json sprt_verdict.json")
     try:
         with open("aprm_metrics.json", "r", encoding="utf-8") as f:
             metrics = json.load(f)
     except Exception:
         metrics = {}
+    try:
+        with open("sprt_verdict.json", "r", encoding="utf-8") as f:
+            sprt = json.load(f)
+    except Exception:
+        sprt = {"verdict": "unknown"}
     report = {
         "engine": engine_bin,
         "games": num_games,
@@ -184,6 +190,7 @@ def main():
         "aprm_score": score_aprm,
         "baseline_score": score_base,
         "metrics": metrics,
+        "sprt": sprt,
     }
     with open("sprt_report.json", "w", encoding="utf-8") as f:
         json.dump(report, f, indent=2)
