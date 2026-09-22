@@ -88,7 +88,7 @@ impl GtpPruner {
         if graph.count == 0 {
             return importance;
         }
-        for i in 0..graph.count {
+        for (i, slot) in importance.iter_mut().enumerate().take(graph.count) {
             let own = Self::node_score(graph, i);
             let adj = graph.adjacency[i];
             let mut neighbor_sum = 0i32;
@@ -106,7 +106,7 @@ impl GtpPruner {
             } else {
                 own
             };
-            importance[i] = smoothed.clamp(0, 100) as u8;
+            *slot = smoothed.clamp(0, 100) as u8;
         }
         importance
     }

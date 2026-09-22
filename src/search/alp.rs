@@ -19,7 +19,7 @@ impl AlpPruner {
             return 0;
         }
         let mut score = 0i32;
-        score += ((features.move_index as i32) - 8).max(0).min(24) * 6;
+        score += ((features.move_index as i32) - 8).clamp(0, 24) * 6;
         if features.is_capture {
             score -= 60;
         }

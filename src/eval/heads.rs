@@ -46,7 +46,7 @@ pub fn compute_heads(
         snap.black_king_shelter as i32
     };
     let king_safety = clamp_u8(shelter * 11 - checkers * 20);
-    let mobility = clamp_u8((own_freedom as i32 * 100 / 32.max(1)).min(100));
+    let mobility = clamp_u8((own_freedom as i32 * 100 / 32).min(100));
     let weak_pawns = (snap.white_isolated_pawns as i32
         + snap.black_isolated_pawns as i32
         + snap.white_backward_pawns as i32
