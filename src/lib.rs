@@ -66,6 +66,7 @@ pub fn init() {
 mod tests {
     #[test]
     fn init_is_callable() {
+        let _eval_guard = crate::eval::nnue::v16::EVAL_TEST_LOCK.lock().unwrap();
         super::init();
     }
 

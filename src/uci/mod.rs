@@ -405,6 +405,7 @@ mod tests {
 
     #[test]
     fn write_id_lists_options_without_changing_position() {
+        let _eval_guard = crate::eval::nnue::v16::EVAL_TEST_LOCK.lock().unwrap();
         let client = UciClient::new();
         let original = client.board.lock().unwrap().clone();
         client.write_id();

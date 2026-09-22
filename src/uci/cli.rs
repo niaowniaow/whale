@@ -243,6 +243,7 @@ mod tests {
 
     #[test]
     fn model_command_queries_and_sets() {
+        let _eval_guard = crate::eval::nnue::v16::EVAL_TEST_LOCK.lock().unwrap();
         let cmd = ModelCommand;
         cmd.run(&[]);
         cmd.run(&["embedded"]);

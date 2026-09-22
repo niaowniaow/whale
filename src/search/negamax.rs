@@ -1827,6 +1827,8 @@ mod tests {
 
     #[test]
     fn extension_cap_never_exceeds_two_in_a_row() {
+        let _eval_guard = crate::eval::nnue::v16::EVAL_TEST_LOCK.lock().unwrap();
+        crate::eval::nnue::v16::unload_nets();
         let mut board = BoardState::parse_fen(crate::common::helpers::KIWI_PETE_FEN);
         let cancel = AtomicBool::new(false);
         let mut debug = false;
@@ -1982,6 +1984,8 @@ mod tests {
 
     #[test]
     fn probcut_improving_and_capture_sort_hit() {
+        let _eval_guard = crate::eval::nnue::v16::EVAL_TEST_LOCK.lock().unwrap();
+        crate::eval::nnue::v16::unload_nets();
         let (alpha, beta) = probcut_window(PROBCUT_FEN, 4, 300);
         let mut board = BoardState::parse_fen(PROBCUT_FEN);
         let hash = board.board_hash;
@@ -2007,6 +2011,8 @@ mod tests {
 
     #[test]
     fn probcut_verify_with_depth_six_hits_tce() {
+        let _eval_guard = crate::eval::nnue::v16::EVAL_TEST_LOCK.lock().unwrap();
+        crate::eval::nnue::v16::unload_nets();
         let (alpha, beta) = probcut_window(PROBCUT_FEN, 6, 300);
         let mut board = BoardState::parse_fen(PROBCUT_FEN);
         let hash = board.board_hash;

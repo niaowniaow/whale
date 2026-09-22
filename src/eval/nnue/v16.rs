@@ -1514,6 +1514,7 @@ static ACTIVE_NET: std::sync::atomic::AtomicPtr<LoadedNets> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 static NETS_GEN: AtomicU64 = AtomicU64::new(0);
 static PENDING_PATH: RwLock<Option<String>> = RwLock::new(None);
+pub(crate) static EVAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(target_arch = "x86_64")]
 static HAS_AVX2: std::sync::LazyLock<bool> =
@@ -3085,6 +3086,7 @@ mod tests {
 
     #[test]
     fn test_eval_breakdown() {
+        let _eval_guard = EVAL_TEST_LOCK.lock().unwrap();
         let mut loaded_any = false;
         for net_path in ["v16/nn-1a298aa575a0.nnue", "v16/whale.nnue"] {
             println!("=== Testing net: {} ===", net_path);
@@ -3474,6 +3476,7 @@ mod tests {
 
     #[test]
     fn test_finny_cache_consistency() {
+        let _eval_guard = EVAL_TEST_LOCK.lock().unwrap();
         if !try_load_default() {
             return;
         }
