@@ -4,6 +4,7 @@ use crate::board::state::BoardState;
 use crate::common::constants::{ASPIRATION_WINDOW_MARGIN, MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
+use crate::common::side::Side;
 use crate::search::attack;
 use crate::search::concession;
 use crate::search::conversion;
@@ -168,6 +169,7 @@ fn search_primary(
     let mut last_score: i16 = 0;
     let mut best_move_so_far = Move::NO_MOVE;
     let mut last_best_move_depth = 1u8;
+    let mut completed_depth = 0u8;
     let prev_score = search_state.best_previous_score.unwrap_or(0);
     let mut iter_scores = [prev_score; 4];
     let mut iter_idx = 0usize;
@@ -289,6 +291,7 @@ fn search_primary(
             let prev_iter_score = last_score;
             last_score = current_score;
             search_state.score = current_score;
+            completed_depth = current_depth;
             if !current_pv.is_empty() {
                 previous_pv = current_pv;
             }
@@ -365,14 +368,31 @@ fn search_primary(
                 aprm_state_txt = st.as_str();
                 search_state.last_state = st;
 
-                let baseline = search_state
-                    .prev_root_score
-                    .or(search_state.best_previous_score);
-                if let Some(c) =
-                    baseline.and_then(|prev| concession::detect_concession(prev, current_score, 0))
-                {
-                    aprm_concession_txt = format!(" concession={:?}+{}", c.kind, c.swing_cp);
-                    search_state.last_concession = Some(c);
+                let stm = board_state.side_to_move;
+                let trend_base = search_state.score_trend.smoothed().map(|w| {
+                    if stm == Side::White {
+                        w
+                    } else {
+                        w.saturating_neg()
+                    }
+                });
+                let baseline = trend_base.or(search_state.best_previous_score);
+                if let Some(prev) = baseline {
+                    let vol_threshold = concession::confirmation_threshold(
+                        search_state.state_thresholds.concession_min_cp,
+                        volatility,
+                    );
+                    let threshold = vol_threshold
+                        .max(search_state.score_trend.adaptive_threshold(
+                            search_state.state_thresholds.concession_min_cp,
+                        ));
+                    if let Some(c) = search_state
+                        .concession_tracker
+                        .observe(prev, current_score, threshold)
+                    {
+                        aprm_concession_txt = format!(" concession={:?}+{}", c.kind, c.swing_cp);
+                        search_state.last_concession = Some(c);
+                    }
                 }
 
                 if search_state.params.pressure_enabled {
@@ -401,10 +421,7 @@ fn search_primary(
                 let gain = if is_mate_score {
                     MAX_CENTIPAWN_EVAL as i32
                 } else if current_depth == 1 {
-                    match search_state
-                        .prev_root_score
-                        .or(search_state.best_previous_score)
-                    {
+                    match baseline {
                         Some(base) => current_score.saturating_sub(base).max(0) as i32,
                         None => 0,
                     }
@@ -755,6 +772,14 @@ fn search_primary(
         }
     }
     search_state.best_previous_score = Some(search_state.score);
+    if completed_depth >= 1 {
+        let white_pov = if board_state.side_to_move == Side::White {
+            search_state.score
+        } else {
+            search_state.score.saturating_neg()
+        };
+        search_state.score_trend.push(white_pov, completed_depth);
+    }
 }
 
 pub fn search(

@@ -36,6 +36,7 @@ pub struct StateThresholds {
     pub attack_score: i16,
     pub attack_cpi: i32,
     pub reset_drop: i16,
+    pub concession_min_cp: i16,
 }
 
 impl Default for StateThresholds {
@@ -49,6 +50,7 @@ impl Default for StateThresholds {
             attack_score: 80,
             attack_cpi: 60,
             reset_drop: 50,
+            concession_min_cp: 12,
         }
     }
 }

@@ -174,6 +174,7 @@ impl UciClient {
         cli::write_line("option name AttackCPI type spin default 60 min 10 max 250");
         cli::write_line("option name ConvertCPI type spin default 30 min 0 max 150");
         cli::write_line("option name ResetDrop type spin default 50 min 10 max 150");
+        cli::write_line("option name ConcessionMin type spin default 12 min 5 max 50");
         cli::write_line("option name RiskNormal type spin default 30 min 0 max 150");
         cli::write_line("option name RiskElevated type spin default 70 min 10 max 250");
         cli::write_line("option name PressureMomDiv type spin default 2 min 1 max 8");

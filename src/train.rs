@@ -171,6 +171,7 @@ fn run_with_mode(custom_dataset_path: Option<&str>, smoke_mode: bool) {
 
 const DEFAULT_DATASET_PATH: &str = "data/v1_gen3_1m_d7.binpack";
 const OUTPUT_DIRECTORY: &str = "checkpoints";
+const BIG_KEEPER_NAME: &str = "sfnn16-big-checkpoint.bin";
 const BIG_KEEPER_PATH: &str = "resources/sfnn16-big-checkpoint.bin";
 const INITIAL_LR: f32 = 0.001;
 const FINAL_LR: f32 = 0.00001;
@@ -315,7 +316,7 @@ fn build_settings() -> LocalSettings<'static> {
     LocalSettings {
         threads: THREADS,
         test_set: None,
-        output_directory: OUTPUT_DIRECTORY,
+        output_directory: output_directory(),
         batch_queue_size: BATCH_QUEUE_SIZE,
     }
 }
@@ -324,13 +325,22 @@ fn build_smoke_settings() -> LocalSettings<'static> {
     LocalSettings {
         threads: 1,
         test_set: None,
-        output_directory: OUTPUT_DIRECTORY,
+        output_directory: output_directory(),
         batch_queue_size: 1,
     }
 }
 
 fn sf_filter(_: &TrainingDataEntry) -> bool {
     true
+}
+
+fn output_directory() -> &'static str {
+    let dir = std::env::var("WHALE_OUT_DIR").unwrap_or_else(|_| OUTPUT_DIRECTORY.to_string());
+    Box::leak(dir.into_boxed_str())
+}
+
+fn keeper_path() -> String {
+    format!("{}/{}", output_directory(), BIG_KEEPER_NAME)
 }
 
 fn build_dataloader(dataset_path: &str) -> SfBinpackLoader<fn(&TrainingDataEntry) -> bool> {
@@ -343,12 +353,21 @@ fn build_dataloader(dataset_path: &str) -> SfBinpackLoader<fn(&TrainingDataEntry
 }
 
 fn copy_trained_weights() {
-    std::fs::create_dir_all("resources").ok();
-    let big_cp = format!("{}/{}-{}", OUTPUT_DIRECTORY, BIG_NET_ID, END_SUPERBATCH);
+    let keeper = keeper_path();
+    if let Some(parent) = std::path::Path::new(&keeper).parent() {
+        std::fs::create_dir_all(parent).ok();
+    }
+    let big_cp = format!("{}/{}-{}", output_directory(), BIG_NET_ID, END_SUPERBATCH);
     let big_cp = format!("{}/quantised.bin", big_cp);
-    println!("Copying big weights from {} to {}", big_cp, BIG_KEEPER_PATH);
-    if let Err(e) = std::fs::copy(&big_cp, BIG_KEEPER_PATH) {
+    println!("Copying big weights from {} to {}", big_cp, keeper);
+    if let Err(e) = std::fs::copy(&big_cp, &keeper) {
         eprintln!("Error copying big weights: {}", e);
+    }
+    if keeper != BIG_KEEPER_PATH {
+        std::fs::create_dir_all("resources").ok();
+        if let Err(e) = std::fs::copy(&keeper, BIG_KEEPER_PATH) {
+            eprintln!("Error syncing keeper to {}: {}", BIG_KEEPER_PATH, e);
+        }
     }
 }
 

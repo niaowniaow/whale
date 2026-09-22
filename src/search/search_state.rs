@@ -168,6 +168,10 @@ pub struct SearchState {
 
     pub last_concession: Option<crate::search::concession::Concession>,
 
+    pub concession_tracker: crate::search::concession::ConcessionTracker,
+
+    pub score_trend: crate::search::concession::ScoreTrend,
+
     pub last_intent: crate::search::intent::SearchIntent,
 
     pub last_risk: i32,
@@ -241,6 +245,8 @@ impl SearchState {
             last_verified: None,
             last_state: crate::search::position_state::PositionState::default(),
             last_concession: None,
+            concession_tracker: crate::search::concession::ConcessionTracker::default(),
+            score_trend: crate::search::concession::ScoreTrend::default(),
             last_intent: crate::search::intent::SearchIntent::default(),
             last_risk: 0,
             last_urgency: crate::search::risk::Urgency::Low,
@@ -315,6 +321,8 @@ impl SearchState {
             last_verified: None,
             last_state: crate::search::position_state::PositionState::default(),
             last_concession: None,
+            concession_tracker: crate::search::concession::ConcessionTracker::default(),
+            score_trend: crate::search::concession::ScoreTrend::default(),
             last_intent: crate::search::intent::SearchIntent::default(),
             last_risk: 0,
             last_urgency: crate::search::risk::Urgency::Low,
@@ -362,6 +370,8 @@ impl SearchState {
         self.prev_opp_breaks = None;
         self.last_state = crate::search::position_state::PositionState::default();
         self.last_concession = None;
+        self.concession_tracker = crate::search::concession::ConcessionTracker::default();
+        self.score_trend = crate::search::concession::ScoreTrend::default();
         self.last_intent = crate::search::intent::SearchIntent::default();
         self.last_attack_failed = false;
     }

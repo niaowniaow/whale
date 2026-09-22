@@ -256,6 +256,11 @@ impl UciClient {
             {
                 state.state_thresholds.reset_drop = v.clamp(10, 150);
             }
+            if name.eq_ignore_ascii_case("ConcessionMin")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.state_thresholds.concession_min_cp = v.clamp(5, 50);
+            }
             if name.eq_ignore_ascii_case("RiskNormal")
                 && let Ok(v) = value.parse::<i32>()
             {
@@ -536,6 +541,7 @@ mod tests {
         client.run_setoption(&["name", "AttackCPI", "value", "70"]);
         client.run_setoption(&["name", "ConvertCPI", "value", "35"]);
         client.run_setoption(&["name", "ResetDrop", "value", "60"]);
+        client.run_setoption(&["name", "ConcessionMin", "value", "20"]);
         client.run_setoption(&["name", "RiskNormal", "value", "25"]);
         client.run_setoption(&["name", "RiskElevated", "value", "80"]);
         client.run_setoption(&["name", "PressureMomDiv", "value", "3"]);
@@ -559,6 +565,7 @@ mod tests {
             assert_eq!(state.state_thresholds.convert_cpi, 35);
             assert_eq!(state.conversion_params.max_opp_cpi, 35);
             assert_eq!(state.state_thresholds.reset_drop, 60);
+            assert_eq!(state.state_thresholds.concession_min_cp, 20);
             assert_eq!(state.risk_envelope.normal_max, 25);
             assert_eq!(state.risk_envelope.elevated_max, 80);
             assert_eq!(state.pressure_weights.momentum_div, 3);

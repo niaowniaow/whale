@@ -49,8 +49,8 @@ impl DcnModel {
         let d = depth as i32;
         let tactical_pull = (15 - d).clamp(0, 15);
         let strategic_pull = (d - 4).clamp(0, 15);
-        let gamma = 256 + (tactical_pull * 4 - strategic_pull * 2).clamp(-64, 64);
-        let beta = (strategic_pull * 8 - tactical_pull * 4).clamp(-120, 120);
+        let gamma = 256 + (tactical_pull - strategic_pull).clamp(-16, 16);
+        let beta = ((strategic_pull - tactical_pull) * 2).clamp(-32, 32);
         (gamma, beta)
     }
 
@@ -165,6 +165,8 @@ mod tests {
         let (g30, b30) = DcnModel::compute_film_params(30);
         assert!(g0 >= g30);
         assert!(b30 >= b0);
+        assert!((g0 - g30) <= 32);
+        assert!((b30 - b0) <= 64);
     }
 
     #[test]

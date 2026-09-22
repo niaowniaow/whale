@@ -28,6 +28,7 @@ PARAMETERS = {
     "AttackCPI": {"default": 60, "min": 10, "max": 250, "step": 10},
     "ConvertCPI": {"default": 30, "min": 0, "max": 150, "step": 5},
     "ResetDrop": {"default": 50, "min": 10, "max": 150, "step": 5},
+    "ConcessionMin": {"default": 12, "min": 5, "max": 50, "step": 2},
     "RiskNormal": {"default": 30, "min": 0, "max": 150, "step": 5},
     "RiskElevated": {"default": 70, "min": 10, "max": 250, "step": 10},
     "PressureMomDiv": {"default": 2, "min": 1, "max": 8, "step": 1},
