@@ -46,7 +46,8 @@ pub struct ConcessionTracker {
     pub confirmed: Option<Concession>,
 }
 impl ConcessionTracker {
-    pub fn observe(&mut self, prev: i16, curr: i16, threshold: i16) -> Option<Concession> {        let swing = curr.saturating_sub(prev);
+    pub fn observe(&mut self, prev: i16, curr: i16, threshold: i16) -> Option<Concession> {
+        let swing = curr.saturating_sub(prev);
         if swing >= IMMEDIATE_CONFIRM_SWING {
             let confirmed = Concession {
                 swing_cp: swing,
@@ -197,7 +198,8 @@ mod tests {
     }
 
     #[test]
-    fn defender_drop_amplifies_once_and_saturates() {        assert_eq!(
+    fn defender_drop_amplifies_once_and_saturates() {
+        assert_eq!(
             amplify_on_defender_drop(WeaknessKind::Temporary, 3, 2),
             WeaknessKind::Latent
         );

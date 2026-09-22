@@ -382,13 +382,15 @@ fn search_primary(
                         search_state.state_thresholds.concession_min_cp,
                         volatility,
                     );
-                    let threshold = vol_threshold
-                        .max(search_state.score_trend.adaptive_threshold(
-                            search_state.state_thresholds.concession_min_cp,
-                        ));
-                    if let Some(c) = search_state
-                        .concession_tracker
-                        .observe(prev, current_score, threshold)
+                    let threshold = vol_threshold.max(
+                        search_state
+                            .score_trend
+                            .adaptive_threshold(search_state.state_thresholds.concession_min_cp),
+                    );
+                    if let Some(c) =
+                        search_state
+                            .concession_tracker
+                            .observe(prev, current_score, threshold)
                     {
                         aprm_concession_txt = format!(" concession={:?}+{}", c.kind, c.swing_cp);
                         search_state.last_concession = Some(c);
