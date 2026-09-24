@@ -21,6 +21,51 @@ pub enum MoveGenType {
     Quiets,
 }
 
+impl MoveList {
+    pub fn push_setwise(&mut self, from: usize, mut targets: Bitboard, mt: MoveType) {
+        while targets.is_not_empty() {
+            let to = targets.get_lsb() as usize;
+            targets.clear_lsb();
+            if from < 64 && to < 64 {
+                self.push(ScoredMove::new(
+                    Square::from(from),
+                    Square::from(to),
+                    mt,
+                ));
+            }
+        }
+    }
+    pub fn push_pawns_setwise(&mut self, dir: i32, mut targets: u64, mt: MoveType) {
+        while targets != 0 {
+            let to = targets.trailing_zeros() as usize;
+            targets &= targets - 1;
+            let from = (to as i32 - dir) as usize;
+            if from < 64 && to < 64 {
+                self.push(ScoredMove::new(
+                    Square::from(from),
+                    Square::from(to),
+                    mt,
+                ));
+            }
+        }
+    }
+    pub fn push_promotion_capture_setwise(&mut self, dir: i32, mut targets: u64) {
+        while targets != 0 {
+            let to = targets.trailing_zeros() as usize;
+            targets &= targets - 1;
+            let from = (to as i32 - dir) as usize;
+            if from < 64 && to < 64 {
+                let src = Square::from(from);
+                let tgt = Square::from(to);
+                self.push(ScoredMove::new(src, tgt, MoveType::KnightPromotionCapture));
+                self.push(ScoredMove::new(src, tgt, MoveType::BishopPromotionCapture));
+                self.push(ScoredMove::new(src, tgt, MoveType::RookPromotionCapture));
+                self.push(ScoredMove::new(src, tgt, MoveType::QueenPromotionCapture));
+            }
+        }
+    }
+}
+
 impl BoardState {
     pub fn find_best_move(
         &mut self,
@@ -82,18 +127,38 @@ impl BoardState {
 
     pub fn generate_moves(&self, move_list: &mut MoveList) {
         move_list.clear();
-        self.generate_captures_internal(move_list);
-        self.generate_quiets_internal(move_list);
+        self.append_moves(move_list);
+    }
+
+    pub fn append_moves(&self, move_list: &mut MoveList) {
+        self.append_captures(move_list);
+        self.append_quiets(move_list);
     }
 
     pub fn generate_captures(&self, move_list: &mut MoveList) {
         move_list.clear();
+        self.append_captures(move_list);
+    }
+
+    pub fn append_captures(&self, move_list: &mut MoveList) {
         self.generate_captures_internal(move_list);
     }
 
     pub fn generate_quiets(&self, move_list: &mut MoveList) {
         move_list.clear();
+        self.append_quiets(move_list);
+    }
+
+    pub fn append_quiets(&self, move_list: &mut MoveList) {
         self.generate_quiets_internal(move_list);
+    }
+
+    pub fn append_noisy(&self, move_list: &mut MoveList) {
+        self.append_captures(move_list);
+    }
+
+    pub fn append_quiet(&self, move_list: &mut MoveList) {
+        self.append_quiets(move_list);
     }
 
     fn generate_captures_internal(&self, move_list: &mut MoveList) {
@@ -258,7 +323,51 @@ impl BoardState {
             return;
         }
         let occ = self.occupancy();
-
+        if self.history.is_cache_valid() {
+            let threats = self.history.current_cache().all_threats;
+            if self.side_to_move == Side::White {
+                if self.castle.contains(Castle::WHITE_SHORT)
+                    && occ.get_bit(Square::F1 as usize) == 0
+                    && occ.get_bit(Square::G1 as usize) == 0
+                    && (threats & (1u64 << (Square::E1 as usize))) == 0
+                    && (threats & (1u64 << (Square::F1 as usize))) == 0
+                    && (threats & (1u64 << (Square::G1 as usize))) == 0
+                {
+                    move_list.push(ScoredMove::new(Square::E1, Square::G1, MoveType::Castle));
+                }
+                if self.castle.contains(Castle::WHITE_LONG)
+                    && occ.get_bit(Square::D1 as usize) == 0
+                    && occ.get_bit(Square::C1 as usize) == 0
+                    && occ.get_bit(Square::B1 as usize) == 0
+                    && (threats & (1u64 << (Square::E1 as usize))) == 0
+                    && (threats & (1u64 << (Square::D1 as usize))) == 0
+                    && (threats & (1u64 << (Square::C1 as usize))) == 0
+                {
+                    move_list.push(ScoredMove::new(Square::E1, Square::C1, MoveType::Castle));
+                }
+            } else {
+                if self.castle.contains(Castle::BLACK_SHORT)
+                    && occ.get_bit(Square::F8 as usize) == 0
+                    && occ.get_bit(Square::G8 as usize) == 0
+                    && (threats & (1u64 << (Square::E8 as usize))) == 0
+                    && (threats & (1u64 << (Square::F8 as usize))) == 0
+                    && (threats & (1u64 << (Square::G8 as usize))) == 0
+                {
+                    move_list.push(ScoredMove::new(Square::E8, Square::G8, MoveType::Castle));
+                }
+                if self.castle.contains(Castle::BLACK_LONG)
+                    && occ.get_bit(Square::D8 as usize) == 0
+                    && occ.get_bit(Square::C8 as usize) == 0
+                    && occ.get_bit(Square::B8 as usize) == 0
+                    && (threats & (1u64 << (Square::E8 as usize))) == 0
+                    && (threats & (1u64 << (Square::D8 as usize))) == 0
+                    && (threats & (1u64 << (Square::C8 as usize))) == 0
+                {
+                    move_list.push(ScoredMove::new(Square::E8, Square::C8, MoveType::Castle));
+                }
+            }
+            return;
+        }
         if self.side_to_move == Side::White {
             if self.castle.contains(Castle::WHITE_SHORT)
                 && occ.get_bit(Square::F1 as usize) == 0
@@ -305,27 +414,22 @@ impl BoardState {
     fn add_attacks(
         &self,
         source: usize,
-        mut attacks: Bitboard,
+        attacks: Bitboard,
         move_list: &mut MoveList,
         gen_type: MoveGenType,
     ) {
-        while attacks.is_not_empty() {
-            let target = attacks.get_lsb() as usize;
-            if self.occupancies[self.side_to_move].get_bit(target) == 1 {
-                attacks.clear_lsb();
-                continue;
+        let own = self.occupancies[self.side_to_move].0;
+        let enemy = self.occupancies[self.side_to_move.other()].0;
+        match gen_type {
+            MoveGenType::Captures => {
+                let targets = Bitboard(attacks.0 & enemy);
+                move_list.push_setwise(source, targets, MoveType::Capture);
             }
-            let is_capture = self.is_square_capture(target);
-            if gen_type == MoveGenType::Captures && !is_capture {
-                attacks.clear_lsb();
-                continue;
+            MoveGenType::Quiets => {
+                let occ = own | enemy;
+                let targets = Bitboard(attacks.0 & !occ);
+                move_list.push_setwise(source, targets, MoveType::Quiet);
             }
-            if gen_type == MoveGenType::Quiets && is_capture {
-                attacks.clear_lsb();
-                continue;
-            }
-            self.add_move_to_moves_list(source, target, move_list);
-            attacks.clear_lsb();
         }
     }
 

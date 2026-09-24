@@ -2,7 +2,7 @@ use std::sync::{Arc, RwLock};
 
 use shakmaty::fen::Fen;
 use shakmaty::{CastlingMode, Chess};
-use shakmaty_syzygy::{AmbiguousWdl, Tablebase};
+use shakmaty_syzygy::{AmbiguousWdl, Dtz, MaybeRounded, Tablebase};
 
 use crate::board::state::BoardState;
 use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
@@ -43,6 +43,11 @@ pub fn probe_depth() -> u8 {
 #[inline(always)]
 pub fn use_50mr() -> bool {
     USE_50MR.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+#[inline(always)]
+pub fn probe_config() -> (u8, u8) {
+    (probe_limit(), probe_depth())
 }
 
 struct LoadedTables {
@@ -97,6 +102,83 @@ fn move_to_uci(m: Move) -> String {
     s
 }
 
+#[inline(always)]
+pub fn classify_wdl(w: AmbiguousWdl, use_rule50: bool) -> i8 {
+    match w {
+        AmbiguousWdl::Win => 1,
+        AmbiguousWdl::Loss => -1,
+        AmbiguousWdl::Draw => 0,
+        AmbiguousWdl::CursedWin => {
+            if use_rule50 {
+                0
+            } else {
+                1
+            }
+        }
+        AmbiguousWdl::BlessedLoss => {
+            if use_rule50 {
+                0
+            } else {
+                -1
+            }
+        }
+        AmbiguousWdl::MaybeWin => {
+            if use_rule50 {
+                0
+            } else {
+                1
+            }
+        }
+        AmbiguousWdl::MaybeLoss => {
+            if use_rule50 {
+                0
+            } else {
+                -1
+            }
+        }
+    }
+}
+
+#[inline(always)]
+fn dtz_to_plies(v: MaybeRounded<Dtz>) -> i32 {
+    match v {
+        MaybeRounded::Rounded(d) => d.0,
+        MaybeRounded::Precise(d) => d.0,
+    }
+}
+
+pub fn probe_wdl(board: &BoardState) -> Option<i8> {
+    if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
+        return None;
+    }
+    if board.occupancy().count_ones() as usize > probe_limit() as usize {
+        return None;
+    }
+    let pos = to_shakmaty(board)?;
+    let loaded = TABLES.read().ok().and_then(|guard| guard.clone())?;
+    if loaded.count == 0 {
+        return None;
+    }
+    let w = loaded.tables.probe_wdl(&pos).ok()?;
+    Some(classify_wdl(w, use_50mr()))
+}
+
+pub fn probe_dtz_plies(board: &BoardState) -> Option<i32> {
+    if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
+        return None;
+    }
+    if board.occupancy().count_ones() as usize > probe_limit() as usize {
+        return None;
+    }
+    let pos = to_shakmaty(board)?;
+    let loaded = TABLES.read().ok().and_then(|guard| guard.clone())?;
+    if loaded.count == 0 {
+        return None;
+    }
+    let v = loaded.tables.probe_dtz(&pos).ok()?;
+    Some(dtz_to_plies(v))
+}
+
 pub fn probe_bound(board: &BoardState, ply: u8) -> Option<(i16, TranspositionEntryType)> {
     if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
         return None;
@@ -124,21 +206,13 @@ pub fn probe_bound(board: &BoardState, ply: u8) -> Option<(i16, TranspositionEnt
     }
 }
 
-pub fn root_move(board: &mut BoardState) -> Option<Move> {
-    if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
-        return None;
-    }
-    let pos = to_shakmaty(board)?;
-    let loaded = TABLES.read().ok().and_then(|guard| guard.clone())?;
-    if loaded.count == 0 {
-        return None;
-    }
-    if !matches!(loaded.tables.probe_wdl(&pos).ok()?, AmbiguousWdl::Win) {
-        return None;
-    }
-    let (tb_move, _) = loaded.tables.best_move(&pos).ok()??;
+fn fallback_best_move(
+    board: &mut BoardState,
+    pos: &Chess,
+    loaded: &Arc<LoadedTables>,
+) -> Option<Move> {
+    let (tb_move, _) = loaded.tables.best_move(pos).ok()??;
     let want = tb_move.to_uci(CastlingMode::Standard).to_string();
-
     let mut moves = MoveList::new();
     board.generate_moves(&mut moves);
     for i in 0..moves.len() {
@@ -146,7 +220,6 @@ pub fn root_move(board: &mut BoardState) -> Option<Move> {
         if move_to_uci(move_obj) != want {
             continue;
         }
-
         board.make_move(move_obj);
         let legal = !board.is_in_check(board.side_to_move.other());
         board.unmake_move(move_obj);
@@ -155,6 +228,117 @@ pub fn root_move(board: &mut BoardState) -> Option<Move> {
         }
     }
     None
+}
+
+pub fn root_move(board: &mut BoardState) -> Option<Move> {
+    if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
+        return None;
+    }
+    if board.occupancy().count_ones() as usize > probe_limit() as usize {
+        return None;
+    }
+    let pos = to_shakmaty(board)?;
+    let loaded = TABLES.read().ok().and_then(|guard| guard.clone())?;
+    if loaded.count == 0 {
+        return None;
+    }
+    let use_rule50 = use_50mr();
+    let cur_wdl = loaded.tables.probe_wdl(&pos).ok()?;
+    let cur = classify_wdl(cur_wdl, use_rule50);
+    let mut moves = MoveList::new();
+    board.generate_moves(&mut moves);
+    let mut legal: Vec<Move> = Vec::new();
+    for i in 0..moves.len() {
+        let m = moves[i].mv;
+        if board.is_legal(m) {
+            legal.push(m);
+        }
+    }
+    if legal.is_empty() {
+        return None;
+    }
+    let mut best_win: Option<(Move, i32)> = None;
+    let mut best_draw: Option<(Move, i32)> = None;
+    let mut best_loss: Option<(Move, i32)> = None;
+    for m in legal {
+        board.make_move(m);
+        let child_pos = match to_shakmaty(board) {
+            Some(p) => p,
+            None => {
+                board.unmake_move(m);
+                continue;
+            }
+        };
+        let child_wdl = match loaded.tables.probe_wdl(&child_pos) {
+            Ok(v) => v,
+            Err(_) => {
+                board.unmake_move(m);
+                continue;
+            }
+        };
+        let s = classify_wdl(child_wdl, use_rule50);
+        let d = match loaded.tables.probe_dtz(&child_pos) {
+            Ok(v) => dtz_to_plies(v),
+            Err(_) => 0,
+        };
+        board.unmake_move(m);
+        if s == -1 {
+            let ad = d.abs();
+            match best_win {
+                None => best_win = Some((m, d)),
+                Some((_, bd)) => {
+                    if ad < bd.abs() {
+                        best_win = Some((m, d));
+                    }
+                }
+            }
+        } else if s == 0 {
+            let ad = d.abs();
+            match best_draw {
+                None => best_draw = Some((m, d)),
+                Some((_, bd)) => {
+                    if ad < bd.abs() {
+                        best_draw = Some((m, d));
+                    }
+                }
+            }
+        } else {
+            match best_loss {
+                None => best_loss = Some((m, d)),
+                Some((_, bd)) => {
+                    if d > bd {
+                        best_loss = Some((m, d));
+                    }
+                }
+            }
+        }
+    }
+    if let Some((m, _)) = best_win {
+        return Some(m);
+    }
+    if cur == 0 || cur == -1 {
+        if let Some((m, _)) = best_draw {
+            return Some(m);
+        }
+    }
+    if cur == -1 {
+        if let Some((m, _)) = best_loss {
+            return Some(m);
+        }
+    }
+    if cur == 1 {
+        if let Some((m, _)) = best_draw {
+            return Some(m);
+        }
+        if let Some((m, _)) = best_loss {
+            return Some(m);
+        }
+    } else if cur == 0 {
+        if let Some((m, _)) = best_loss {
+            return Some(m);
+        }
+    }
+    fallback_best_move(board, &pos, &loaded)
 }
 
 #[cfg(test)]

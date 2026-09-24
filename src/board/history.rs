@@ -37,6 +37,33 @@ pub struct DirtyUpdate {
     pub n_dels: u8,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StateCache {
+    pub checkers: u64,
+    pub pinned: u64,
+    pub pinners: u64,
+    pub pinned_them: u64,
+    pub all_threats: u64,
+    pub check_squares: [u64; 6],
+    pub threats_us: [u64; 6],
+    pub threats_them: [u64; 6],
+}
+
+impl Default for StateCache {
+    fn default() -> Self {
+        Self {
+            checkers: 0,
+            pinned: 0,
+            pinners: 0,
+            pinned_them: 0,
+            all_threats: 0,
+            check_squares: [0; 6],
+            threats_us: [0; 6],
+            threats_them: [0; 6],
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct History {
     pub entries: Box<[BoardHistory]>,
@@ -46,6 +73,8 @@ pub struct History {
     pub sfnn16_pending: Box<[crate::eval::nnue::v16::SfnnPending]>,
     pub dirty_updates: Box<[DirtyUpdate]>,
     pub computed: Box<[bool]>,
+    pub node_cache: Box<[StateCache]>,
+    pub node_valid: Box<[bool]>,
     pub index: usize,
 
     pub plies_from_null: usize,
@@ -58,6 +87,8 @@ impl History {
         computed[0] = true;
         let mut sfnn16_computed = vec![[false, false]; HISTORY_SIZE].into_boxed_slice();
         sfnn16_computed[0] = [true, true];
+        let mut node_valid = vec![false; HISTORY_SIZE].into_boxed_slice();
+        node_valid[0] = true;
         Self {
             entries: vec![BoardHistory::default(); HISTORY_SIZE].into_boxed_slice(),
             accumulators: vec![Accumulators::default(); HISTORY_SIZE].into_boxed_slice(),
@@ -67,6 +98,8 @@ impl History {
                 .into_boxed_slice(),
             dirty_updates: vec![DirtyUpdate::default(); HISTORY_SIZE].into_boxed_slice(),
             computed,
+            node_cache: vec![StateCache::default(); HISTORY_SIZE].into_boxed_slice(),
+            node_valid,
             index: 0,
             plies_from_null: 0,
             plies_from_null_stack: vec![0usize; HISTORY_SIZE].into_boxed_slice(),
@@ -115,6 +148,9 @@ impl History {
         self.computed[0] = true;
         self.sfnn16_computed.fill([false, false]);
         self.sfnn16_computed[0] = [true, true];
+        self.node_valid.fill(false);
+        self.node_valid[0] = true;
+        self.node_cache[0] = StateCache::default();
         self.index = 0;
         self.plies_from_null = 0;
     }
@@ -136,6 +172,46 @@ impl History {
 
     pub fn is_empty(&self) -> bool {
         self.index == 0
+    }
+
+    pub fn store_cache(&mut self, cache: StateCache) {
+        self.node_cache[self.index] = cache;
+        self.node_valid[self.index] = true;
+    }
+
+    pub fn current_cache(&self) -> StateCache {
+        self.node_cache[self.index]
+    }
+
+    pub fn is_cache_valid(&self) -> bool {
+        self.node_valid[self.index]
+    }
+
+    pub fn invalidate_cache(&mut self) {
+        self.node_valid[self.index] = false;
+    }
+
+    pub fn push_cache(&mut self, cache: StateCache) {
+        if self.index < HISTORY_SIZE {
+            self.node_cache[self.index] = cache;
+            self.node_valid[self.index] = true;
+        }
+    }
+
+    pub fn is_accurate(&self) -> bool {
+        self.computed[self.index]
+    }
+
+    pub fn mark_inaccurate(&mut self, idx: usize) {
+        if idx < HISTORY_SIZE {
+            self.computed[idx] = false;
+        }
+    }
+
+    pub fn mark_accurate(&mut self, idx: usize) {
+        if idx < HISTORY_SIZE {
+            self.computed[idx] = true;
+        }
     }
 }
 

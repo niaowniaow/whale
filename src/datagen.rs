@@ -7,6 +7,7 @@ use std::sync::mpsc;
 
 use crate::board::state::BoardState;
 use crate::common::castle::Castle as WhaleCastle;
+use crate::common::move_list::MoveList;
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::piece::Piece as WhalePiece;
@@ -90,6 +91,196 @@ pub fn outcome_for_side(outcome: WhaleSide, side: WhaleSide) -> f32 {
         return 0.5;
     }
     if outcome == side { 1.0 } else { 0.0 }
+}
+
+pub const DATAGEN_TEMPERATURE_PLIES: usize = 12;
+
+pub const DATAGEN_TEMPERATURE_OPENING: f32 = 1.5;
+
+pub const DATAGEN_TEMPERATURE_MID: f32 = 1.0;
+
+pub const DATAGEN_EPSILON_PER_MILLE: u64 = 15;
+
+pub const DATAGEN_RESIGN_THRESHOLD_CP: i16 = 900;
+
+pub const DATAGEN_RESIGN_EARLIEST_PLY: usize = 20;
+
+pub const DATAGEN_DRAW_THRESHOLD_CP: i16 = 20;
+
+pub const DATAGEN_DRAW_CONSECUTIVE_PLIES: usize = 12;
+
+pub const DATAGEN_MAX_PLIES: usize = 400;
+
+#[inline(always)]
+pub fn temperature_for_ply(ply: usize) -> f32 {
+    if ply < 8 {
+        DATAGEN_TEMPERATURE_OPENING
+    } else if ply < DATAGEN_TEMPERATURE_PLIES {
+        DATAGEN_TEMPERATURE_MID
+    } else {
+        0.0
+    }
+}
+
+pub fn tempered_index(visits: &[u64], temperature: f32) -> usize {
+    if visits.is_empty() {
+        return 0;
+    }
+    if visits.len() == 1 {
+        return 0;
+    }
+    if temperature <= 0.0 {
+        let mut best = 0;
+        for i in 1..visits.len() {
+            if visits[i] > visits[best] {
+                best = i;
+            }
+        }
+        return best;
+    }
+    let inv = 1.0 / temperature;
+    let mut weights: Vec<f32> = Vec::with_capacity(visits.len());
+    let mut sum: f32 = 0.0;
+    for v in visits {
+        let w = (*v as f32 + 1.0).powf(inv);
+        weights.push(w);
+        sum += w;
+    }
+    if sum <= 0.0 {
+        return (random::next_u64() as usize) % visits.len();
+    }
+    let r = (random::next_u64() as f64 / u64::MAX as f64) * sum as f64;
+    let mut acc: f64 = 0.0;
+    for i in 0..weights.len() {
+        acc += weights[i] as f64;
+        if r < acc {
+            return i;
+        }
+    }
+    visits.len() - 1
+}
+
+#[inline(always)]
+pub fn epsilon_roll_per_mille(per_mille: u64) -> bool {
+    random::next_u64() % 1000 < per_mille
+}
+
+#[inline(always)]
+pub fn should_epsilon_pick() -> bool {
+    epsilon_roll_per_mille(DATAGEN_EPSILON_PER_MILLE)
+}
+
+pub fn random_legal_move(board: &BoardState) -> Option<Move> {
+    let mut list = MoveList::new();
+    board.generate_moves(&mut list);
+    let mut legal: Vec<Move> = Vec::new();
+    for i in 0..list.len() {
+        let m = list[i].mv;
+        if board.is_legal(m) {
+            legal.push(m);
+        }
+    }
+    if legal.is_empty() {
+        return None;
+    }
+    let idx = (random::next_u64() as usize) % legal.len();
+    Some(legal[idx])
+}
+
+pub fn choose_exploration_move(board: &BoardState, best: Move, ply: usize) -> Move {
+    let temp = temperature_for_ply(ply);
+    if temp > 0.0 {
+        let mut list = MoveList::new();
+        board.generate_moves(&mut list);
+        let mut cands: Vec<Move> = Vec::new();
+        cands.push(best);
+        for i in 0..list.len() {
+            let m = list[i].mv;
+            if m == best {
+                continue;
+            }
+            if board.is_legal(m) {
+                cands.push(m);
+            }
+        }
+        if cands.len() > 1 {
+            let mut visits: Vec<u64> = Vec::with_capacity(cands.len());
+            visits.push(200);
+            for _ in 1..cands.len() {
+                visits.push(5);
+            }
+            let idx = tempered_index(&visits, temp);
+            if idx < cands.len() {
+                return cands[idx];
+            }
+        }
+        return best;
+    }
+    if epsilon_roll_per_mille(DATAGEN_EPSILON_PER_MILLE) {
+        if let Some(r) = random_legal_move(board) {
+            return r;
+        }
+    }
+    best
+}
+
+#[inline(always)]
+pub fn resign_winner(score_stm: i16, ply: usize, stm: WhaleSide) -> Option<WhaleSide> {
+    if ply >= DATAGEN_RESIGN_EARLIEST_PLY && score_stm <= -DATAGEN_RESIGN_THRESHOLD_CP {
+        Some(stm.other())
+    } else {
+        None
+    }
+}
+
+#[inline(always)]
+pub fn draw_streak_next(score_stm: i16, streak: usize) -> usize {
+    if score_stm.abs() <= DATAGEN_DRAW_THRESHOLD_CP {
+        streak.saturating_add(1)
+    } else {
+        0
+    }
+}
+
+#[inline(always)]
+pub fn is_draw_adjudicated(streak: usize) -> bool {
+    streak >= DATAGEN_DRAW_CONSECUTIVE_PLIES
+}
+
+pub fn tb_rescore_outcome(
+    initial: &BoardState,
+    positions: &[SelfPlayPosition],
+    outcome: WhaleSide,
+) -> WhaleSide {
+    let mut corrected = outcome;
+    let mut replay = initial.clone();
+    if replay.half_move_clock == 0 {
+        if let Some(w) = crate::syzygy::probe_wdl(&replay) {
+            if w == 1 {
+                corrected = replay.side_to_move;
+            } else if w == -1 {
+                corrected = replay.side_to_move.other();
+            } else {
+                corrected = WhaleSide::Both;
+            }
+        }
+    }
+    for pos in positions {
+        replay.make_move(pos.mv);
+        if replay.half_move_clock != 0 {
+            continue;
+        }
+        if let Some(w) = crate::syzygy::probe_wdl(&replay) {
+            if w == 1 {
+                corrected = replay.side_to_move;
+            } else if w == -1 {
+                corrected = replay.side_to_move.other();
+            } else {
+                corrected = WhaleSide::Both;
+            }
+        }
+    }
+    corrected
 }
 
 pub fn write_behavior_jsonl<W: Write>(
@@ -448,10 +639,15 @@ pub fn run_with_teacher(
                         .unwrap_or(search_state.score);
 
                     let mut positions = Vec::new();
+                    let mut draw_streak: usize = 0;
                     let outcome;
 
                     loop {
                         if board_state.is_draw() {
+                            outcome = WhaleSide::Both;
+                            break;
+                        }
+                        if positions.len() >= DATAGEN_MAX_PLIES {
                             outcome = WhaleSide::Both;
                             break;
                         }
@@ -485,9 +681,59 @@ pub fn run_with_teacher(
                             })
                             .unwrap_or(search_state.score);
 
+                        let ply = positions.len();
+                        if let Some(winner) =
+                            resign_winner(score, ply, board_state.side_to_move)
+                        {
+                            positions.push(SelfPlayPosition {
+                                side_to_move: board_state.side_to_move,
+                                mv: best_move,
+                                engine_eval: score,
+                                fen: board_state.to_fen(),
+                                behavior_state: behavior_state_id(search_state.last_state),
+                                behavior_intent: behavior_intent_id(search_state.last_intent),
+                                behavior_pressure: search_state.pressure_state.pressure,
+                                behavior_opp_cpi: search_state.prev_opp_cpi.unwrap_or(0),
+                                behavior_own_cpi: search_state.prev_own_cpi.unwrap_or(0),
+                                behavior_urgency: behavior_urgency_id(search_state.last_urgency),
+                                behavior_risk: search_state.last_risk,
+                                behavior_musttry: search_state.last_musttry,
+                                behavior_concession: search_state
+                                    .last_concession
+                                    .map(|c| c.swing_cp)
+                                    .unwrap_or(0),
+                            });
+                            outcome = winner;
+                            break;
+                        }
+                        draw_streak = draw_streak_next(score, draw_streak);
+                        if is_draw_adjudicated(draw_streak) {
+                            positions.push(SelfPlayPosition {
+                                side_to_move: board_state.side_to_move,
+                                mv: best_move,
+                                engine_eval: score,
+                                fen: board_state.to_fen(),
+                                behavior_state: behavior_state_id(search_state.last_state),
+                                behavior_intent: behavior_intent_id(search_state.last_intent),
+                                behavior_pressure: search_state.pressure_state.pressure,
+                                behavior_opp_cpi: search_state.prev_opp_cpi.unwrap_or(0),
+                                behavior_own_cpi: search_state.prev_own_cpi.unwrap_or(0),
+                                behavior_urgency: behavior_urgency_id(search_state.last_urgency),
+                                behavior_risk: search_state.last_risk,
+                                behavior_musttry: search_state.last_musttry,
+                                behavior_concession: search_state
+                                    .last_concession
+                                    .map(|c| c.swing_cp)
+                                    .unwrap_or(0),
+                            });
+                            outcome = WhaleSide::Both;
+                            break;
+                        }
+                        let chosen = choose_exploration_move(&board_state, best_move, ply);
+
                         positions.push(SelfPlayPosition {
                             side_to_move: board_state.side_to_move,
-                            mv: best_move,
+                            mv: chosen,
                             engine_eval: score,
                             fen: board_state.to_fen(),
                             behavior_state: behavior_state_id(search_state.last_state),
@@ -504,8 +750,10 @@ pub fn run_with_teacher(
                                 .unwrap_or(0),
                         });
 
-                        board_state.make_move(best_move);
+                        board_state.make_move(chosen);
                     }
+
+                    let outcome = tb_rescore_outcome(&initial_state, &positions, outcome);
 
                     let game_data = CompletedGame {
                         initial_state,

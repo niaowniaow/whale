@@ -65,11 +65,11 @@ impl DcnModel {
         }
 
         let us = board.side_to_move;
-        let checks = board.checkers(us).0.count_ones();
-        let qt_us = (board.threat_by_lesser(us)[Piece::Queen as usize]
+        let checks = board.cached_checkers().count_ones();
+        let qt_us = (board.cached_threats_us()[Piece::Queen as usize]
             & board.get_pieces(us, Piece::Queen).0)
             .count_ones();
-        let qt_them = (board.threat_by_lesser(us.other())[Piece::Queen as usize]
+        let qt_them = (board.cached_threats_them()[Piece::Queen as usize]
             & board.get_pieces(us.other(), Piece::Queen).0)
             .count_ones();
         Self::condition_evaluation_cached(raw_eval, depth, board, checks, qt_us, qt_them, config)
@@ -120,7 +120,7 @@ impl DcnModel {
                 let strategic_weight = (d - config.tactical_threshold as i64).max(0);
 
                 let us = board.side_to_move;
-                let checks = board.checkers(us).0.count_ones() as i64;
+                let checks = board.cached_checkers().count_ones() as i64;
                 let tactical_signal = -checks * 16;
 
                 let us_pawns = board.get_pieces(us, Piece::Pawn).0.count_ones() as i64;

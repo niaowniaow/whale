@@ -690,6 +690,46 @@ pub fn collect_pairs(
     len
 }
 
+pub fn collect_threats_lazy(
+    pos: &SfnnPosition,
+    perspective: Side,
+    out: &mut [usize; MAX_THREAT_ACTIVE],
+    active: bool,
+) -> usize {
+    if !active || !maintenance_active() {
+        return 0;
+    }
+    collect_threats(pos, perspective, out)
+}
+
+pub fn collect_pairs_lazy(
+    pos: &SfnnPosition,
+    perspective: Side,
+    out: &mut [usize; MAX_PAIR_ACTIVE],
+    active: bool,
+) -> usize {
+    if !active || !maintenance_active() {
+        return 0;
+    }
+    collect_pairs(pos, perspective, out)
+}
+
+pub fn threats_cached_len(pos: &SfnnPosition, perspective: Side) -> usize {
+    if !maintenance_active() {
+        return 0;
+    }
+    let mut buf = [0usize; MAX_THREAT_ACTIVE];
+    collect_threats(pos, perspective, &mut buf)
+}
+
+pub fn pairs_cached_len(pos: &SfnnPosition, perspective: Side) -> usize {
+    if !maintenance_active() {
+        return 0;
+    }
+    let mut buf = [0usize; MAX_PAIR_ACTIVE];
+    collect_pairs(pos, perspective, &mut buf)
+}
+
 pub fn material_bucket(piece_count: usize) -> usize {
     ((piece_count.saturating_sub(1)) / 4).min(N_BUCKETS - 1)
 }
@@ -2427,7 +2467,7 @@ fn eval_with_net(
     let mut pair_lists = [[0usize; MAX_PAIR_ACTIVE]; 2];
     let mut pair_lens = [0usize; 2];
 
-    if net.use_threats {
+    if net.use_threats && maintenance_active() {
         let mut raw_threats = [(0u8, 0u8, 0u8, 0u8); 128];
         let mut n_raw_threats = 0usize;
         for_each_threat(pos, |attacker, from, to, attacked| {

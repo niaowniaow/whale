@@ -136,19 +136,31 @@ impl BoardState {
         if self.history.computed[target_idx] {
             return;
         }
-
         let mut ancestor = target_idx;
         while ancestor > 0 && !self.history.computed[ancestor] {
             ancestor -= 1;
         }
-
         let network = Network::get_embedded();
+        self.history.accumulators[target_idx] = self.history.accumulators[ancestor];
         for idx in (ancestor + 1)..=target_idx {
-            self.history.accumulators[idx] = self.history.accumulators[idx - 1];
             let dirty = self.history.dirty_updates[idx];
-            Self::apply_dirty(&mut self.history.accumulators[idx], &dirty, network);
-            self.history.computed[idx] = true;
+            Self::apply_dirty(&mut self.history.accumulators[target_idx], &dirty, network);
         }
+        self.history.computed[target_idx] = true;
+    }
+
+    pub fn accumulator_is_accurate(&self) -> bool {
+        self.history.is_accurate()
+    }
+
+    pub fn push_accumulator(&mut self, target_idx: usize) {
+        if target_idx > 0 && target_idx < crate::board::history::HISTORY_SIZE {
+            self.history.accumulators[target_idx] = self.history.accumulators[target_idx - 1];
+            self.history.mark_inaccurate(target_idx);
+        }
+    }
+
+    pub fn pop_accumulator(&mut self) {
     }
 
     fn apply_dirty(

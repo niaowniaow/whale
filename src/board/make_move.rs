@@ -1,7 +1,7 @@
 use crate::bitboard::Bitboard;
 use crate::bitboard::attacks::{FILE_A, FILE_H};
 use crate::bitboard::lookups::{
-    get_bishop_attacks_from_table, get_rook_attacks_from_table, knight_attacks, pawn_attacks,
+    get_bishop_attacks_from_table, knight_attacks, pawn_attacks,
 };
 use crate::board::state::{BoardState, CASTLING_CONSTANTS};
 use crate::common::castle::Castle;
@@ -22,6 +22,8 @@ fn is_light_square(sq: usize) -> bool {
 impl BoardState {
     pub fn make_move(&mut self, m: Move) {
         let next_idx = self.history.index + 1;
+        let old_valid = self.history.is_cache_valid();
+        let old_cache = self.history.current_cache();
 
         let captured_piece = Piece::None;
         let original_board_hash = self.board_hash;
@@ -75,6 +77,12 @@ impl BoardState {
             original_board_hash,
             original_half_move_clock,
         );
+        if self.history.index > 0 {
+            let prev = self.history.index - 1;
+            self.history.node_cache[prev] = old_cache;
+            self.history.node_valid[prev] = old_valid;
+        }
+        self.update_node_cache();
         self.history.plies_from_null = self.history.plies_from_null.saturating_add(1);
         self.move_count += 1;
     }
@@ -153,21 +161,43 @@ impl BoardState {
             self.get_pieces(mover, Piece::Bishop).0 | self.get_pieces(mover, Piece::Queen).0;
         let enemy_rq =
             self.get_pieces(mover, Piece::Rook).0 | self.get_pieces(mover, Piece::Queen).0;
+        let sliders = enemy_bq | enemy_rq;
         while takers != 0 {
             let from = takers.trailing_zeros() as usize;
             takers &= takers - 1;
-            let occ =
-                Bitboard((self.occupancy().0 ^ (1u64 << from) ^ (1u64 << cap_sq)) | (1u64 << ep));
+            let occ_after =
+                (self.occupancy().0 ^ (1u64 << from) ^ (1u64 << cap_sq)) | (1u64 << ep);
             if (enemy_pawns & pawn_attacks()[capturer as usize][ksq as usize]) != 0 {
                 continue;
             }
             if (enemy_knights & knight_attacks()[ksq as usize]) != 0 {
                 continue;
             }
-            if (get_bishop_attacks_from_table(ksq, occ).0 & enemy_bq) != 0 {
-                continue;
+            let mut blocked = false;
+            let mut s = sliders;
+            while s != 0 {
+                let psq = s.trailing_zeros() as usize;
+                s &= s - 1;
+                if crate::board::state::LINE_BB[ksq as usize][psq] == 0 {
+                    continue;
+                }
+                if (crate::board::state::BETWEEN_BB[ksq as usize][psq] & occ_after) != 0 {
+                    continue;
+                }
+                let is_diag = get_bishop_attacks_from_table(ksq, Bitboard(0)).0
+                    & (1u64 << psq)
+                    != 0;
+                if is_diag {
+                    if (enemy_bq & (1u64 << psq)) != 0 {
+                        blocked = true;
+                        break;
+                    }
+                } else if (enemy_rq & (1u64 << psq)) != 0 {
+                    blocked = true;
+                    break;
+                }
             }
-            if (get_rook_attacks_from_table(ksq, occ).0 & enemy_rq) != 0 {
+            if blocked {
                 continue;
             }
             return true;
@@ -193,6 +223,8 @@ impl BoardState {
 
     pub fn unmake_move(&mut self, m: Move) {
         let history = self.history.restore();
+        let was_valid = self.history.is_cache_valid();
+        let was_cache = self.history.current_cache();
 
         let moved_piece = self.remove_piece(m.target, false);
         self.side_to_move = self.side_to_move.other();
@@ -252,6 +284,8 @@ impl BoardState {
         self.castle = history.castling_rights;
         self.en_passant_square = history.en_passant_square;
         self.move_count -= 1;
+        self.history.node_cache[self.history.index] = was_cache;
+        self.history.node_valid[self.history.index] = was_valid;
     }
 
     fn en_passant_square_for(&self, m: Move) -> Square {
@@ -380,6 +414,8 @@ impl BoardState {
 
     pub fn make_null_move(&mut self) {
         let next_idx = self.history.index + 1;
+        let old_valid = self.history.is_cache_valid();
+        let old_cache = self.history.current_cache();
         self.history.dirty_updates[next_idx] = crate::board::history::DirtyUpdate::default();
         self.history.computed[next_idx] = false;
         if crate::eval::nnue::v16::maintenance_active() {
@@ -394,18 +430,28 @@ impl BoardState {
             self.board_hash,
             self.half_move_clock,
         );
+        if self.history.index > 0 {
+            let prev = self.history.index - 1;
+            self.history.node_cache[prev] = old_cache;
+            self.history.node_valid[prev] = old_valid;
+        }
         self.history.plies_from_null = 0;
         self.update_en_passant(Move::NO_MOVE);
         self.flip_side_to_move();
+        self.update_node_cache();
     }
 
     pub fn undo_null_move(&mut self) {
         let history = self.history.restore();
+        let was_valid = self.history.is_cache_valid();
+        let was_cache = self.history.current_cache();
         self.flip_side_to_move();
         self.half_move_clock = history.half_move_clock;
         self.board_hash = history.board_hash;
         self.castle = history.castling_rights;
         self.en_passant_square = history.en_passant_square;
+        self.history.node_cache[self.history.index] = was_cache;
+        self.history.node_valid[self.history.index] = was_valid;
     }
 }
 

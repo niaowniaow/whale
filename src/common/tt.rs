@@ -2,7 +2,7 @@ use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::square::Square;
-use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -23,6 +23,8 @@ pub struct TranspositionTableEntry {
     pub depth: u8,
     pub entry_type: TranspositionEntryType,
     pub generation: u8,
+    pub eval: i16,
+    pub raw_eval: i16,
 }
 
 impl Default for TranspositionTableEntry {
@@ -34,6 +36,8 @@ impl Default for TranspositionTableEntry {
             depth: 0,
             entry_type: TranspositionEntryType::None,
             generation: 0,
+            eval: 0,
+            raw_eval: 0,
         }
     }
 }
@@ -44,6 +48,7 @@ pub const CLUSTER_SIZE: usize = 4;
 pub struct AtomicEntry {
     pub key: AtomicU64,
     pub data: AtomicU64,
+    pub eval: AtomicU16,
 }
 
 impl Default for AtomicEntry {
@@ -51,6 +56,7 @@ impl Default for AtomicEntry {
         Self {
             key: AtomicU64::new(0),
             data: AtomicU64::new(0),
+            eval: AtomicU16::new(0),
         }
     }
 }
@@ -74,7 +80,7 @@ fn pack_entry(
 }
 
 #[inline(always)]
-fn unpack_entry(hash: u64, data: u64) -> TranspositionTableEntry {
+fn unpack_entry(hash: u64, data: u64, eval_value: i16) -> TranspositionTableEntry {
     let score = (data & 0xFFFF) as u16 as i16;
     let depth = ((data >> 16) & 0xFF) as u8;
     let entry_type = match ((data >> 24) & 0xFF) as u8 {
@@ -125,6 +131,8 @@ fn unpack_entry(hash: u64, data: u64) -> TranspositionTableEntry {
         depth,
         entry_type,
         generation,
+        eval: eval_value,
+        raw_eval: eval_value,
     }
 }
 
@@ -213,7 +221,8 @@ impl TranspositionTable {
             for entry in &self.clusters[i].entries {
                 let k = entry.key.load(Ordering::Relaxed);
                 let d = entry.data.load(Ordering::Relaxed);
-                if k != 0 && unpack_entry(k, d).entry_type != TranspositionEntryType::None {
+                let ev = entry.eval.load(Ordering::Relaxed) as i16;
+                if k != 0 && unpack_entry(k, d, ev).entry_type != TranspositionEntryType::None {
                     used += 1;
                 }
             }
@@ -231,6 +240,7 @@ impl TranspositionTable {
             for entry in &cluster.entries {
                 entry.key.store(0, Ordering::Relaxed);
                 entry.data.store(0, Ordering::Relaxed);
+                entry.eval.store(0, Ordering::Relaxed);
             }
         }
     }
@@ -256,13 +266,32 @@ impl TranspositionTable {
             let k = entry.key.load(Ordering::Relaxed);
             if k == hash {
                 let d = entry.data.load(Ordering::Relaxed);
-                let unpacked = unpack_entry(k, d);
+                let ev = entry.eval.load(Ordering::Relaxed) as i16;
+                let unpacked = unpack_entry(k, d, ev);
                 if unpacked.entry_type != TranspositionEntryType::None {
                     return Some(unpacked);
                 }
             }
         }
         None
+    }
+
+    #[inline(always)]
+    pub fn allow_tt_cutoff(halfmove: u8) -> bool {
+        halfmove < 96
+    }
+
+    #[inline(always)]
+    pub fn needs_tt_move_verify(depth: u8) -> bool {
+        depth >= 7
+    }
+
+    #[inline(always)]
+    pub fn verify_tt_cutoff(tt_value: i16, beta: i16, next_value: Option<i16>) -> bool {
+        match next_value {
+            None => true,
+            Some(n) => (tt_value >= beta) == ((-(n as i32)) >= beta as i32),
+        }
     }
 
     pub fn get_entry(
@@ -273,6 +302,19 @@ impl TranspositionTable {
         depth: u8,
         ply: u8,
         halfmove: u8,
+    ) -> (bool, i16, Option<Move>) {
+        self.get_entry_with_verify(hash, alpha, beta, depth, ply, halfmove, None)
+    }
+
+    pub fn get_entry_with_verify(
+        &self,
+        hash: u64,
+        alpha: i16,
+        beta: i16,
+        depth: u8,
+        ply: u8,
+        halfmove: u8,
+        next_tt_value: Option<i16>,
     ) -> (bool, i16, Option<Move>) {
         let entry = match self.probe(hash) {
             Some(e) => e,
@@ -285,24 +327,38 @@ impl TranspositionTable {
 
         let tt_score = Self::retrieve_score(entry.score, ply as i32, halfmove);
 
-        match entry.entry_type {
-            TranspositionEntryType::Exact => (true, tt_score, Some(entry.best_move)),
-            TranspositionEntryType::Alpha => {
-                if tt_score <= alpha {
-                    (true, tt_score, Some(entry.best_move))
-                } else {
-                    (false, 0, Some(entry.best_move))
-                }
+        let cutoff = match entry.entry_type {
+            TranspositionEntryType::Exact => true,
+            TranspositionEntryType::Alpha => tt_score <= alpha,
+            TranspositionEntryType::Beta => tt_score >= beta,
+            TranspositionEntryType::None => false,
+        };
+
+        if !cutoff {
+            let mismatch = match entry.entry_type {
+                TranspositionEntryType::Alpha => tt_score >= beta,
+                TranspositionEntryType::Beta => tt_score < beta,
+                _ => false,
+            };
+            if mismatch && depth > 5 {
+                self.penalize(hash, 1);
             }
-            TranspositionEntryType::Beta => {
-                if tt_score >= beta {
-                    (true, tt_score, Some(entry.best_move))
-                } else {
-                    (false, 0, Some(entry.best_move))
-                }
-            }
-            TranspositionEntryType::None => (false, 0, None),
+            return (false, 0, Some(entry.best_move));
         }
+
+        if !Self::allow_tt_cutoff(halfmove) {
+            return (false, 0, Some(entry.best_move));
+        }
+
+        if Self::needs_tt_move_verify(depth)
+            && entry.best_move != Move::NO_MOVE
+            && !Self::is_decisive_value(tt_score)
+            && !Self::verify_tt_cutoff(tt_score, beta, next_tt_value)
+        {
+            return (false, 0, Some(entry.best_move));
+        }
+
+        (true, tt_score, Some(entry.best_move))
     }
 
     pub fn submit_entry(
@@ -310,12 +366,29 @@ impl TranspositionTable {
         hash: u64,
         score: i16,
         depth: u8,
+        best_move: Move,
+        entry_type: TranspositionEntryType,
+    ) {
+        let raw_eval = match self.probe(hash) {
+            Some(e) => e.eval,
+            None => score,
+        };
+        self.submit_entry_with_eval(hash, score, raw_eval, depth, best_move, entry_type);
+    }
+
+    pub fn submit_entry_with_eval(
+        &self,
+        hash: u64,
+        score: i16,
+        raw_eval: i16,
+        depth: u8,
         mut best_move: Move,
         entry_type: TranspositionEntryType,
     ) {
         let index = (hash as usize) & (self.cluster_count - 1);
         let cluster = &self.clusters[index];
         let cur_gen = self.generation.load(Ordering::Relaxed);
+        let raw_bits = raw_eval as u16;
 
         for entry in &cluster.entries {
             let k = entry.key.load(Ordering::Acquire);
@@ -324,7 +397,8 @@ impl TranspositionTable {
                 if entry.key.load(Ordering::Acquire) != hash {
                     continue;
                 }
-                let existing = unpack_entry(k, d);
+                let ev = entry.eval.load(Ordering::Acquire) as i16;
+                let existing = unpack_entry(k, d, ev);
                 if existing.entry_type != TranspositionEntryType::None {
                     if best_move == Move::NO_MOVE {
                         best_move = existing.best_move;
@@ -337,6 +411,7 @@ impl TranspositionTable {
 
                     if should_replace {
                         let packed = pack_entry(score, depth, entry_type, cur_gen, best_move);
+                        entry.eval.store(raw_bits, Ordering::Relaxed);
                         entry.data.store(packed, Ordering::Relaxed);
                         entry.key.store(hash, Ordering::Relaxed);
                     } else if existing.best_move == Move::NO_MOVE && best_move != Move::NO_MOVE {
@@ -362,7 +437,8 @@ impl TranspositionTable {
         for (i, entry) in cluster.entries.iter().enumerate() {
             let k = entry.key.load(Ordering::Acquire);
             let d = entry.data.load(Ordering::Acquire);
-            let existing = unpack_entry(k, d);
+            let ev = entry.eval.load(Ordering::Acquire) as i16;
+            let existing = unpack_entry(k, d, ev);
             if existing.entry_type == TranspositionEntryType::None {
                 replace_idx = i;
                 break;
@@ -378,8 +454,41 @@ impl TranspositionTable {
         let packed = pack_entry(score, depth, entry_type, cur_gen, best_move);
         let target = &cluster.entries[replace_idx];
         target.key.store(0, Ordering::Relaxed);
+        target.eval.store(raw_bits, Ordering::Relaxed);
         target.data.store(packed, Ordering::Release);
         target.key.store(hash, Ordering::Release);
+    }
+
+    pub fn penalize(&self, hash: u64, penalty: u8) {
+        let index = (hash as usize) & (self.cluster_count - 1);
+        let cluster = &self.clusters[index];
+        for entry in &cluster.entries {
+            let k = entry.key.load(Ordering::Acquire);
+            if k == hash {
+                let d = entry.data.load(Ordering::Acquire);
+                if entry.key.load(Ordering::Acquire) != hash {
+                    continue;
+                }
+                let ev = entry.eval.load(Ordering::Acquire) as i16;
+                let existing = unpack_entry(k, d, ev);
+                if existing.entry_type == TranspositionEntryType::None {
+                    return;
+                }
+                let reduced = existing.depth.saturating_sub(penalty);
+                if reduced == existing.depth {
+                    return;
+                }
+                let packed = pack_entry(
+                    existing.score,
+                    reduced,
+                    existing.entry_type,
+                    existing.generation,
+                    existing.best_move,
+                );
+                entry.data.store(packed, Ordering::Release);
+                return;
+            }
+        }
     }
 
     const fn mate_score() -> i32 {
@@ -401,6 +510,11 @@ impl TranspositionTable {
     #[inline(always)]
     fn is_loss_score(score: i32) -> bool {
         score <= -Self::tb_win_in_max()
+    }
+    #[inline(always)]
+    fn is_decisive_value(score: i16) -> bool {
+        let s = score as i32;
+        s >= Self::tb_win_in_max() || s <= -Self::tb_win_in_max()
     }
 
     pub fn adjust_score(score: i16, ply: i32, _halfmove: u8) -> i16 {
@@ -451,8 +565,8 @@ mod tests {
 
     #[test]
     fn test_cluster_size_and_alignment() {
-        assert_eq!(size_of::<TranspositionTableEntry>(), 16);
-        assert_eq!(size_of::<Cluster>(), 64);
+        assert_eq!(size_of::<TranspositionTableEntry>(), 24);
+        assert_eq!(size_of::<Cluster>(), 128);
         assert_eq!(align_of::<Cluster>(), 64);
     }
 
@@ -548,13 +662,13 @@ mod tests {
         assert_eq!(tt.capacity, 1024);
 
         tt.resize(1);
-        assert_eq!(tt.capacity, 32768);
+        assert_eq!(tt.capacity, 16384);
 
         tt.resize(64);
-        assert_eq!(tt.capacity, 2097152);
+        assert_eq!(tt.capacity, 1048576);
 
         tt.resize(128);
-        assert_eq!(tt.capacity, 4194304);
+        assert_eq!(tt.capacity, 2097152);
     }
 
     #[test]
@@ -574,6 +688,8 @@ mod tests {
         assert_eq!(e.depth, 0);
         assert_eq!(e.entry_type, TranspositionEntryType::None);
         assert_eq!(e.generation, 0);
+        assert_eq!(e.eval, 0);
+        assert_eq!(e.raw_eval, 0);
     }
 
     #[test]
@@ -928,5 +1044,119 @@ mod tests {
         assert!(tt.probe(999888).is_some());
         tt.resize(1);
         assert_eq!(tt.probe(999888), None);
+    }
+
+    #[test]
+    fn test_tt_raw_eval_stored_separately() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry_with_eval(424244, 100, 35, 5, m, TranspositionEntryType::Exact);
+        let entry = tt.probe(424244).expect("entry must be present");
+        assert_eq!(entry.score, 100);
+        assert_eq!(entry.eval, 35);
+        assert_eq!(entry.raw_eval, 35);
+    }
+
+    #[test]
+    fn test_tt_legacy_submit_preserves_raw_eval() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry_with_eval(424245, 100, 35, 5, m, TranspositionEntryType::Exact);
+        tt.submit_entry(424245, 200, 6, m, TranspositionEntryType::Exact);
+        let entry = tt.probe(424245).expect("entry must be present");
+        assert_eq!(entry.score, 200);
+        assert_eq!(entry.eval, 35);
+        assert_eq!(entry.raw_eval, 35);
+    }
+
+    #[test]
+    fn test_tt_legacy_submit_falls_back_to_score_for_new_key() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry(424246, 77, 3, m, TranspositionEntryType::Exact);
+        let entry = tt.probe(424246).expect("entry must be present");
+        assert_eq!(entry.eval, 77);
+        assert_eq!(entry.raw_eval, 77);
+    }
+
+    #[test]
+    fn test_tt_penalize_reduces_depth() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry_with_eval(424247, 100, 20, 8, m, TranspositionEntryType::Exact);
+        tt.penalize(424247, 1);
+        let entry = tt.probe(424247).expect("entry must be present");
+        assert_eq!(entry.depth, 7);
+        assert_eq!(entry.score, 100);
+        assert_eq!(entry.eval, 20);
+        tt.penalize(424247, 20);
+        let entry = tt.probe(424247).expect("entry must remain present");
+        assert_eq!(entry.depth, 0);
+        assert_eq!(entry.entry_type, TranspositionEntryType::Exact);
+        tt.penalize(0xDEAD_BEEF, 3);
+    }
+
+    #[test]
+    fn test_tt_ghi_guard_blocks_cutoff() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry_with_eval(424248, 100, 40, 5, m, TranspositionEntryType::Exact);
+        assert!(TranspositionTable::allow_tt_cutoff(95));
+        assert!(!TranspositionTable::allow_tt_cutoff(96));
+        let (found, _, got) = tt.get_entry(424248, -1000, 1000, 5, 0, 96);
+        assert!(!found);
+        assert_eq!(got, Some(m));
+        let (found, score, got) = tt.get_entry(424248, -1000, 1000, 5, 0, 95);
+        assert!(found);
+        assert_eq!(score, 100);
+        assert_eq!(got, Some(m));
+    }
+
+    #[test]
+    fn test_tt_bound_mismatch_penalizes() {
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry_with_eval(424249, 50, 10, 8, m, TranspositionEntryType::Beta);
+        let (found, _, _) = tt.get_entry(424249, 0, 100, 6, 0, 0);
+        assert!(!found);
+        assert_eq!(tt.probe(424249).expect("entry must be present").depth, 7);
+
+        let tt2 = TranspositionTable::new(1024);
+        tt2.submit_entry_with_eval(424250, 150, 10, 8, m, TranspositionEntryType::Alpha);
+        let (found, _, _) = tt2.get_entry(424250, 0, 100, 6, 0, 0);
+        assert!(!found);
+        assert_eq!(tt2.probe(424250).expect("entry must be present").depth, 7);
+
+        let tt3 = TranspositionTable::new(1024);
+        tt3.submit_entry_with_eval(424251, 50, 10, 8, m, TranspositionEntryType::Alpha);
+        let (found, score, _) = tt3.get_entry(424251, 100, 200, 5, 0, 0);
+        assert!(found);
+        assert_eq!(score, 50);
+        assert_eq!(tt3.probe(424251).expect("entry must be present").depth, 8);
+    }
+
+    #[test]
+    fn test_tt_verify_after_move() {
+        assert!(TranspositionTable::needs_tt_move_verify(7));
+        assert!(!TranspositionTable::needs_tt_move_verify(6));
+        assert!(TranspositionTable::verify_tt_cutoff(50, 40, None));
+        assert!(TranspositionTable::verify_tt_cutoff(50, 40, Some(-60)));
+        assert!(!TranspositionTable::verify_tt_cutoff(50, 40, Some(10)));
+
+        let tt = TranspositionTable::new(1024);
+        let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        tt.submit_entry_with_eval(424252, 50, 20, 8, m, TranspositionEntryType::Exact);
+        let (found, score, got) =
+            tt.get_entry_with_verify(424252, 0, 40, 8, 0, 0, Some(-60));
+        assert!(found);
+        assert_eq!(score, 50);
+        assert_eq!(got, Some(m));
+        let (found, _, got) = tt.get_entry_with_verify(424252, 0, 40, 8, 0, 0, Some(10));
+        assert!(!found);
+        assert_eq!(got, Some(m));
+        let (found, _, _) = tt.get_entry_with_verify(424252, 0, 40, 8, 0, 0, None);
+        assert!(found);
+        let (found, _, _) = tt.get_entry_with_verify(424252, 0, 40, 6, 0, 0, Some(10));
+        assert!(found);
     }
 }

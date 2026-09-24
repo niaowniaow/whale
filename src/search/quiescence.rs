@@ -239,7 +239,16 @@ pub fn search(
                 } else {
                     board_state.piece_mapping[move_obj.target as usize]
                 };
-                let futility_val = futility_base + captured_piece.see_value();
+                let moved_for_hist = board_state.get_piece_on(move_obj.source);
+                let capt_hist = if moved_for_hist >= 0 && captured_piece != Piece::None {
+                    search_state.move_ordering.capture_history[moved_for_hist as usize]
+                        [move_obj.target as usize][captured_piece as usize] as i32
+                } else {
+                    0
+                };
+                let futility_val = (futility_base as i32 + captured_piece.see_value() as i32
+                    + capt_hist * 134 / 1024)
+                    .clamp(-30000, 30000) as i16;
                 if futility_val <= alpha {
                     best_value = best_value.max(futility_val);
                     continue;

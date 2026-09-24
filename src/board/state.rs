@@ -3,7 +3,7 @@ use crate::bitboard::lookups::{
     get_bishop_attacks_from_table, get_rook_attacks_from_table, king_attacks, knight_attacks,
     pawn_attacks,
 };
-use crate::board::history::History;
+use crate::board::history::{History, StateCache};
 use crate::common::castle::Castle;
 use crate::common::constants::{PIECES, SIDES, SQUARES};
 use crate::common::game_phase::{add_phase, get_clipped_phase, remove_phase};
@@ -237,6 +237,7 @@ impl BoardState {
         self.occupancies[side].set_bit(sq);
         self.piece_mapping[sq] = piece;
         self.phase = add_phase(self.phase, piece);
+        self.history.invalidate_cache();
 
         if update_nnue {
             self.nnue_add_piece(square, side, piece);
@@ -265,6 +266,7 @@ impl BoardState {
         self.occupancies[Side::Black].clear_bit(sq);
         self.piece_mapping[sq] = Piece::None;
         self.phase = remove_phase(self.phase, piece);
+        self.history.invalidate_cache();
 
         if update_nnue {
             self.nnue_remove_piece(square, side, piece);
@@ -485,6 +487,9 @@ impl BoardState {
     }
 
     pub fn is_in_check(&self, side: Side) -> bool {
+        if side == self.side_to_move && self.history.is_cache_valid() {
+            return self.history.current_cache().checkers != 0;
+        }
         let king_bb = self.get_pieces(side, Piece::King);
         if king_bb.is_empty() {
             return false;
@@ -700,8 +705,172 @@ impl BoardState {
         threats
     }
 
+    pub fn compute_pinners(&self, side: Side) -> Bitboard {
+        let king_bb = self.get_pieces(side, Piece::King);
+        if king_bb.is_empty() {
+            return Bitboard(0);
+        }
+        let ksq = Square::from(king_bb.get_lsb() as usize);
+        let them = side.other();
+        let occ = self.occupancy();
+        let own_occ = self.occupancies[side].0;
+        let enemy_bq =
+            self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
+        let enemy_rq = self.get_pieces(them, Piece::Rook).0 | self.get_pieces(them, Piece::Queen).0;
+        let diag = get_bishop_attacks_from_table(ksq, Bitboard(0)).0 & enemy_bq;
+        let orth = get_rook_attacks_from_table(ksq, Bitboard(0)).0 & enemy_rq;
+        let mut pinners = 0u64;
+        let mut cand = diag | orth;
+        while cand != 0 {
+            let psq = cand.trailing_zeros() as usize;
+            cand &= cand - 1;
+            let ray = BETWEEN_BB[ksq as usize][psq] & occ.0;
+            if ray != 0 && (ray & (ray - 1)) == 0 && (ray & own_occ) != 0 {
+                pinners |= 1u64 << psq;
+            }
+        }
+        Bitboard(pinners)
+    }
+
+    pub fn compute_all_threats(&self, attacking_side: Side) -> Bitboard {
+        let pawns = self.get_pieces(attacking_side, Piece::Pawn).0;
+        let mut threats = if attacking_side == Side::White {
+            ((pawns >> 9) & !crate::bitboard::attacks::FILE_H)
+                | ((pawns >> 7) & !crate::bitboard::attacks::FILE_A)
+        } else {
+            ((pawns << 7) & !crate::bitboard::attacks::FILE_H)
+                | ((pawns << 9) & !crate::bitboard::attacks::FILE_A)
+        };
+        let mut knights = self.get_pieces(attacking_side, Piece::Knight);
+        while !knights.is_empty() {
+            let sq = knights.get_lsb();
+            knights.clear_lsb();
+            threats |= knight_attacks()[sq as usize];
+        }
+        let stm = self.side_to_move;
+        let mut occ = self.occupancy();
+        if attacking_side != stm {
+            let kbb = self.get_pieces(stm, Piece::King);
+            if !kbb.is_empty() {
+                occ = Bitboard(occ.0 ^ (1u64 << (kbb.get_lsb() as usize)));
+            }
+        } else {
+            let kbb = self.get_pieces(stm.other(), Piece::King);
+            if !kbb.is_empty() {
+                occ = Bitboard(occ.0 ^ (1u64 << (kbb.get_lsb() as usize)));
+            }
+        }
+        let enemy_bq = self.get_pieces(attacking_side, Piece::Bishop).0
+            | self.get_pieces(attacking_side, Piece::Queen).0;
+        let mut bishops = Bitboard(enemy_bq);
+        while !bishops.is_empty() {
+            let sq = bishops.get_lsb();
+            bishops.clear_lsb();
+            threats |= get_bishop_attacks_from_table(Square::from(sq as usize), occ).0;
+        }
+        let enemy_rq = self.get_pieces(attacking_side, Piece::Rook).0
+            | self.get_pieces(attacking_side, Piece::Queen).0;
+        let mut rooks = Bitboard(enemy_rq);
+        while !rooks.is_empty() {
+            let sq = rooks.get_lsb();
+            rooks.clear_lsb();
+            threats |= get_rook_attacks_from_table(Square::from(sq as usize), occ).0;
+        }
+        let kbb = self.get_pieces(attacking_side, Piece::King);
+        if !kbb.is_empty() {
+            threats |= king_attacks()[kbb.get_lsb() as usize];
+        }
+        Bitboard(threats)
+    }
+
+    pub fn update_node_cache(&mut self) {
+        let stm = self.side_to_move;
+        let them = stm.other();
+        let checkers = self.checkers(stm).0;
+        let pinned = self.pinned_pieces(stm).0;
+        let pinned_them = self.pinned_pieces(them).0;
+        let pinners = self.compute_pinners(stm).0;
+        let all_threats = self.compute_all_threats(them).0;
+        let check_squares = self.check_squares(them);
+        let threats_us = self.threat_by_lesser(stm);
+        let threats_them = self.threat_by_lesser(them);
+        self.history.store_cache(StateCache {
+            checkers,
+            pinned,
+            pinners,
+            pinned_them,
+            all_threats,
+            check_squares,
+            threats_us,
+            threats_them,
+        });
+    }
+
+    pub fn refresh_cache(&mut self) {
+        self.update_node_cache();
+    }
+
+    pub fn ensure_cache_fresh(&mut self) {
+        if !self.history.is_cache_valid() {
+            self.update_node_cache();
+        }
+    }
+
+    pub fn cached_checkers(&self) -> u64 {
+        if self.history.is_cache_valid() {
+            return self.history.current_cache().checkers;
+        }
+        self.checkers(self.side_to_move).0
+    }
+
+    pub fn cached_pinned(&self) -> u64 {
+        if self.history.is_cache_valid() {
+            return self.history.current_cache().pinned;
+        }
+        self.pinned_pieces(self.side_to_move).0
+    }
+
+    pub fn cached_pinners(&self) -> u64 {
+        if self.history.is_cache_valid() {
+            return self.history.current_cache().pinners;
+        }
+        self.compute_pinners(self.side_to_move).0
+    }
+
+    pub fn cached_all_threats(&self) -> u64 {
+        if self.history.is_cache_valid() {
+            return self.history.current_cache().all_threats;
+        }
+        self.compute_all_threats(self.side_to_move.other()).0
+    }
+
+    pub fn cached_check_squares(&self) -> [u64; 6] {
+        if self.history.is_cache_valid() {
+            return self.history.current_cache().check_squares;
+        }
+        self.check_squares(self.side_to_move.other())
+    }
+
+    pub fn cached_threats_us(&self) -> [u64; 6] {
+        if self.history.is_cache_valid() {
+            return self.history.current_cache().threats_us;
+        }
+        self.threat_by_lesser(self.side_to_move)
+    }
+
+    pub fn cached_threats_them(&self) -> [u64; 6] {
+        if self.history.is_cache_valid() {
+            return self.history.current_cache().threats_them;
+        }
+        self.threat_by_lesser(self.side_to_move.other())
+    }
+
     pub fn is_legal(&self, m: Move) -> bool {
         let us = self.side_to_move;
+        if self.history.is_cache_valid() {
+            let c = self.history.current_cache();
+            return self.is_legal_with(m, c.checkers, c.pinned);
+        }
         self.is_legal_with(m, self.checkers(us).0, self.pinned_pieces(us).0)
     }
 
@@ -767,6 +936,37 @@ impl BoardState {
                 if !castle_ok {
                     return false;
                 }
+                if self.history.is_cache_valid() {
+                    let c = self.history.current_cache();
+                    let threats = c.all_threats;
+                    let pinned = c.pinned;
+                    let rook_sq = if us == Side::White {
+                        if to == Square::G1 {
+                            Square::H1 as usize
+                        } else {
+                            Square::A1 as usize
+                        }
+                    } else if to == Square::G8 {
+                        Square::H8 as usize
+                    } else {
+                        Square::A8 as usize
+                    };
+                    if (pinned & (1u64 << rook_sq)) != 0 {
+                        return false;
+                    }
+                    let transit = if to > from {
+                        Square::from(from as usize + 1)
+                    } else {
+                        Square::from(from as usize - 1)
+                    };
+                    if (threats & (1u64 << (ksq as usize))) != 0 {
+                        return false;
+                    }
+                    if (threats & (1u64 << (transit as usize))) != 0 {
+                        return false;
+                    }
+                    return (threats & (1u64 << (to as usize))) == 0;
+                }
                 if self.is_square_attacked(ksq, them) {
                     return false;
                 }
@@ -780,11 +980,62 @@ impl BoardState {
                 }
                 return !self.is_square_attacked(to, them);
             }
+            if self.history.is_cache_valid() {
+                let c = self.history.current_cache();
+                return (c.all_threats & (1u64 << (to as usize))) == 0;
+            }
             let occ = Bitboard(self.occupancy().0 ^ (1u64 << (from as usize)));
             return !self.is_square_attacked_with_occ(to, them, occ);
         }
 
         if m.move_type == MoveType::EnPassant {
+            if self.history.is_cache_valid() {
+                let c = self.history.current_cache();
+                if (c.pinned & (1u64 << (from as usize))) != 0
+                    && (LINE_BB[ksq as usize][from as usize] & (1u64 << (to as usize))) == 0
+                {
+                    return false;
+                }
+                let cap_sq = Square::from_rank_file(from.rank(), to.file());
+                let occ_after = self.occupancy().0 ^ (1u64 << (from as usize))
+                    ^ (1u64 << (cap_sq as usize))
+                    | (1u64 << (to as usize));
+                let enemy_bq = self.get_pieces(them, Piece::Bishop).0
+                    | self.get_pieces(them, Piece::Queen).0;
+                let enemy_rq = self.get_pieces(them, Piece::Rook).0
+                    | self.get_pieces(them, Piece::Queen).0;
+                let mut sliders = enemy_bq | enemy_rq;
+                while sliders != 0 {
+                    let psq = sliders.trailing_zeros() as usize;
+                    sliders &= sliders - 1;
+                    if LINE_BB[ksq as usize][psq] == 0 {
+                        continue;
+                    }
+                    let between = BETWEEN_BB[ksq as usize][psq] & occ_after;
+                    if between != 0 {
+                        continue;
+                    }
+                    let is_diag = get_bishop_attacks_from_table(ksq, Bitboard(0)).0
+                        & (1u64 << psq)
+                        != 0;
+                    if is_diag {
+                        if (enemy_bq & (1u64 << psq)) != 0 {
+                            return false;
+                        }
+                    } else if (enemy_rq & (1u64 << psq)) != 0 {
+                        return false;
+                    }
+                }
+                let enemy_pawns =
+                    self.get_pieces(them, Piece::Pawn).0 & !(1u64 << (cap_sq as usize));
+                if (enemy_pawns & pawn_attacks()[us as usize][ksq as usize]) != 0 {
+                    return false;
+                }
+                if (self.get_pieces(them, Piece::Knight).0 & knight_attacks()[ksq as usize]) != 0 {
+                    return false;
+                }
+                return true;
+            }
             let cap_sq = Square::from_rank_file(from.rank(), to.file());
             let occ = Bitboard(
                 self.occupancy().0 ^ (1u64 << (from as usize)) ^ (1u64 << (cap_sq as usize))

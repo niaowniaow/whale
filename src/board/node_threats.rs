@@ -22,6 +22,17 @@ pub struct NodeThreats {
 impl NodeThreats {
     #[inline(always)]
     pub fn compute(board: &BoardState) -> Self {
+        if board.history.is_cache_valid() {
+            let c = board.history.current_cache();
+            return Self {
+                checkers: c.checkers,
+                pinned: c.pinned,
+                pinned_them: c.pinned_them,
+                threats_us: c.threats_us,
+                threats_them: c.threats_them,
+                check_squares: c.check_squares,
+            };
+        }
         let stm = board.side_to_move;
         Self {
             checkers: board.checkers(stm).0,
@@ -35,6 +46,17 @@ impl NodeThreats {
 
     #[inline(always)]
     pub fn compute_for_qsearch(board: &BoardState) -> Self {
+        if board.history.is_cache_valid() {
+            let c = board.history.current_cache();
+            return Self {
+                checkers: c.checkers,
+                pinned: c.pinned,
+                pinned_them: 0,
+                threats_us: c.threats_us,
+                threats_them: [0; 6],
+                check_squares: [0; 6],
+            };
+        }
         let stm = board.side_to_move;
         Self {
             checkers: board.checkers(stm).0,
@@ -48,6 +70,17 @@ impl NodeThreats {
 
     #[inline(always)]
     pub fn compute_for_legality(board: &BoardState) -> Self {
+        if board.history.is_cache_valid() {
+            let c = board.history.current_cache();
+            return Self {
+                checkers: c.checkers,
+                pinned: c.pinned,
+                pinned_them: 0,
+                threats_us: [0; 6],
+                threats_them: [0; 6],
+                check_squares: [0; 6],
+            };
+        }
         let stm = board.side_to_move;
         Self {
             checkers: 0,
@@ -90,6 +123,51 @@ impl NodeThreats {
             return 0;
         }
         (board.get_pieces(board.side_to_move, piece).0 & self.threats_us[idx]).count_ones()
+    }
+
+    #[inline(always)]
+    pub fn cached_checkers(board: &BoardState) -> u64 {
+        if board.history.is_cache_valid() {
+            return board.history.current_cache().checkers;
+        }
+        board.checkers(board.side_to_move).0
+    }
+
+    #[inline(always)]
+    pub fn cached_pinned(board: &BoardState) -> u64 {
+        if board.history.is_cache_valid() {
+            return board.history.current_cache().pinned;
+        }
+        board.pinned_pieces(board.side_to_move).0
+    }
+
+    #[inline(always)]
+    pub fn cached_pinners(board: &BoardState) -> u64 {
+        if board.history.is_cache_valid() {
+            return board.history.current_cache().pinners;
+        }
+        0
+    }
+
+    #[inline(always)]
+    pub fn cached_all_threats(board: &BoardState) -> u64 {
+        if board.history.is_cache_valid() {
+            return board.history.current_cache().all_threats;
+        }
+        0
+    }
+
+    #[inline(always)]
+    pub fn cached_check_squares(board: &BoardState) -> [u64; 6] {
+        if board.history.is_cache_valid() {
+            return board.history.current_cache().check_squares;
+        }
+        board.check_squares(board.side_to_move.other())
+    }
+
+    #[inline(always)]
+    pub fn from_cache(board: &BoardState) -> Self {
+        Self::compute(board)
     }
 }
 

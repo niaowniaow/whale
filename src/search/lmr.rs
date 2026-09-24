@@ -1,6 +1,35 @@
 use crate::common::constants::MAX_SEARCH_DEPTH;
+use std::cell::RefCell;
 
-pub const MAX_REDUCTION: u8 = 3;
+thread_local! {
+    static CUTOFF_COUNTS: RefCell<[u8; 64]> = RefCell::new([0; 64]);
+}
+
+#[inline(always)]
+pub fn record_cutoff(ply: u8) {
+    CUTOFF_COUNTS.with(|c| {
+        let mut arr = c.borrow_mut();
+        let idx = (ply as usize).min(63);
+        arr[idx] = arr[idx].saturating_add(1);
+    });
+}
+
+#[inline(always)]
+pub fn cutoff_count(ply: u8) -> u8 {
+    CUTOFF_COUNTS.with(|c| c.borrow()[(ply as usize).min(63)])
+}
+
+#[inline(always)]
+pub fn clear_cutoff_counts() {
+    CUTOFF_COUNTS.with(|c| *c.borrow_mut() = [0; 64]);
+}
+
+#[inline(always)]
+pub fn reset_cutoff(ply: u8) {
+    CUTOFF_COUNTS.with(|c| {
+        c.borrow_mut()[(ply as usize).min(63)] = 0;
+    });
+}
 
 #[derive(Clone, Debug)]
 pub struct LmrTable {
@@ -25,7 +54,7 @@ impl LmrTable {
                 if d >= 3 && m >= 3 {
                     let red = base + ((d as f64).ln() * (m as f64).ln() / div);
                     let rounded = red.round() as i32;
-                    *cell = rounded.clamp(0, (d as i32 - 1).min(MAX_REDUCTION as i32)) as u8;
+                    *cell = rounded.clamp(0, d as i32 - 1) as u8;
                 }
             }
         }
@@ -65,6 +94,10 @@ pub struct LmrQuery {
     pub cut_node: bool,
 
     pub tt_pv: bool,
+    pub cutoff_cnt: u8,
+    pub all_node: bool,
+    pub tt_capture: bool,
+    pub is_tt_move: bool,
 }
 
 #[inline(always)]
@@ -136,7 +169,32 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
         }
     }
 
+    if query.tt_capture {
+        reduction += 1;
+    }
+    if query.cutoff_cnt > 1 {
+        reduction += 1;
+        if query.cutoff_cnt > 2 {
+            reduction += 1;
+        }
+        if query.all_node {
+            reduction += 1;
+        }
+    } else if query.is_tt_move {
+        reduction = reduction.saturating_sub(2);
+    }
+    if query.all_node {
+        reduction += reduction * 276 / (256 * query.depth as i32 + 268);
+    }
+
     reduction.clamp(0, query.depth as i32 - 1) as u8
+}
+
+#[inline(always)]
+pub fn deepen_adjustment(reduced_depth: u8, new_depth: u8, score: i16, best_score: i16) -> i8 {
+    let do_deeper = reduced_depth < new_depth && score > best_score.saturating_add(53);
+    let do_shallower = score < best_score.saturating_add(8);
+    (do_deeper as i8) - (do_shallower as i8)
 }
 
 #[inline(always)]
@@ -155,7 +213,7 @@ pub fn get_reduction(
     } else {
         red
     };
-    red.min(3).min(depth - 1)
+    red.min(depth.saturating_sub(1))
 }
 
 #[cfg(test)]
@@ -194,6 +252,10 @@ mod tests {
                     structural_disagreement: 0,
                     cut_node: false,
                     tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
                 };
                 let r = compute_reduction(&query, &table, &divisors);
                 assert!(r < d);
@@ -221,6 +283,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
         };
         let pv_query = LmrQuery {
             is_pv_node: true,
@@ -257,6 +323,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
         };
         let improving_query = LmrQuery {
             is_improving: true,
@@ -287,6 +357,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
         };
         let crisis_query = LmrQuery {
             momentum: -150,
@@ -323,6 +397,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
         };
         let no_pv_query = LmrQuery {
             found_pv: false,
@@ -353,6 +431,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
         };
         let dis_query = LmrQuery {
             structural_disagreement: 150,
@@ -403,6 +485,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
         };
         assert_eq!(compute_reduction(&base, &table, &divisors), 1);
         let shallow = LmrQuery { depth: 1, ..base };
@@ -429,6 +515,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
         };
         let hi = compute_reduction(&base, &table, &divisors);
         let lo_query = LmrQuery {
@@ -477,6 +567,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
+                    cutoff_cnt: 0,
+                    all_node: false,
+                    tt_capture: false,
+                    is_tt_move: false,
         };
         let r_base = compute_reduction(&base, &table, &divisors);
         let r_cut = compute_reduction(

@@ -1,8 +1,18 @@
 use crate::common::side::Side;
+use std::sync::atomic::AtomicU32;
+use std::sync::atomic::Ordering;
 
 pub const DRAW_BASE: i16 = 0;
 
 pub const CONTEMPT_LIMIT: i16 = 200;
+
+pub const ATTENUATION_START_CP: i32 = 10;
+
+pub const ATTENUATION_END_CP: i32 = 250;
+
+pub const DEFAULT_DRAW_RATE_MILLIS: u32 = 420;
+
+static DRAW_RATE_MILLIS: AtomicU32 = AtomicU32::new(DEFAULT_DRAW_RATE_MILLIS);
 
 #[inline(always)]
 pub fn draw_score(nodes: u64) -> i16 {
@@ -11,6 +21,51 @@ pub fn draw_score(nodes: u64) -> i16 {
     } else {
         DRAW_BASE + 1
     }
+}
+
+#[inline(always)]
+pub fn draw_score_for_side(stm: Side, nodes: u64) -> i16 {
+    let base = draw_score(nodes);
+    if stm == Side::White {
+        base
+    } else if stm == Side::Black {
+        base.saturating_neg()
+    } else {
+        base
+    }
+}
+
+#[inline(always)]
+pub fn attenuation_factor(score: i16) -> f32 {
+    let a = (score as i32).abs() as f32;
+    let start = ATTENUATION_START_CP as f32;
+    let end = ATTENUATION_END_CP as f32;
+    if a <= start {
+        1.0
+    } else if a >= end {
+        0.0
+    } else {
+        1.0 - (a - start) / (end - start)
+    }
+}
+
+#[inline(always)]
+pub fn elo_to_contempt_cp(elo_diff: i32) -> i16 {
+    let v = elo_diff / 4;
+    v.clamp(-CONTEMPT_LIMIT as i32, CONTEMPT_LIMIT as i32) as i16
+}
+
+#[inline(always)]
+pub fn elo_win_probability(elo_diff: i32) -> f32 {
+    let e = elo_diff as f32;
+    1.0 / (1.0 + 10.0f32.powf(-e / 400.0))
+}
+
+#[inline(always)]
+pub fn contempt_from_elo_diff(score: i16, elo_diff: i32) -> i16 {
+    let c = elo_to_contempt_cp(elo_diff);
+    let att = attenuation_factor(score);
+    ((c as f32) * att).round() as i16
 }
 
 pub fn apply_contempt(
@@ -25,15 +80,98 @@ pub fn apply_contempt(
     if c == 0 && d == 0 {
         return score;
     }
-    if score.abs() > 10 {
+    let att = attenuation_factor(score);
+    if att <= 0.0 {
         return score;
     }
-
     let contempt = if stm == engine_side { c } else { -c };
-    score.saturating_add(d).saturating_sub(contempt)
+    let scaled_contempt = ((contempt as f32) * att).round() as i16;
+    let scaled_draw = ((d as f32) * att).round() as i16;
+    score.saturating_add(scaled_draw).saturating_sub(scaled_contempt)
 }
 
-pub fn cp_to_wdl(cp: i16) -> (u16, u16, u16) {
+#[inline(always)]
+pub fn apply_contempt_search(
+    score: i16,
+    stm: Side,
+    engine_side: Side,
+    contempt_cp: i16,
+    draw_score_cp: i16,
+) -> i16 {
+    apply_contempt(score, stm, engine_side, contempt_cp, draw_score_cp)
+}
+
+#[inline(always)]
+pub fn apply_contempt_display(
+    search_score: i16,
+    stm: Side,
+    engine_side: Side,
+    contempt_cp: i16,
+) -> i16 {
+    let c = contempt_cp.clamp(-CONTEMPT_LIMIT, CONTEMPT_LIMIT);
+    if c == 0 {
+        return search_score;
+    }
+    let att = attenuation_factor(search_score);
+    if att <= 0.0 {
+        return search_score;
+    }
+    let contempt = if stm == engine_side { c } else { -c };
+    let scaled = ((contempt as f32) * att).round() as i16;
+    search_score.saturating_add(scaled)
+}
+
+#[inline(always)]
+pub fn get_draw_score(
+    stm: Side,
+    engine_side: Side,
+    nodes: u64,
+    contempt_cp: i16,
+    draw_score_cp: i16,
+) -> i16 {
+    let base = draw_score_for_side(stm, nodes);
+    apply_contempt_search(base, stm, engine_side, contempt_cp, draw_score_cp)
+}
+
+#[inline(always)]
+pub fn get_display_draw_score(stm: Side, nodes: u64, draw_score_cp: i16) -> i16 {
+    let d = draw_score_cp.clamp(-CONTEMPT_LIMIT, CONTEMPT_LIMIT);
+    if stm == Side::White {
+        draw_score(nodes).saturating_add(d)
+    } else if stm == Side::Black {
+        draw_score(nodes).saturating_neg().saturating_add(d)
+    } else {
+        draw_score(nodes).saturating_add(d)
+    }
+}
+
+#[inline(always)]
+pub fn search_draw_value(
+    stm: Side,
+    engine_side: Side,
+    nodes: u64,
+    contempt_cp: i16,
+    draw_score_cp: i16,
+) -> i16 {
+    get_draw_score(stm, engine_side, nodes, contempt_cp, draw_score_cp)
+}
+
+#[inline(always)]
+pub fn display_draw_value(stm: Side, nodes: u64, draw_score_cp: i16) -> i16 {
+    get_display_draw_score(stm, nodes, draw_score_cp)
+}
+
+pub fn set_draw_rate(draw_rate: f32) {
+    let v = (draw_rate.clamp(0.0, 1.0) * 1000.0).round() as u32;
+    DRAW_RATE_MILLIS.store(v, Ordering::Relaxed);
+}
+
+#[inline(always)]
+pub fn get_draw_rate() -> f32 {
+    DRAW_RATE_MILLIS.load(Ordering::Relaxed) as f32 / 1000.0
+}
+
+pub fn cp_to_wdl_with_draw_rate(cp: i16, draw_rate: f32) -> (u16, u16, u16) {
     const MATE_CP: i32 = 29_000;
     let v = cp as i32;
     if v >= MATE_CP {
@@ -42,15 +180,20 @@ pub fn cp_to_wdl(cp: i16) -> (u16, u16, u16) {
     if v <= -MATE_CP {
         return (0, 0, 1000);
     }
-
     let w = 1000.0 / (1.0 + (-f64::from(v) / 220.0).exp());
-    let draw = (-(f64::from(v.abs()) / 180.0)).exp() * 420.0;
+    let rate = f64::from(draw_rate.clamp(0.0, 1.0));
+    let draw = (-(f64::from(v.abs()) / 180.0)).exp() * rate * 1000.0;
     let mut wi = w.round() as i32;
     let mut di = draw.round() as i32;
     wi = wi.clamp(0, 1000);
     di = di.clamp(0, 1000 - wi);
     let li = 1000 - wi - di;
     (wi as u16, di as u16, li as u16)
+}
+
+pub fn cp_to_wdl(cp: i16) -> (u16, u16, u16) {
+    let rate = get_draw_rate();
+    cp_to_wdl_with_draw_rate(cp, rate)
 }
 
 #[inline(always)]

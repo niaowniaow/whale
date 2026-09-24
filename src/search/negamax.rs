@@ -30,6 +30,8 @@ pub fn search(
     pv_table: &mut PvTable,
     search_state: &mut SearchState,
 ) -> i16 {
+    lmr::clear_cutoff_counts();
+    nmp::clear_nmp_state();
     let mut ctx = SearchContext {
         allow_null_move: true,
         on_pv_path: true,
@@ -58,6 +60,8 @@ fn search_internal(
     if is_cancelled(ctx) {
         return 0;
     }
+    lmr::reset_cutoff(ply.saturating_add(2));
+    nmp::reset_prior_fail_high(ply.saturating_add(1));
 
     let is_pv_node = beta > 1 + alpha;
 
@@ -248,6 +252,7 @@ fn search_internal(
     };
 
     let mut singular_extension: i8 = 0;
+    let mut singular_depth_bonus: u8 = 0;
     if !in_check
         && ctx.excluded_move.is_none()
         && depth >= 6
@@ -259,61 +264,78 @@ fn search_internal(
         if entry.depth >= depth - 3 && entry.entry_type != tt::TranspositionEntryType::Alpha {
             let original_score =
                 tt::TranspositionTable::retrieve_score(entry.score, ply as i32, halfmove);
-            let margin = (depth as i16) * 2;
-            let mut singular_beta = original_score - margin;
-            if singular_beta < -constants::MAX_CENTIPAWN_EVAL {
-                singular_beta = -constants::MAX_CENTIPAWN_EVAL;
-            }
+            let tt_pv_sing = is_pv_node || tt_entry.is_some();
+            let tt_capture_sing = tt_best
+                .map(|m| m.is_capture() || m.is_promotion())
+                .unwrap_or(false);
+            let corr_raw =
+                ctx.search_state.correction_history.get_correction(board_state, previous_move)
+                    as i32;
+            let corr_adj = (corr_raw.abs() / 198368).min(1000) as i16;
+            let need = 6 + ((tt_pv_sing && !is_pv_node) as u8);
+            if depth >= need && original_score.abs() < mate_bound {
+                let singular_beta = (original_score
+                    - (59 + 66 * ((tt_pv_sing && !is_pv_node) as i16)) * depth as i16 / 63)
+                    .max(-constants::MAX_CENTIPAWN_EVAL);
 
-            let mut se_pv_table = PvTable::new();
+                let mut se_pv_table = PvTable::new();
 
-            let (se_pv, se_state) = (&mut se_pv_table, &mut *ctx.search_state);
-            let mut se_ctx = SearchContext {
-                allow_null_move: false,
-                on_pv_path: false,
-                previous_pv: ctx.previous_pv,
-                excluded_move: tt_best,
-                cut_node,
-                gtp_graph: ctx.gtp_graph,
-                gtp_parent: ctx.gtp_parent,
-                pv_table: se_pv,
-                search_state: se_state,
-                cancellation_token: ctx.cancellation_token,
-            };
+                let (se_pv, se_state) = (&mut se_pv_table, &mut *ctx.search_state);
+                let mut se_ctx = SearchContext {
+                    allow_null_move: false,
+                    on_pv_path: false,
+                    previous_pv: ctx.previous_pv,
+                    excluded_move: tt_best,
+                    cut_node,
+                    gtp_graph: ctx.gtp_graph,
+                    gtp_parent: ctx.gtp_parent,
+                    pv_table: se_pv,
+                    search_state: se_state,
+                    cancellation_token: ctx.cancellation_token,
+                };
 
-            let se_score = search_internal(
-                board_state,
-                (depth - 1) / 2,
-                ply,
-                singular_beta - 1,
-                singular_beta,
-                previous_move,
-                &mut se_ctx,
-            );
+                let se_score = search_internal(
+                    board_state,
+                    (depth - 1) / 2,
+                    ply,
+                    singular_beta - 1,
+                    singular_beta,
+                    previous_move,
+                    &mut se_ctx,
+                );
 
-            if is_cancelled(ctx) {
-                return 0;
-            }
-
-            if se_score < singular_beta {
-                if se_score < singular_beta - margin {
-                    singular_extension = 2;
-                } else {
-                    singular_extension = 1;
+                if is_cancelled(ctx) {
+                    return 0;
                 }
-            } else if se_score >= beta {
-                if has_static_eval && !in_check && se_score > static_eval {
-                    let bonus =
-                        (((se_score as i32 - static_eval as i32) * ((depth as i32 - 1) / 2) * 177)
-                            / 1024)
-                            .clamp(-256, 256);
-                    ctx.search_state
-                        .correction_history
-                        .update(board_state, previous_move, bonus);
+
+                if se_score < singular_beta {
+                    let double_margin = -2
+                        + 204 * (is_pv_node as i16)
+                        - 152 * ((!tt_capture_sing) as i16)
+                        - corr_adj;
+                    let triple_margin = 70
+                        + 279 * (is_pv_node as i16)
+                        - 188 * ((!tt_capture_sing) as i16)
+                        + 81 * (tt_pv_sing as i16)
+                        - corr_adj;
+                    singular_extension = 1
+                        + (se_score < singular_beta - double_margin) as i8
+                        + (se_score < singular_beta - triple_margin) as i8;
+                    singular_depth_bonus = 1;
+                } else if se_score >= beta && se_score.abs() < mate_bound {
+                    if has_static_eval && !in_check && se_score > static_eval {
+                        let bonus =
+                            (((se_score as i32 - static_eval as i32) * ((depth as i32 - 1) / 2) * 177)
+                                / 1024)
+                                .clamp(-256, 256);
+                        ctx.search_state
+                            .correction_history
+                            .update(board_state, previous_move, bonus);
+                    }
+                    return se_score;
+                } else if original_score >= beta || cut_node {
+                    singular_extension = -3;
                 }
-                return se_score;
-            } else if original_score >= beta {
-                singular_extension = -1;
             }
         }
     }
@@ -357,6 +379,16 @@ fn search_internal(
         if momentum < -100 {
             margin += 60;
         }
+        let tt_hit_rfp = tt_entry.is_some();
+        let opponent_worsening = ply > 0
+            && ctx.search_state.eval_stack[(ply as usize).saturating_sub(1)] != i16::MIN
+            && (static_eval as i32) > -(ctx.search_state.eval_stack[(ply as usize).saturating_sub(1)] as i32);
+        if !tt_hit_rfp {
+            margin = margin.saturating_sub(20 * depth as i16);
+        }
+        if opponent_worsening {
+            margin -= margin / 16;
+        }
 
         if ctx.search_state.params.cpi_enabled {
             margin += counterplay::cpi_rfp_adjust(counterplay::compute_cpi_fast(&nt).cpi);
@@ -372,7 +404,7 @@ fn search_internal(
             .ras
             .rfp_margin_adjustment(ply as usize, depth);
         if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
-            return static_eval;
+            return ((661 * beta as i32 + 363 * static_eval as i32) / 1024) as i16;
         }
 
         let small_prob_beta = beta.saturating_add(380);
@@ -386,22 +418,15 @@ fn search_internal(
             }
         }
 
-        if depth >= 4 && ctx.excluded_move.is_none() && !beta_is_mate {
-            let prob_margin = if is_improving {
-                ctx.search_state
-                    .params
-                    .probcut_margin
-                    .saturating_sub(50)
-                    .max(100)
-            } else {
-                ctx.search_state.params.probcut_margin
-            };
-            let prob_beta = beta.saturating_add(prob_margin);
+        if depth >= 3 && ctx.excluded_move.is_none() && !beta_is_mate {
+            let prob_beta = beta.saturating_add(241 - 64 * (is_improving as i16));
             if prob_beta < mate_bound
                 && prob_beta > -mate_bound
                 && static_eval >= prob_beta.saturating_sub(50)
             {
-                let prob_depth = depth.saturating_sub(4).max(1);
+                let prob_depth = depth
+                    .saturating_sub(if is_improving { 5 } else { 3 })
+                    .max(1);
                 let mut prob_captures = crate::common::move_list::MoveList::new();
                 board_state.generate_captures(&mut prob_captures);
                 crate::eval::move_ordering::populate_capture_scores(
@@ -511,6 +536,9 @@ fn search_internal(
             static_eval,
             beta,
             momentum,
+            cut_node,
+            ply,
+            is_improving,
         )
     {
         board_state.make_null_move();
@@ -561,64 +589,62 @@ fn search_internal(
             return 0;
         }
 
-        if score >= beta {
-            if ctx.search_state.params.nmp_verify_enabled
-                && !is_pv_node
-                && depth >= 7
-                && static_eval.saturating_sub(beta) < ctx.search_state.params.nmp_verify_margin
-            {
-                let verify_depth = depth.saturating_sub(6).max(1);
-                let verify_score = search_internal(
-                    board_state,
-                    verify_depth,
-                    ply,
-                    beta - 1,
-                    beta,
-                    previous_move,
-                    &mut SearchContext {
-                        allow_null_move: false,
-                        on_pv_path: false,
-                        previous_pv: ctx.previous_pv,
-                        excluded_move: None,
-                        cut_node: false,
-                        gtp_graph: ctx.gtp_graph,
-                        gtp_parent: ctx.gtp_parent,
-                        pv_table: &mut *ctx.pv_table,
-                        cancellation_token: ctx.cancellation_token,
-                        search_state: ctx.search_state,
-                    },
-                );
-                if is_cancelled(ctx) {
-                    return 0;
-                }
-                if verify_score < beta {
-                } else {
-                    let mate_bound = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
-                    let score = if score >= mate_bound { beta } else { score };
-                    if ctx.excluded_move.is_none() {
-                        ctx.search_state.tt.submit_entry(
-                            board_state.board_hash,
-                            tt::TranspositionTable::adjust_score(score, ply as i32, halfmove),
-                            reduced_depth,
-                            Move::NO_MOVE,
-                            TranspositionEntryType::Beta,
-                        );
-                    }
-                    return score;
-                }
-            } else {
-                let mate_bound = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
-                let score = if score >= mate_bound { beta } else { score };
+        if score >= beta && score < mate_bound {
+            if nmp::get_nmp_min_ply() != 0 || depth < 16 {
+                nmp::inc_prior_fail_high(ply);
+                let mate_bound_inner = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
+                let score_out = if score >= mate_bound_inner { beta } else { score };
                 if ctx.excluded_move.is_none() {
                     ctx.search_state.tt.submit_entry(
                         board_state.board_hash,
-                        tt::TranspositionTable::adjust_score(score, ply as i32, halfmove),
+                        tt::TranspositionTable::adjust_score(score_out, ply as i32, halfmove),
                         reduced_depth,
                         Move::NO_MOVE,
                         TranspositionEntryType::Beta,
                     );
                 }
-                return score;
+                return score_out;
+            }
+            let vern_depth = depth.saturating_sub(reduction).max(1);
+            nmp::set_nmp_min_ply(ply.saturating_add(3 * vern_depth.saturating_sub(reduction) / 4));
+            let verify_score = search_internal(
+                board_state,
+                vern_depth,
+                ply,
+                beta - 1,
+                beta,
+                previous_move,
+                &mut SearchContext {
+                    allow_null_move: false,
+                    on_pv_path: false,
+                    previous_pv: ctx.previous_pv,
+                    excluded_move: None,
+                    cut_node: false,
+                    gtp_graph: ctx.gtp_graph,
+                    gtp_parent: ctx.gtp_parent,
+                    pv_table: &mut *ctx.pv_table,
+                    cancellation_token: ctx.cancellation_token,
+                    search_state: ctx.search_state,
+                },
+            );
+            nmp::set_nmp_min_ply(0);
+            if is_cancelled(ctx) {
+                return 0;
+            }
+            if verify_score >= beta {
+                nmp::inc_prior_fail_high(ply);
+                let mate_bound_inner = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
+                let score_out = if score >= mate_bound_inner { beta } else { score };
+                if ctx.excluded_move.is_none() {
+                    ctx.search_state.tt.submit_entry(
+                        board_state.board_hash,
+                        tt::TranspositionTable::adjust_score(score_out, ply as i32, halfmove),
+                        reduced_depth,
+                        Move::NO_MOVE,
+                        TranspositionEntryType::Beta,
+                    );
+                }
+                return score_out;
             }
         }
     }
@@ -632,7 +658,7 @@ fn search_internal(
     let mut found_pv = false;
     let mut entry_type = TranspositionEntryType::Alpha;
     let mut coarse_failed_low = false;
-    let mut current_depth = depth;
+    let mut current_depth = depth.saturating_add(singular_depth_bonus).min(constants::MAX_PLY as u8 - 1);
 
     if ctx.search_state.params.iir_enabled {
         let iir_red = iir::reduction(
@@ -738,6 +764,7 @@ fn search_internal(
 
         let cap_or_promo = move_obj.is_capture() || move_obj.is_promotion();
         let mut history_score = 0;
+        let mut captured_see_val: i16 = 0;
         if !cap_or_promo {
             history_score = ctx.search_state.move_ordering.get_quiet_history_score(
                 board_state,
@@ -750,6 +777,11 @@ fn search_internal(
                 Piece::Pawn
             } else {
                 board_state.piece_mapping[move_obj.target as usize]
+            };
+            captured_see_val = if captured_piece == Piece::None {
+                0
+            } else {
+                captured_piece.see_value()
             };
             if moved_piece >= 0 && captured_piece != Piece::None {
                 history_score = ctx.search_state.move_ordering.capture_history[moved_piece as usize]
@@ -764,15 +796,19 @@ fn search_internal(
             && has_legal_moves
             && ctx.excluded_move.is_none()
         {
-            let see_threshold = if cap_or_promo {
-                -100 * current_depth as i16
+            if cap_or_promo {
+                let see_margin = 177 * current_depth as i32 + history_score * 34 / 1024;
+                let thr = (-see_margin).clamp(-30000, 30000) as i16;
+                if !board_state.see_ge(move_obj, thr) {
+                    continue;
+                }
             } else if has_non_pawn_material {
-                -35 * (current_depth as i16) * (current_depth as i16)
-            } else {
-                i16::MIN
-            };
-            if see_threshold > i16::MIN && !board_state.see_ge(move_obj, see_threshold) {
-                continue;
+                let ld = current_depth.saturating_sub(1) as i32;
+                let see_margin = 23 * ld * ld;
+                let thr = (-see_margin).clamp(-30000, 30000) as i16;
+                if !board_state.see_ge(move_obj, thr) {
+                    continue;
+                }
             }
         }
 
@@ -814,10 +850,10 @@ fn search_internal(
             } else {
                 0
             };
-        extension = extension.max(tce_ext).clamp(-1, 2);
+        extension = extension.max(tce_ext).clamp(-3, 3);
 
-        if ctx.search_state.verification_budget > 0 && is_tactical_move && extension < 2 {
-            extension = (extension + 1).min(2);
+        if ctx.search_state.verification_budget > 0 && is_tactical_move && extension < 3 {
+            extension = (extension + 1).min(3);
         }
 
         let parent_streak = if ply as usize >= constants::MAX_PLY {
@@ -839,21 +875,39 @@ fn search_internal(
         let depth = (current_depth as i16 + extension as i16).max(1) as u8;
         let excluded_here = ctx.excluded_move.is_some();
 
+        let lmr_depth_fut = depth.saturating_sub(1);
         if !is_pv_node
             && !excluded_here
-            && number_of_legal_moves > 1
             && has_static_eval
-            && depth < 3
-            && !cap_or_promo
             && !alpha_is_mate
             && has_non_pawn_material
-            && static_eval
-                .saturating_add(ctx.search_state.params.futility_margin_mult * depth as i16)
-                <= alpha
-            && !gives_check
+            && best_score.abs() < mate_bound
         {
-            board_state.unmake_move(move_obj);
-            continue;
+            if cap_or_promo {
+                if !gives_check && lmr_depth_fut < 8 {
+                    let fut_val = static_eval as i32 + 234 + 247 * lmr_depth_fut as i32
+                        + captured_see_val as i32
+                        + history_score * 134 / 1024;
+                    if fut_val <= alpha as i32 {
+                        board_state.unmake_move(move_obj);
+                        continue;
+                    }
+                }
+            } else if lmr_depth_fut < 12 && !gives_check {
+                let fut_val = static_eval as i32 + 119 * lmr_depth_fut as i32
+                    + 90 * ((static_eval > alpha) as i32)
+                    + 164;
+                if fut_val <= alpha as i32 {
+                    if best_score as i32 <= fut_val
+                        && fut_val.abs() < mate_bound as i32
+                        && fut_val.abs() < 30000
+                    {
+                        best_score = fut_val as i16;
+                    }
+                    board_state.unmake_move(move_obj);
+                    continue;
+                }
+            }
         }
 
         let mut lmp_threshold = if is_improving {
@@ -1033,6 +1087,12 @@ fn search_internal(
         }
 
         if needs_lmr {
+            let all_node_lmr = !is_pv_node && !ctx.cut_node;
+            let tt_capture_lmr = tt_best
+                .map(|m| m.is_capture() || m.is_promotion())
+                .unwrap_or(false);
+            let is_tt_move_lmr = Some(move_obj) == tt_best;
+            let cutoff_lmr = lmr::cutoff_count(ply.saturating_add(1));
             let lmr_query = lmr::LmrQuery {
                 depth,
                 move_count: number_of_legal_moves,
@@ -1050,6 +1110,10 @@ fn search_internal(
 
                 cut_node: ctx.cut_node,
                 tt_pv: is_pv_node,
+                cutoff_cnt: cutoff_lmr,
+                all_node: all_node_lmr,
+                tt_capture: tt_capture_lmr,
+                is_tt_move: is_tt_move_lmr,
             };
             let base_reduction = lmr::compute_reduction(
                 &lmr_query,
@@ -1103,6 +1167,18 @@ fn search_internal(
             }
 
             if score > alpha {
+                let reduced_for_deeper = depth.saturating_sub(1 + reduction);
+                let full_for_deeper = depth.saturating_sub(1).max(1);
+                let adj = lmr::deepen_adjustment(
+                    reduced_for_deeper,
+                    full_for_deeper,
+                    score,
+                    best_score,
+                );
+                let mut deeper_depth = depth;
+                if adj != 0 {
+                    deeper_depth = (depth as i16 + adj as i16).max(1).min(64) as u8;
+                }
                 let mut child_ctx = SearchContext {
                     allow_null_move: true,
                     on_pv_path: next_on_pv,
@@ -1117,7 +1193,7 @@ fn search_internal(
                 };
                 score = search_deeper(
                     board_state,
-                    depth,
+                    deeper_depth,
                     ply,
                     alpha,
                     beta,
@@ -1191,6 +1267,9 @@ fn search_internal(
                 ctx.search_state
                     .bmo
                     .update(current_depth, bandit_arm, early_cutoff);
+            }
+            if extension < 2 || is_pv_node {
+                lmr::record_cutoff(ply);
             }
 
             if is_cancelled(ctx) {

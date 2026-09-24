@@ -191,7 +191,9 @@ pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
                 v16::evaluate_board(board).unwrap_or(0)
             }
         } else {
-            board.ensure_accumulators_fresh();
+            if !board.accumulator_is_accurate() {
+                board.ensure_accumulators_fresh();
+            }
             evaluate_fast(board, optimism)
         };
         store_eval_cache(board_hash, optimism, halfmove, raw);
@@ -203,7 +205,9 @@ pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
 
 #[inline(always)]
 pub fn evaluate_fast(board: &mut BoardState, optimism: i32) -> i16 {
-    board.ensure_accumulators_fresh();
+    if !board.accumulator_is_accurate() {
+        board.ensure_accumulators_fresh();
+    }
     let network = Network::get_embedded();
     let s = evaluate_internal(board, network);
     let pawn_cnt = board.pieces[crate::common::piece::Piece::Pawn]
@@ -232,6 +236,26 @@ pub fn evaluate_fast(board: &mut BoardState, optimism: i32) -> i16 {
         v -= v * board.half_move_clock as i64 / 199;
     }
     v.clamp(-29000, 29000) as i16
+}
+
+#[inline(always)]
+pub fn big_net_active() -> bool {
+    v16::maintenance_active()
+}
+
+#[inline(always)]
+pub fn is_accurate(board: &BoardState) -> bool {
+    board.accumulator_is_accurate()
+}
+
+#[inline(always)]
+pub fn cached_threats_us(board: &BoardState) -> [u64; 6] {
+    board.cached_threats_us()
+}
+
+#[inline(always)]
+pub fn cached_threats_them(board: &BoardState) -> [u64; 6] {
+    board.cached_threats_them()
 }
 
 #[inline(always)]

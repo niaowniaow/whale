@@ -13,11 +13,38 @@ pub struct Accumulators {
     pub black: Accumulator,
 }
 
+impl Accumulators {
+    #[inline(always)]
+    pub fn push_from(&mut self, parent: &Self) {
+        self.white.push_from(&parent.white);
+        self.black.push_from(&parent.black);
+    }
+    #[inline(always)]
+    pub fn is_accurate_flag(&self, flag: bool) -> bool {
+        flag
+    }
+}
+
 impl Accumulator {
     pub fn new() -> Self {
         Self {
             state: [0; ACC_SIZE],
         }
+    }
+
+    #[inline(always)]
+    pub fn copy_from_other(&mut self, other: &Self) {
+        self.state.copy_from_slice(&other.state);
+    }
+
+    #[inline(always)]
+    pub fn push_from(&mut self, parent: &Self) {
+        self.copy_from_other(parent);
+    }
+
+    #[inline(always)]
+    pub fn pop_to(&mut self, parent: &mut Self) {
+        parent.copy_from_other(self);
     }
 
     #[inline(always)]

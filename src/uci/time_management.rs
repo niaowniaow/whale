@@ -91,6 +91,96 @@ pub fn calculate_optimum_with_ply(
     (optimum.max(10), maximum.max(10))
 }
 
+pub const EXTEND_SWING_CP: i16 = 60;
+
+pub const STABLE_SWING_CP: i16 = 15;
+
+pub const STABLE_COUNT_FOR_STOP: u32 = 3;
+
+pub const PIGGYBANK_SAVE_NUM: i32 = 9;
+
+pub const PIGGYBANK_SAVE_DEN: i32 = 10;
+
+#[inline(always)]
+pub fn score_swing_cp(prev_score: i16, curr_score: i16) -> i16 {
+    curr_score.saturating_sub(prev_score)
+}
+
+#[inline(always)]
+pub fn need_extend(best_move_changed: bool, swing_cp: i16) -> bool {
+    if best_move_changed {
+        return true;
+    }
+    swing_cp.abs() > EXTEND_SWING_CP
+}
+
+#[inline(always)]
+pub fn is_stable_position(best_move_changed: bool, swing_cp: i16) -> bool {
+    !best_move_changed && swing_cp.abs() <= STABLE_SWING_CP
+}
+
+#[inline(always)]
+pub fn stable_streak_next(
+    streak: u32,
+    best_move_changed: bool,
+    swing_cp: i16,
+) -> u32 {
+    if is_stable_position(best_move_changed, swing_cp) {
+        streak.saturating_add(1)
+    } else {
+        0
+    }
+}
+
+#[inline(always)]
+pub fn should_stop_early(
+    stable_streak: u32,
+    best_move_changed: bool,
+    swing_cp: i16,
+) -> bool {
+    if best_move_changed {
+        return false;
+    }
+    if swing_cp.abs() > STABLE_SWING_CP {
+        return false;
+    }
+    stable_streak >= STABLE_COUNT_FOR_STOP
+}
+
+#[inline(always)]
+pub fn extend_optimum(
+    optimum_ms: i32,
+    maximum_ms: i32,
+    best_move_changed: bool,
+    swing_cp: i16,
+) -> i32 {
+    if need_extend(best_move_changed, swing_cp) {
+        let opt = optimum_ms.max(10);
+        let mx = maximum_ms.max(opt);
+        opt + (mx - opt) / 2
+    } else {
+        optimum_ms
+    }
+}
+
+#[inline(always)]
+pub fn apply_piggybank_saving(optimum_ms: i32, stable: bool) -> i32 {
+    if stable {
+        (optimum_ms * PIGGYBANK_SAVE_NUM / PIGGYBANK_SAVE_DEN).max(10)
+    } else {
+        optimum_ms
+    }
+}
+
+#[inline(always)]
+pub fn piggybank_saving_ms(optimum_ms: i32, stable: bool) -> i32 {
+    if stable {
+        (optimum_ms - apply_piggybank_saving(optimum_ms, true)).max(0)
+    } else {
+        0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
