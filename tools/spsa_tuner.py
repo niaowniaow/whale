@@ -18,6 +18,9 @@ PARAMETERS = {
     "LMR_Base": {"default": 65, "min": 10, "max": 150, "step": 5},
     "LMR_Div": {"default": 215, "min": 100, "max": 350, "step": 10},
     "History_Weight": {"default": 2, "min": 1, "max": 4, "step": 1},
+    "Razor_Margin": {"default": 350, "min": 100, "max": 800, "step": 20},
+    "NMP_Verify_Margin": {"default": 150, "min": 0, "max": 500, "step": 15},
+    "Conspiracy_Tolerance": {"default": 30, "min": 5, "max": 200, "step": 5},
 
     "MustTryGain": {"default": 30, "min": 10, "max": 100, "step": 5},
     "MustTryRisk": {"default": 120, "min": 40, "max": 250, "step": 10},

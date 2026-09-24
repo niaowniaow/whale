@@ -56,6 +56,17 @@ The search engine uses a multi-threaded Principal Variation Search (PVS) with it
   * **Per-Node Threat Snapshot:** Checkers, pinners, lesser-piece threat maps and check squares are computed once per node and shared by legality tests, DCN evaluation, quiet-move scoring, TCE and LQT.
 * **Transposition Table:** Two-tiered design for efficient storage.
 * **Multi-Level History:** Tracks various move histories.
+* **Classic Checklist (all wired, SPSA-tunable):**
+  * **Razoring (frontier):** depth-1 `eval + margin <= alpha` → straight to qsearch (`src/search/razoring.rs`).
+  * **IIR:** no TT best move on PV (depth ≥ 5) / cut (depth ≥ 7) nodes → shave 1–2 plies first (`src/search/iir.rs`).
+  * **NMP zugzwang verification:** close high-depth null-move cutoffs re-searched shallow with null moves forbidden (`src/search/negamax.rs`, `NMP_Verify_Margin`).
+  * **PVS / NegaScout:** zero-window `[α, α+1]` + full re-search (`principal_variation_search` / `negascout_search` alias).
+  * **Mate Distance Pruning, RFP/Futility, LMP, SEE pruning, ProbCut, Singular Extensions, Aspiration Windows:** all in `src/search/negamax.rs` + `src/search/iterative_deepening.rs`.
+  * **GHI:** explicit repetition module (`src/search/ghi.rs`) over graph-history-aware draw detection.
+  * **Split at root:** opt-in root-move partitioning across threads (`src/search/split_root.rs`); Lazy SMP stays the default.
+  * **Conspiracy Numbers:** opt-in root verification for close MultiPV lines (`src/search/conspiracy.rs`, off by default — PVS is stronger per node).
+  * **Opening Book:** playable EPD book with moves probed at the root before search (`src/opening/book.rs`, `data/book.epd`).
+  * **Texel tuning:** logistic tuner for classical weights + search margins (`tools/texel_tuner.py`); NNUE weights stay on nnue-pytorch/Bullet, search margins on `tools/spsa_tuner.py`.
 
 ### 2b. Adaptive Pressure Layer (S1–S8)
 
@@ -208,6 +219,17 @@ cargo run --release -- --generate-magics
 | `CrushScore`   |  spin  |      600     | Score (cp) for forced conversion (300–1200, SPSA).     |
 | `DefendCPI`    |  spin  |      120     | Opp CPI triggering defend state (40–250, SPSA).        |
 | `DualNet`               | check  |     true     | Dual-Net optimistic evaluation gating.                 |
+| `UseBook`               | check  |     true     | Probe the EPD opening book at the root.                |
+| `BookFile`              | string |   `<empty>`  | Path to EPD book with moves (see `data/book.epd`).     |
+| `BookDepth`             |  spin  |      30      | Max game ply to play book moves (0 to 200).            |
+| `Razor_Enabled`         | check  |     true     | Frontier razoring (depth-1 drop to qsearch).           |
+| `Razor_Margin`          |  spin  |     350      | Razor base margin in cp (100 to 800, SPSA).            |
+| `IIR_Enabled`           | check  |     true     | Internal iterative reduction without TT move.          |
+| `NMP_Verify`            | check  |     true     | Zugzwang verification search on close NMP cutoffs.     |
+| `NMP_Verify_Margin`     |  spin  |     150      | Max eval-beta gap verified, cp (0 to 500, SPSA).       |
+| `Conspiracy_Enabled`    | check  |    false     | Conspiracy-number root verification (experimental).    |
+| `Conspiracy_Tolerance`  |  spin  |      30      | Verification tolerance in cp (5 to 200, SPSA).         |
+| `SplitRoot_Enabled`     | check  |    false     | Split-at-root parallelism (alt. to Lazy SMP).          |
 | `Clear Hash`            | button |       -      | Clears all entries in the Transposition Table.         |
 
 ---

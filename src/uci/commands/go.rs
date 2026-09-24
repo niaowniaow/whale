@@ -69,12 +69,10 @@ impl UciClient {
                         generated
                             .iter()
                             .map(|e| e.mv)
-                            .find(|m| *m == w)
-                            .or_else(|| {
-                                generated
-                                    .iter()
-                                    .map(|e| e.mv)
-                                    .find(|m| m.source == w.source && m.target == w.target)
+                            .find(|m| {
+                                m.source == w.source
+                                    && m.target == w.target
+                                    && m.promotion_char() == w.promotion_char()
                             })
                     })
                     .collect()
@@ -145,6 +143,7 @@ impl UciClient {
             let cancel_for_timer = Arc::clone(&cancel_token);
             let is_pondering_timer = Arc::clone(&self.is_pondering);
             thread::spawn(move || {
+                let was_pondering = is_pondering_timer.load(Ordering::Relaxed);
                 while is_pondering_timer.load(Ordering::Relaxed) {
                     if cancel_for_timer.load(Ordering::Relaxed) {
                         return;
@@ -152,7 +151,11 @@ impl UciClient {
                     thread::sleep(std::time::Duration::from_millis(5));
                 }
 
-                let elapsed_ms = start_time.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+                let elapsed_ms = if was_pondering {
+                    0
+                } else {
+                    start_time.elapsed().as_millis().min(u128::from(u64::MAX)) as u64
+                };
                 if max_ms > elapsed_ms {
                     thread::sleep(std::time::Duration::from_millis(max_ms - elapsed_ms));
                 }
@@ -298,6 +301,31 @@ mod tests {
                 "movetime timer did not fire"
             );
             std::thread::sleep(Duration::from_millis(5));
+        }
+        client.run_stop(&[]);
+    }
+
+    #[test]
+    fn go_searchmoves_resolves_promotion_capture() {
+        use crate::board::state::BoardState;
+        use crate::common::move_type::MoveType;
+        use crate::common::square::Square;
+
+        let _serial = GO_TEST_LOCK.lock().unwrap();
+        let mut client = UciClient::new();
+        *client.board.lock().unwrap() =
+            BoardState::parse_fen("3r4/4P3/8/8/8/8/8/4K2k w - - 0 1");
+
+        client.run_go(&["depth", "1", "searchmoves", "e7d8q"]);
+        {
+            let guard = client.search_state.lock().unwrap();
+            assert_eq!(guard.searchmoves.len(), 1);
+            assert_eq!(guard.searchmoves[0].source, Square::E7);
+            assert_eq!(guard.searchmoves[0].target, Square::D8);
+            assert_eq!(
+                guard.searchmoves[0].move_type,
+                MoveType::QueenPromotionCapture
+            );
         }
         client.run_stop(&[]);
     }

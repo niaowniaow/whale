@@ -41,7 +41,7 @@ impl MoveOrdering {
     }
 
     pub fn add_killer_move(&mut self, move_obj: Move, ply: usize) {
-        if self.killer_moves[0][ply] == move_obj {
+        if ply >= MAX_PLY || self.killer_moves[0][ply] == move_obj {
             return;
         }
 
@@ -52,7 +52,9 @@ impl MoveOrdering {
     pub fn update_history(&mut self, piece: usize, move_obj: Move, bonus: i32) {
         const MAX_HISTORY: i32 = 16384;
         let target = move_obj.target as usize;
-        Self::update_gravity(&mut self.history_moves[piece][target], bonus, MAX_HISTORY);
+        if piece < PIECES * 2 && target < SQUARES {
+            Self::update_gravity(&mut self.history_moves[piece][target], bonus, MAX_HISTORY);
+        }
     }
 
     pub fn reset(&mut self) {
@@ -139,20 +141,29 @@ impl MoveOrdering {
         move_obj: Move,
         previous_move: Option<Move>,
     ) -> i32 {
-        let piece = board_state.get_piece_on(move_obj.source);
-        if piece == -1 {
+        let source = move_obj.source as usize;
+        let target = move_obj.target as usize;
+        if source >= SQUARES || target >= SQUARES {
             return 0;
         }
-        let history_score = self.history_moves[piece as usize][move_obj.target as usize];
-        let from_to_score = self.quiet_history[board_state.side_to_move as usize]
-            [move_obj.source as usize][move_obj.target as usize];
+        let piece = board_state.get_piece_on(move_obj.source);
+        if piece < 0 || piece as usize >= PIECES * 2 {
+            return 0;
+        }
+        let history_score = self.history_moves[piece as usize][target];
+        let from_to_score = self.quiet_history[board_state.side_to_move as usize][source][target];
         let continuation_score = previous_move
             .and_then(|prev_mv| {
-                let prev_piece = board_state.piece_mapping[prev_mv.target as usize];
-                (prev_piece != crate::common::piece::Piece::None).then(|| {
-                    self.continuation_history[prev_piece as usize][prev_mv.target as usize]
-                        [move_obj.target as usize]
-                })
+                let prev_target = prev_mv.target as usize;
+                if prev_target < SQUARES {
+                    let prev_piece = board_state.piece_mapping[prev_target];
+                    if (prev_piece as usize) < PIECES {
+                        return Some(
+                            self.continuation_history[prev_piece as usize][prev_target][target],
+                        );
+                    }
+                }
+                None
             })
             .unwrap_or(0) as i32;
         history_score + i32::from(from_to_score) + continuation_score
@@ -168,10 +179,15 @@ impl MoveOrdering {
         check_squares: &[u64; 6],
     ) {
         let counter_move = if let Some(prev_mv) = previous_move {
-            let prev_side = board_state.side_to_move.other();
-            let prev_piece = board_state.piece_mapping[prev_mv.target as usize];
-            if prev_piece != Piece::None {
-                self.counter_moves[prev_side as usize][prev_piece as usize][prev_mv.target as usize]
+            let prev_target = prev_mv.target as usize;
+            if prev_target < SQUARES {
+                let prev_side = board_state.side_to_move.other();
+                let prev_piece = board_state.piece_mapping[prev_target];
+                if (prev_piece as usize) < PIECES {
+                    self.counter_moves[prev_side as usize][prev_piece as usize][prev_target]
+                } else {
+                    Move::NO_MOVE
+                }
             } else {
                 Move::NO_MOVE
             }
@@ -183,37 +199,48 @@ impl MoveOrdering {
             let prom_piece = move_obj.mv.move_type.promotion_piece();
             if prom_piece == Piece::Queen {
                 move_obj.score = 25000;
-            } else if move_obj.mv == self.killer_moves[0][ply] {
+            } else if ply < MAX_PLY && move_obj.mv == self.killer_moves[0][ply] {
                 move_obj.score = 22000;
-            } else if move_obj.mv == self.killer_moves[1][ply] {
+            } else if ply < MAX_PLY && move_obj.mv == self.killer_moves[1][ply] {
                 move_obj.score = 21000;
             } else if counter_move != Move::NO_MOVE && move_obj.mv == counter_move {
                 move_obj.score = 20000;
             } else if prom_piece != Piece::None {
                 move_obj.score = -20000;
             } else {
+                let source = move_obj.mv.source as usize;
+                let target = move_obj.mv.target as usize;
+                if source >= SQUARES || target >= SQUARES {
+                    continue;
+                }
                 let piece = board_state.get_piece_on(move_obj.mv.source);
-                if piece != -1 {
+                if piece >= 0 && (piece as usize) < PIECES * 2 {
                     let history_score =
-                        self.history_moves[piece as usize][move_obj.mv.target as usize];
+                        self.history_moves[piece as usize][target];
                     let from_to_score = self.quiet_history[board_state.side_to_move as usize]
-                        [move_obj.mv.source as usize][move_obj.mv.target as usize];
+                        [source][target];
                     let continuation_score = previous_move
                         .and_then(|prev_mv| {
-                            let prev_piece = board_state.piece_mapping[prev_mv.target as usize];
-                            (prev_piece != Piece::None).then(|| {
-                                self.continuation_history[prev_piece as usize]
-                                    [prev_mv.target as usize]
-                                    [move_obj.mv.target as usize]
-                            })
+                            let prev_target = prev_mv.target as usize;
+                            if prev_target < SQUARES {
+                                let prev_piece = board_state.piece_mapping[prev_target];
+                                if (prev_piece as usize) < PIECES {
+                                    return Some(
+                                        self.continuation_history[prev_piece as usize]
+                                            [prev_target]
+                                            [target],
+                                    );
+                                }
+                            }
+                            None
                         })
                         .unwrap_or(0) as i32;
                     let mut score =
                         2 * history_score + i32::from(from_to_score) + continuation_score;
 
                     let pt = (piece as usize) % PIECES;
-                    let to_mask = 1u64 << (move_obj.mv.target as usize);
-                    let from_mask = 1u64 << (move_obj.mv.source as usize);
+                    let to_mask = 1u64 << target;
+                    let from_mask = 1u64 << source;
 
                     if (check_squares[pt] & to_mask) != 0 && board_state.see_ge(move_obj.mv, -75) {
                         score += 16384;
@@ -242,11 +269,13 @@ impl MoveOrdering {
     pub fn update_quiet_history(&mut self, side: Side, move_obj: Move, bonus: i32) {
         let source = move_obj.source as usize;
         let target = move_obj.target as usize;
-        Self::update_gravity_i16(
-            &mut self.quiet_history[side as usize][source][target],
-            bonus,
-            16384,
-        );
+        if source < SQUARES && target < SQUARES {
+            Self::update_gravity_i16(
+                &mut self.quiet_history[side as usize][source][target],
+                bonus,
+                16384,
+            );
+        }
     }
 
     #[inline(always)]
@@ -257,11 +286,12 @@ impl MoveOrdering {
         captured_piece: Piece,
         bonus: i32,
     ) {
-        if moved_piece < PIECES * 2 && captured_piece != Piece::None {
+        let target = target_square as usize;
+        if moved_piece < PIECES * 2 && target < SQUARES && captured_piece != Piece::None {
             let cap_idx = captured_piece as usize;
             if cap_idx < PIECES {
                 Self::update_gravity_i16(
-                    &mut self.capture_history[moved_piece][target_square as usize][cap_idx],
+                    &mut self.capture_history[moved_piece][target][cap_idx],
                     bonus,
                     16384,
                 );
@@ -278,10 +308,11 @@ impl MoveOrdering {
         bonus: i32,
     ) {
         let target = move_obj.target as usize;
-        if previous_piece != Piece::None {
+        let prev_target = previous_target as usize;
+        let prev_piece = previous_piece as usize;
+        if prev_piece < PIECES && prev_target < SQUARES && target < SQUARES {
             Self::update_gravity_i16(
-                &mut self.continuation_history[previous_piece as usize][previous_target as usize]
-                    [target],
+                &mut self.continuation_history[prev_piece][prev_target][target],
                 bonus,
                 i16::MAX as i32,
             );
@@ -307,8 +338,11 @@ impl MoveOrdering {
         prev_square: Square,
         counter_move: Move,
     ) {
-        self.counter_moves[prev_side as usize][prev_piece as usize][prev_square as usize] =
-            counter_move;
+        let prev_p = prev_piece as usize;
+        let prev_sq = prev_square as usize;
+        if prev_p < PIECES && prev_sq < SQUARES {
+            self.counter_moves[prev_side as usize][prev_p][prev_sq] = counter_move;
+        }
     }
 }
 
@@ -324,15 +358,20 @@ pub fn populate_capture_scores(
     move_ordering: &MoveOrdering,
 ) {
     for move_obj in moves.iter_mut() {
+        let target = move_obj.mv.target as usize;
+        let source = move_obj.mv.source as usize;
+        if target >= SQUARES || source >= SQUARES {
+            continue;
+        }
         let source_piece =
             board_state.get_piece_on_side(move_obj.mv.source, board_state.side_to_move);
         let target_piece = if move_obj.mv.move_type == MoveType::EnPassant {
             Piece::Pawn
         } else {
-            board_state.piece_mapping[move_obj.mv.target as usize]
+            board_state.piece_mapping[target]
         };
 
-        let mut score = if target_piece != Piece::None {
+        let mut score = if target_piece != Piece::None && source_piece < 7 {
             MVV_LVA[target_piece as usize][source_piece]
         } else {
             0
@@ -344,9 +383,12 @@ pub fn populate_capture_scores(
             score -= 20000;
         }
         let moved_piece = board_state.get_piece_on(move_obj.mv.source);
-        if moved_piece >= 0 && target_piece != Piece::None && (target_piece as usize) < PIECES {
-            let hist = move_ordering.capture_history[moved_piece as usize]
-                [move_obj.mv.target as usize][target_piece as usize];
+        if moved_piece >= 0
+            && (moved_piece as usize) < PIECES * 2
+            && target_piece != Piece::None
+            && (target_piece as usize) < PIECES
+        {
+            let hist = move_ordering.capture_history[moved_piece as usize][target][target_piece as usize];
             score += hist as i32;
         }
         move_obj.score = score;

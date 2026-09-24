@@ -209,6 +209,64 @@ impl UciClient {
             {
                 state.params.learned_enabled = flag_on;
             }
+            if name.eq_ignore_ascii_case("Razor_Enabled")
+                || name.eq_ignore_ascii_case("Razoring_Enabled")
+            {
+                state.params.razor_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("Razor_Margin")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.params.razor_margin = v.clamp(100, 800);
+            }
+            if name.eq_ignore_ascii_case("IIR_Enabled") {
+                state.params.iir_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("NMP_Verify")
+                || name.eq_ignore_ascii_case("NMP_Verify_Enabled")
+            {
+                state.params.nmp_verify_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("NMP_Verify_Margin")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.params.nmp_verify_margin = v.clamp(0, 500);
+            }
+            if name.eq_ignore_ascii_case("Conspiracy_Enabled") {
+                state.params.conspiracy_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("Conspiracy_Tolerance")
+                && let Ok(v) = value.parse::<i16>()
+            {
+                state.params.conspiracy_tolerance = v.clamp(5, 200);
+            }
+            if name.eq_ignore_ascii_case("SplitRoot_Enabled")
+                || name.eq_ignore_ascii_case("Split_At_Root")
+            {
+                state.params.split_root_enabled = flag_on;
+            }
+            if name.eq_ignore_ascii_case("UseBook") || name.eq_ignore_ascii_case("Use_Book") {
+                state.use_book = flag_on;
+            }
+            if name.eq_ignore_ascii_case("BookDepth") || name.eq_ignore_ascii_case("Book_Depth")
+            {
+                if let Ok(v) = value.parse::<u8>() {
+                    state.book_depth = v;
+                }
+            }
+            if name.eq_ignore_ascii_case("BookFile")
+                || name.eq_ignore_ascii_case("Book_File")
+                || name.eq_ignore_ascii_case("BookPath")
+            {
+                let v = value.trim().to_string();
+                if v.is_empty() || v.eq_ignore_ascii_case("<empty>") {
+                    state.book_path.clear();
+                } else {
+                    state.book_path = v;
+                }
+                state.book_cache.clear();
+                state.book_cache_path.clear();
+            }
 
             if name.eq_ignore_ascii_case("MustTryGain")
                 && let Ok(v) = value.parse::<i32>()

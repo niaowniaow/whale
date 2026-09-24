@@ -7,6 +7,7 @@ use crate::common::moves::Move;
 use crate::common::side::Side;
 use crate::search::attack;
 use crate::search::concession;
+use crate::search::conspiracy;
 use crate::search::conversion;
 use crate::search::counterplay;
 use crate::search::multipv::MultipvLine;
@@ -16,6 +17,7 @@ use crate::search::pressure;
 use crate::search::pv_table::PvTable;
 use crate::search::risk;
 use crate::search::search_state::SearchState;
+use crate::search::split_root;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::time::Instant;
 
@@ -610,10 +612,16 @@ fn search_primary(
             } else {
                 String::new()
             };
+            let multipv_prefix = if search_state.multipv > 1 {
+                "multipv 1 "
+            } else {
+                ""
+            };
             println!(
-                "info depth {} seldepth {} score {}{} nodes {} tbhits {} time {} nps {} pv {}",
+                "info depth {} seldepth {} {}score {}{} nodes {} tbhits {} time {} nps {} pv {}",
                 current_depth,
                 search_state.seldepth,
+                multipv_prefix,
                 score_str,
                 wdl_str,
                 total_nodes,
@@ -698,7 +706,7 @@ fn search_primary(
                 }
             }
             search_state.multipv_lines = lines.clone();
-            if *debug_mode {
+            if lines.len() > 1 {
                 let time_ms2 = timer.elapsed().as_millis().max(1) as f64;
                 let total_nodes2 = search_state.nodes + worker_nodes.load(Ordering::Relaxed);
                 let nps2 = (total_nodes2 as f64 / time_ms2 * 1000.0) as i32;
@@ -726,6 +734,9 @@ fn search_primary(
                         pv_str
                     );
                 }
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            if *debug_mode {
                 let conv_txt = if search_state.params.conversion_enabled
                     && conversion::should_convert(
                         current_score,
@@ -805,6 +816,55 @@ fn search_primary(
             }
         }
     }
+    let conspiracy_unstable = search_state.params.conspiracy_enabled
+        && search_state.multipv_lines.len() >= 2
+        && conspiracy::needs_resolution(
+            &conspiracy::rank_by_stability(
+                &search_state
+                    .multipv_lines
+                    .iter()
+                    .map(|l| l.mv)
+                    .collect::<Vec<_>>(),
+                &search_state
+                    .multipv_lines
+                    .iter()
+                    .map(|l| l.score)
+                    .collect::<Vec<_>>(),
+            ),
+            search_state.params.conspiracy_tolerance,
+            1,
+        );
+    if search_state.params.conspiracy_enabled
+        && completed_depth >= 1
+        && best_move_so_far != Move::NO_MOVE
+        && (conspiracy_unstable || search_state.multipv_lines.len() < 2)
+        && !cancellation_token.load(Ordering::Relaxed)
+    {
+        if let Some((verified_score, _)) = search_single_root(
+            board_state,
+            completed_depth,
+            best_move_so_far,
+            cancellation_token,
+            search_state,
+        ) {
+            let tolerance = search_state.params.conspiracy_tolerance as i32;
+            let stable =
+                (verified_score as i32 - last_score as i32).abs() <= tolerance;
+            if *debug_mode {
+                println!(
+                    "info string conspiracy depth {} {} (iter {} vs verify {})",
+                    completed_depth,
+                    if stable { "verified=yes" } else { "verified=no" },
+                    last_score,
+                    verified_score
+                );
+                let _ = std::io::Write::flush(&mut std::io::stdout());
+            }
+            if stable {
+                search_state.score = verified_score;
+            }
+        }
+    }
     search_state.best_previous_score = Some(search_state.score);
     if completed_depth >= 1 {
         let white_pov = if board_state.side_to_move == Side::White {
@@ -813,6 +873,104 @@ fn search_primary(
             search_state.score.saturating_neg()
         };
         search_state.score_trend.push(white_pov, completed_depth);
+    }
+}
+
+fn search_split_root(
+    board_state: &mut BoardState,
+    depth: u8,
+    cancellation_token: &AtomicBool,
+    debug_mode: &mut bool,
+    search_state: &mut SearchState,
+    num_threads: usize,
+) {
+    let timer = Instant::now();
+    let mut all = MoveList::new();
+    board_state.generate_moves(&mut all);
+    let nt = NodeThreats::compute(board_state);
+    let filter = !search_state.searchmoves.is_empty();
+    let mut root_moves = Vec::new();
+    for i in 0..all.len() {
+        let m = all[i].mv;
+        if filter && !search_state.searchmoves.contains(&m) {
+            continue;
+        }
+        if board_state.is_legal_with(m, nt.checkers, nt.pinned) {
+            root_moves.push(m);
+        }
+    }
+    if root_moves.is_empty() {
+        return;
+    }
+    let depth = depth.max(1);
+    let parts = split_root::partition(&root_moves, num_threads);
+    std::thread::scope(|s| {
+        let mut handles = Vec::new();
+        for (tid, subset) in parts.into_iter().enumerate() {
+            if subset.is_empty() {
+                continue;
+            }
+            let mut board = board_state.clone();
+            let mut state = search_state.clone_for_worker(tid);
+            let cancel = cancellation_token;
+            handles.push(s.spawn(move || {
+                let (bm, bs) =
+                    split_root::search_subset(&mut board, &subset, depth, cancel, &mut state);
+                (
+                    bm,
+                    bs,
+                    state.nodes,
+                    state.tbhits,
+                    state.seldepth,
+                )
+            }));
+        }
+        let mut best_move = Move::NO_MOVE;
+        let mut best_score = i16::MIN + 1;
+        let mut nodes = 0u64;
+        let mut tbhits = 0u64;
+        let mut seldepth = 0u32;
+        for h in handles {
+            if let Ok((bm, bs, n, tb, sd)) = h.join() {
+                nodes += n;
+                tbhits += tb;
+                seldepth = seldepth.max(sd);
+                if bm != Move::NO_MOVE && bs > best_score {
+                    best_score = bs;
+                    best_move = bm;
+                }
+            }
+        }
+        search_state.nodes += nodes;
+        search_state.tbhits += tbhits;
+        search_state.seldepth = search_state.seldepth.max(seldepth);
+        if best_move != Move::NO_MOVE {
+            search_state.best_move = best_move;
+            search_state.score = best_score;
+        }
+    });
+    if *debug_mode && search_state.best_move != Move::NO_MOVE {
+        let bm = search_state.best_move;
+        let promo = bm
+            .promotion_char()
+            .map(|c| c.to_string())
+            .unwrap_or_default();
+        let time_ms = timer.elapsed().as_millis().max(1);
+        let nps = (search_state.nodes as f64 / time_ms as f64 * 1000.0) as u64;
+        println!(
+            "info depth {} seldepth {} score {} nodes {} time {} nps {} pv {}{}{}",
+            depth,
+            search_state.seldepth,
+            format_score(search_state.score),
+            search_state.nodes,
+            time_ms,
+            nps,
+            bm.source,
+            bm.target,
+            promo
+        );
+        println!("info string splitroot threads {}", num_threads);
+        let _ = std::io::Write::flush(&mut std::io::stdout());
     }
 }
 
@@ -828,6 +986,18 @@ pub fn search(
     search_state.tt.new_search();
 
     search_state.engine_side = board_state.side_to_move;
+
+    if search_state.params.split_root_enabled && num_threads > 1 {
+        search_split_root(
+            board_state,
+            depth,
+            cancellation_token,
+            debug_mode,
+            search_state,
+            num_threads,
+        );
+        return;
+    }
 
     let use_tm = search_state.opt_time > 0;
 

@@ -50,7 +50,7 @@ pub fn calculate_optimum_with_ply(
     let scaled_time = clock.max(1);
     let mut mtg = if movestogo > 0 { movestogo.min(50) } else { 50 };
     if scaled_time < 1000 && movestogo <= 0 {
-        mtg = (scaled_time as f64 * 0.05) as i32;
+        mtg = ((scaled_time as f64 * 0.05) as i32).max(1);
     }
     let time_left = (clock + increment * (mtg - 1) - move_overhead * (2 + mtg)).max(1);
     let (mut opt_scale, max_scale) = if movestogo <= 0 {

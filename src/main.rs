@@ -63,6 +63,8 @@ fn real_main() {
             let model = raw_args.get(5).map(String::as_str);
             if let Some(m) = model {
                 let _ = whale::eval::nnue::v16::set_eval_file("Model", m);
+            } else if std::path::Path::new("models/whale_big_1.nnue").exists() {
+                let _ = whale::eval::nnue::v16::set_eval_file("Model", "whale_big_1");
             } else if std::path::Path::new("models/whale_big.nnue").exists() {
                 let _ = whale::eval::nnue::v16::set_eval_file("Model", "whale_big");
             }
@@ -195,7 +197,9 @@ fn real_main() {
         }
         _ => {
             init();
-            if std::path::Path::new("models/whale_big.nnue").exists() {
+            if std::path::Path::new("models/whale_big_1.nnue").exists() {
+                let _ = whale::eval::nnue::v16::set_eval_file("Model", "whale_big_1");
+            } else if std::path::Path::new("models/whale_big.nnue").exists() {
                 let _ = whale::eval::nnue::v16::set_eval_file("Model", "whale_big");
             }
             uci_run();

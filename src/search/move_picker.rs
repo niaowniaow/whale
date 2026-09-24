@@ -134,19 +134,24 @@ impl MovePicker {
                     while left <= right {
                         let moved_piece =
                             board_state.get_piece_on(captures[left as usize].mv.source);
+                        let target = captures[left as usize].mv.target as usize;
                         let target_piece = if captures[left as usize].mv.move_type
                             == MoveType::EnPassant
                         {
                             Piece::Pawn
+                        } else if target < crate::common::constants::SQUARES {
+                            board_state.piece_mapping[target]
                         } else {
-                            board_state.piece_mapping[captures[left as usize].mv.target as usize]
+                            Piece::None
                         };
                         let hist = if moved_piece >= 0
+                            && (moved_piece as usize) < crate::common::constants::PIECES * 2
+                            && target < crate::common::constants::SQUARES
                             && target_piece != Piece::None
                             && (target_piece as usize) < crate::common::constants::PIECES
                         {
                             move_ordering.capture_history[moved_piece as usize]
-                                [captures[left as usize].mv.target as usize]
+                                [target]
                                 [target_piece as usize] as i32
                         } else {
                             0

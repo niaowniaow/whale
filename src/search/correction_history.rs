@@ -43,12 +43,15 @@ impl CorrectionHistory {
 
         let mut cntcv = 0;
         if let Some(prev) = previous_move {
-            let pc = board_state.piece_mapping[prev.target as usize];
-            if pc != Piece::None {
-                let prev_side = board_state.side_to_move.other();
-                let idx = prev_side as usize * 6 + pc as usize;
-                if idx < 12 {
-                    cntcv = self.continuation_table[idx][prev.target as usize];
+            let target = prev.target as usize;
+            if target < 64 {
+                let pc = board_state.piece_mapping[target];
+                if pc != Piece::None {
+                    let prev_side = board_state.side_to_move.other();
+                    let idx = prev_side as usize * 6 + pc as usize;
+                    if idx < 12 {
+                        cntcv = self.continuation_table[idx][target];
+                    }
                 }
             }
         }
@@ -73,15 +76,18 @@ impl CorrectionHistory {
         );
 
         if let Some(prev) = previous_move {
-            let pc = board_state.piece_mapping[prev.target as usize];
-            if pc != Piece::None {
-                let prev_side = board_state.side_to_move.other();
-                let idx = prev_side as usize * 6 + pc as usize;
-                if idx < 12 {
-                    Self::apply_bonus(
-                        &mut self.continuation_table[idx][prev.target as usize],
-                        bonus * 130 / 128,
-                    );
+            let target = prev.target as usize;
+            if target < 64 {
+                let pc = board_state.piece_mapping[target];
+                if pc != Piece::None {
+                    let prev_side = board_state.side_to_move.other();
+                    let idx = prev_side as usize * 6 + pc as usize;
+                    if idx < 12 {
+                        Self::apply_bonus(
+                            &mut self.continuation_table[idx][target],
+                            bonus * 130 / 128,
+                        );
+                    }
                 }
             }
         }

@@ -34,6 +34,15 @@ pub struct SearchParameters {
     pub dad_enabled: bool,
     pub extension_cap_enabled: bool,
 
+    pub razor_enabled: bool,
+    pub razor_margin: i16,
+    pub iir_enabled: bool,
+    pub nmp_verify_enabled: bool,
+    pub nmp_verify_margin: i16,
+    pub conspiracy_enabled: bool,
+    pub conspiracy_tolerance: i16,
+    pub split_root_enabled: bool,
+
     pub cpi_enabled: bool,
 
     pub state_enabled: bool,
@@ -82,6 +91,14 @@ impl Default for SearchParameters {
             sps_enabled: true,
             dad_enabled: true,
             extension_cap_enabled: true,
+            razor_enabled: true,
+            razor_margin: 350,
+            iir_enabled: true,
+            nmp_verify_enabled: true,
+            nmp_verify_margin: 150,
+            conspiracy_enabled: false,
+            conspiracy_tolerance: 30,
+            split_root_enabled: false,
             cpi_enabled: true,
             state_enabled: true,
             risk_enabled: true,
@@ -186,6 +203,13 @@ pub struct SearchState {
     pub prev_own_cpi: Option<i32>,
 
     pub behavior_us: u64,
+
+    pub use_book: bool,
+    pub book_depth: u8,
+    pub book_path: String,
+    pub book_hit: bool,
+    pub book_cache: Vec<crate::opening::book::BookEntry>,
+    pub book_cache_path: String,
 }
 
 impl SearchState {
@@ -256,6 +280,12 @@ impl SearchState {
             last_attack_failed: false,
             prev_own_cpi: None,
             behavior_us: 0,
+            use_book: true,
+            book_depth: 30,
+            book_path: String::new(),
+            book_hit: false,
+            book_cache: Vec::new(),
+            book_cache_path: String::new(),
         }
     }
 
@@ -332,6 +362,12 @@ impl SearchState {
             last_attack_failed: false,
             prev_own_cpi: None,
             behavior_us: 0,
+            use_book: self.use_book,
+            book_depth: self.book_depth,
+            book_path: self.book_path.clone(),
+            book_hit: false,
+            book_cache: Vec::new(),
+            book_cache_path: String::new(),
         }
     }
 
@@ -347,6 +383,7 @@ impl SearchState {
         self.optimism = [0; 2];
 
         self.multipv_lines.clear();
+        self.book_hit = false;
         self.verification_budget = 0;
         self.reset_mode = false;
         self.simplify_bias = false;

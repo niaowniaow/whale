@@ -122,7 +122,7 @@ impl UciClient {
         cli::write_line("option name Ponder type check default false");
         cli::write_line("option name Clear Hash type button");
         cli::write_line(
-            "option name Model type combo default whale_big var whale_big var whale_medium var whale_small var embedded",
+            "option name Model type combo default whale_big var whale_big var whale_big_1 var whale_medium var whale_small var embedded",
         );
         cli::write_line("option name EvalFile type string default <empty>");
         cli::write_line("option name EvalFileSmall type string default <empty>");
@@ -186,6 +186,19 @@ impl UciClient {
         cli::write_line("option name UrgencyMustTryGain type spin default 50 min 10 max 200");
         cli::write_line("option name VerifyTolerance type spin default 30 min 5 max 100");
         cli::write_line("option name DualNet type check default true");
+        cli::write_line("option name UseBook type check default true");
+        cli::write_line("option name BookFile type string default <empty>");
+        cli::write_line("option name BookDepth type spin default 30 min 0 max 200");
+        cli::write_line("option name Razor_Enabled type check default true");
+        cli::write_line("option name Razor_Margin type spin default 350 min 100 max 800");
+        cli::write_line("option name IIR_Enabled type check default true");
+        cli::write_line("option name NMP_Verify type check default true");
+        cli::write_line("option name NMP_Verify_Margin type spin default 150 min 0 max 500");
+        cli::write_line("option name Conspiracy_Enabled type check default false");
+        cli::write_line(
+            "option name Conspiracy_Tolerance type spin default 30 min 5 max 200",
+        );
+        cli::write_line("option name SplitRoot_Enabled type check default false");
 
         if let Some(path) = crate::eval::nnue::v16::try_load_default_path() {
             cli::write_line(&format!("info string SFNNv16 network loaded: {path}"));

@@ -11,11 +11,15 @@ impl BoardState {
     #[inline(always)]
     pub fn nnue_add_piece(&mut self, square: Square, side: Side, piece: Piece) {
         if let Some(w_idx) = get_feature_index(piece, side, square) {
-            self.pending_adds_w[self.pending_adds as usize] = w_idx;
-            let mirrored_sq = square.mirrored();
-            let b_idx = get_feature_index(piece, side.other(), mirrored_sq).unwrap();
-            self.pending_adds_b[self.pending_adds as usize] = b_idx;
-            self.pending_adds += 1;
+            let idx = self.pending_adds as usize;
+            if idx < 2 {
+                let mirrored_sq = square.mirrored();
+                if let Some(b_idx) = get_feature_index(piece, side.other(), mirrored_sq) {
+                    self.pending_adds_w[idx] = w_idx;
+                    self.pending_adds_b[idx] = b_idx;
+                    self.pending_adds += 1;
+                }
+            }
         }
         sfnn16::note_add(&mut self.sfnn16_pending, square, side, piece);
     }
@@ -23,11 +27,15 @@ impl BoardState {
     #[inline(always)]
     pub fn nnue_remove_piece(&mut self, square: Square, side: Side, piece: Piece) {
         if let Some(w_idx) = get_feature_index(piece, side, square) {
-            self.pending_dels_w[self.pending_removes as usize] = w_idx;
-            let mirrored_sq = square.mirrored();
-            let b_idx = get_feature_index(piece, side.other(), mirrored_sq).unwrap();
-            self.pending_dels_b[self.pending_removes as usize] = b_idx;
-            self.pending_removes += 1;
+            let idx = self.pending_removes as usize;
+            if idx < 2 {
+                let mirrored_sq = square.mirrored();
+                if let Some(b_idx) = get_feature_index(piece, side.other(), mirrored_sq) {
+                    self.pending_dels_w[idx] = w_idx;
+                    self.pending_dels_b[idx] = b_idx;
+                    self.pending_removes += 1;
+                }
+            }
         }
         sfnn16::note_remove(&mut self.sfnn16_pending, square, side, piece);
     }

@@ -1510,6 +1510,7 @@ pub struct LoadedNets {
 }
 
 static NETS: RwLock<Option<Arc<LoadedNets>>> = RwLock::new(None);
+static PREVIOUS_NETS: RwLock<Vec<Arc<LoadedNets>>> = RwLock::new(Vec::new());
 static ACTIVE_NET: std::sync::atomic::AtomicPtr<LoadedNets> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
 static NETS_GEN: AtomicU64 = AtomicU64::new(0);
@@ -1554,6 +1555,7 @@ pub fn try_load_default_path() -> Option<&'static str> {
     }
 
     let candidates = [
+        "models/whale_big_1.nnue",
         "models/whale_big.nnue",
         "models/whale_medium.nnue",
         "models/whale_small.nnue",
@@ -1586,10 +1588,13 @@ pub fn load_net(path: &str) -> Result<(), &'static str> {
     let net =
         Sfnn16Net::load_file(path, true, L1).or_else(|_| Sfnn16Net::load_file(path, false, L1))?;
     let loaded = Arc::new(LoadedNets { net });
-    ACTIVE_NET.store(Arc::as_ptr(&loaded) as *mut LoadedNets, Ordering::Release);
-    if let Ok(mut guard) = NETS.write() {
-        *guard = Some(loaded);
+    let raw_ptr = Arc::as_ptr(&loaded) as *mut LoadedNets;
+    let mut nets_guard = NETS.write().unwrap_or_else(|p| p.into_inner());
+    *nets_guard = Some(loaded.clone());
+    if let Ok(mut prev) = PREVIOUS_NETS.write() {
+        prev.push(loaded);
     }
+    ACTIVE_NET.store(raw_ptr, Ordering::Release);
     if let Ok(mut guard) = PENDING_PATH.write() {
         *guard = Some(path.to_string());
     }
@@ -1600,9 +1605,8 @@ pub fn load_net(path: &str) -> Result<(), &'static str> {
 
 pub fn unload_nets() {
     ACTIVE_NET.store(std::ptr::null_mut(), Ordering::Release);
-    if let Ok(mut guard) = NETS.write() {
-        *guard = None;
-    }
+    let mut nets_guard = NETS.write().unwrap_or_else(|p| p.into_inner());
+    *nets_guard = None;
     if let Ok(mut guard) = PENDING_PATH.write() {
         *guard = None;
     }
@@ -1661,7 +1665,10 @@ pub fn set_eval_file(which: &str, path: &str) -> Result<&'static str, &'static s
 }
 
 fn try_activate() -> Result<&'static str, &'static str> {
-    let path = PENDING_PATH.read().unwrap().clone();
+    let path = match PENDING_PATH.read() {
+        Ok(guard) => guard.clone(),
+        Err(poisoned) => poisoned.into_inner().clone(),
+    };
     match path {
         Some(p) => match load_net(&p) {
             Ok(()) => Ok("SFNNv16 network activated"),

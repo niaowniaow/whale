@@ -57,8 +57,11 @@ impl BoardState {
         }
 
         self.add_piece(m.target, self.side_to_move, final_moved_piece, true);
-        self.board_hash ^=
-            zobrist::zobrist_table()[self.get_piece_on(m.target) as usize][m.target as usize];
+        let target_piece_idx = self.get_piece_on(m.target);
+        if target_piece_idx >= 0 && (m.target as usize) < 64 {
+            self.board_hash ^=
+                zobrist::zobrist_table()[target_piece_idx as usize][m.target as usize];
+        }
 
         self.record_pending_updates(next_idx);
         self.update_castling_rights(m);
@@ -94,7 +97,7 @@ impl BoardState {
         };
 
         let piece_idx = self.get_piece_on(target_square);
-        if piece_idx != -1 {
+        if piece_idx >= 0 && (target_square as usize) < 64 {
             self.board_hash ^= zobrist::zobrist_table()[piece_idx as usize][target_square as usize];
         }
         self.half_move_clock = 0;
@@ -257,7 +260,12 @@ impl BoardState {
         } else {
             8
         };
-        Square::from((m.target as i32 + offset) as usize)
+        let sq = m.target as i32 + offset;
+        if (0..64).contains(&sq) {
+            Square::from(sq as usize)
+        } else {
+            Square::NoSquare
+        }
     }
 
     fn is_insufficient_material(&self) -> bool {

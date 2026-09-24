@@ -230,6 +230,9 @@ impl BoardState {
     #[inline(always)]
     pub fn add_piece(&mut self, square: Square, side: Side, piece: Piece, update_nnue: bool) {
         let sq = square as usize;
+        if sq >= SQUARES {
+            return;
+        }
         self.pieces[piece].set_bit(sq);
         self.occupancies[side].set_bit(sq);
         self.piece_mapping[sq] = piece;
@@ -243,6 +246,9 @@ impl BoardState {
     #[inline(always)]
     pub fn remove_piece(&mut self, square: Square, update_nnue: bool) -> Piece {
         let sq = square as usize;
+        if sq >= SQUARES {
+            return Piece::None;
+        }
         let piece = self.piece_mapping[sq];
         if piece == Piece::None {
             return Piece::None;
@@ -268,8 +274,12 @@ impl BoardState {
     }
 
     pub fn get_piece_on_side(&self, square: Square, side: Side) -> usize {
-        let piece = self.piece_mapping[square as usize];
-        if self.occupancies[side].get_bit(square as usize) == 1 {
+        let sq = square as usize;
+        if sq >= SQUARES {
+            return Piece::None as usize;
+        }
+        let piece = self.piece_mapping[sq];
+        if self.occupancies[side].get_bit(sq) == 1 {
             piece as usize
         } else {
             Piece::None as usize
@@ -277,11 +287,15 @@ impl BoardState {
     }
 
     pub fn get_piece_on(&self, square: Square) -> i32 {
-        let piece = self.piece_mapping[square as usize];
+        let sq = square as usize;
+        if sq >= SQUARES {
+            return -1;
+        }
+        let piece = self.piece_mapping[sq];
         if piece == Piece::None {
             return -1;
         }
-        if self.occupancies[Side::White].get_bit(square as usize) == 1 {
+        if self.occupancies[Side::White].get_bit(sq) == 1 {
             piece as i32
         } else {
             6 + piece as i32

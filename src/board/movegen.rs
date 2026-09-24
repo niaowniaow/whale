@@ -30,6 +30,38 @@ impl BoardState {
         search_state: &mut SearchState,
         num_threads: usize,
     ) -> Move {
+        if search_state.use_book
+            && !search_state.book_path.is_empty()
+            && self.move_count <= search_state.book_depth as i32
+        {
+            if search_state.book_cache_path != search_state.book_path {
+                search_state.book_cache =
+                    crate::opening::book::load_book_entries(&search_state.book_path);
+                search_state.book_cache_path = search_state.book_path.clone();
+            }
+            let key = crate::opening::book::normalize_key(&self.to_fen());
+            if let Some(uci) =
+                crate::opening::book::probe_book(&search_state.book_cache, &key, self.board_hash)
+                && let Some(wanted) = Move::parse_long_algebraic(&uci)
+            {
+                let mut generated = MoveList::new();
+                self.generate_moves(&mut generated);
+                let nt = crate::board::node_threats::NodeThreats::compute(self);
+                for e in generated.iter() {
+                    let m = e.mv;
+                    if m.source == wanted.source
+                        && m.target == wanted.target
+                        && m.promotion_char() == wanted.promotion_char()
+                        && self.is_legal_with(m, nt.checkers, nt.pinned)
+                    {
+                        search_state.best_move = m;
+                        search_state.score = 0;
+                        search_state.book_hit = true;
+                        return m;
+                    }
+                }
+            }
+        }
         if self.half_move_clock == 0
             && let Some(tb_move) = crate::syzygy::root_move(self)
         {

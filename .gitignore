@@ -41,6 +41,7 @@ checksum.md5
 !models/*.nnue
 *.pgn
 /nnue-pytorch/
+/tools/nnue-pytorch/
 /v16/
 
 # Syzygy tablebases (large, download separately)

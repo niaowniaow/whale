@@ -159,12 +159,15 @@ fn cache() -> &'static std::sync::Mutex<Option<HeadWeights>> {
 }
 
 pub fn ensure_loaded() -> bool {
-    if cache().lock().unwrap().is_some() {
+    let is_some = cache().lock().map(|g| g.is_some()).unwrap_or(false);
+    if is_some {
         return true;
     }
     match load_weights(WEIGHTS_PATH) {
         Ok(weights) => {
-            *cache().lock().unwrap() = Some(weights);
+            if let Ok(mut guard) = cache().lock() {
+                *guard = Some(weights);
+            }
             true
         }
         Err(_) => false,
@@ -172,13 +175,15 @@ pub fn ensure_loaded() -> bool {
 }
 
 pub fn predict_cached(features: [f32; 11]) -> Option<f32> {
-    let guard = cache().lock().unwrap();
+    let guard = cache().lock().ok()?;
     guard.as_ref().map(|weights| weights.predict(features))
 }
 
 #[cfg(test)]
 pub fn clear_cache_for_tests() {
-    *cache().lock().unwrap() = None;
+    if let Ok(mut guard) = cache().lock() {
+        *guard = None;
+    }
 }
 
 #[cfg(test)]

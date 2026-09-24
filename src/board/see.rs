@@ -66,8 +66,10 @@ impl BoardState {
 
         let mut attackers = self.get_all_attackers(target, occupancy);
 
-        occupancy.clear_bit(source as usize);
-        attackers.clear_bit(source as usize);
+        if (source as usize) < 64 {
+            occupancy.clear_bit(source as usize);
+            attackers.clear_bit(source as usize);
+        }
 
         self.update_xrays(&mut attackers, target, occupancy);
 
@@ -75,11 +77,16 @@ impl BoardState {
         let mut last_captured_piece = if mv.is_promotion() {
             mv.move_type.promotion_piece()
         } else {
-            self.piece_mapping[source as usize]
+            let s = source as usize;
+            if s < 64 {
+                self.piece_mapping[s]
+            } else {
+                Piece::None
+            }
         };
         side = side.other();
 
-        while attackers.is_not_empty() {
+        while attackers.is_not_empty() && depth < 32 {
             let side_attackers = attackers & self.occupancies[side];
             if side_attackers.is_empty() {
                 break;
