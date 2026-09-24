@@ -66,14 +66,11 @@ impl UciClient {
                 wanted
                     .into_iter()
                     .filter_map(|w| {
-                        generated
-                            .iter()
-                            .map(|e| e.mv)
-                            .find(|m| {
-                                m.source == w.source
-                                    && m.target == w.target
-                                    && m.promotion_char() == w.promotion_char()
-                            })
+                        generated.iter().map(|e| e.mv).find(|m| {
+                            m.source == w.source
+                                && m.target == w.target
+                                && m.promotion_char() == w.promotion_char()
+                        })
                     })
                     .collect()
             })
@@ -313,8 +310,7 @@ mod tests {
 
         let _serial = GO_TEST_LOCK.lock().unwrap();
         let mut client = UciClient::new();
-        *client.board.lock().unwrap() =
-            BoardState::parse_fen("3r4/4P3/8/8/8/8/8/4K2k w - - 0 1");
+        *client.board.lock().unwrap() = BoardState::parse_fen("3r4/4P3/8/8/8/8/8/4K2k w - - 0 1");
 
         client.run_go(&["depth", "1", "searchmoves", "e7d8q"]);
         {

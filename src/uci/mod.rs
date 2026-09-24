@@ -195,9 +195,7 @@ impl UciClient {
         cli::write_line("option name NMP_Verify type check default true");
         cli::write_line("option name NMP_Verify_Margin type spin default 150 min 0 max 500");
         cli::write_line("option name Conspiracy_Enabled type check default false");
-        cli::write_line(
-            "option name Conspiracy_Tolerance type spin default 30 min 5 max 200",
-        );
+        cli::write_line("option name Conspiracy_Tolerance type spin default 30 min 5 max 200");
         cli::write_line("option name SplitRoot_Enabled type check default false");
 
         if let Some(path) = crate::eval::nnue::v16::try_load_default_path() {

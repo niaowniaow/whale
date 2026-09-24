@@ -24,6 +24,7 @@ pub fn can_razor(
 }
 
 #[inline(always)]
+#[allow(clippy::too_many_arguments)]
 pub fn should_razor_with_margin(
     is_pv_node: bool,
     in_check: bool,

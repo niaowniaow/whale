@@ -60,7 +60,7 @@ pub fn parse_book_line(line: &str) -> Option<BookEntry> {
         let (fen_part, moves_part) = line.split_at(bm_pos);
         let moves_part = moves_part[4..].trim().trim_end_matches(';').trim();
         let moves: Vec<String> = moves_part
-            .split(|c| c == ',' || c == ' ')
+            .split([',', ' '])
             .map(|s| s.trim().trim_end_matches(';').to_string())
             .filter(|s| s.len() >= 4)
             .collect();
@@ -73,7 +73,7 @@ pub fn parse_book_line(line: &str) -> Option<BookEntry> {
     for sep in ['|', '\t'] {
         if let Some((fen_part, moves_part)) = line.split_once(sep) {
             let moves: Vec<String> = moves_part
-                .split(|c| c == ',' || c == ' ')
+                .split([',', ' '])
                 .map(|s| s.trim().to_string())
                 .filter(|s| s.len() >= 4)
                 .collect();
@@ -171,10 +171,9 @@ mod tests {
 
     #[test]
     fn parse_epd_bm_line() {
-        let e = parse_book_line(
-            "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 bm e2e4;",
-        )
-        .unwrap();
+        let e =
+            parse_book_line("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1 bm e2e4;")
+                .unwrap();
         assert_eq!(e.moves, vec!["e2e4"]);
     }
 

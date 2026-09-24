@@ -215,10 +215,9 @@ impl MoveOrdering {
                 }
                 let piece = board_state.get_piece_on(move_obj.mv.source);
                 if piece >= 0 && (piece as usize) < PIECES * 2 {
-                    let history_score =
-                        self.history_moves[piece as usize][target];
-                    let from_to_score = self.quiet_history[board_state.side_to_move as usize]
-                        [source][target];
+                    let history_score = self.history_moves[piece as usize][target];
+                    let from_to_score =
+                        self.quiet_history[board_state.side_to_move as usize][source][target];
                     let continuation_score = previous_move
                         .and_then(|prev_mv| {
                             let prev_target = prev_mv.target as usize;
@@ -226,8 +225,7 @@ impl MoveOrdering {
                                 let prev_piece = board_state.piece_mapping[prev_target];
                                 if (prev_piece as usize) < PIECES {
                                     return Some(
-                                        self.continuation_history[prev_piece as usize]
-                                            [prev_target]
+                                        self.continuation_history[prev_piece as usize][prev_target]
                                             [target],
                                     );
                                 }
@@ -388,7 +386,8 @@ pub fn populate_capture_scores(
             && target_piece != Piece::None
             && (target_piece as usize) < PIECES
         {
-            let hist = move_ordering.capture_history[moved_piece as usize][target][target_piece as usize];
+            let hist =
+                move_ordering.capture_history[moved_piece as usize][target][target_piece as usize];
             score += hist as i32;
         }
         move_obj.score = score;

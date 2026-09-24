@@ -839,30 +839,32 @@ fn search_primary(
         && best_move_so_far != Move::NO_MOVE
         && (conspiracy_unstable || search_state.multipv_lines.len() < 2)
         && !cancellation_token.load(Ordering::Relaxed)
-    {
-        if let Some((verified_score, _)) = search_single_root(
+        && let Some((verified_score, _)) = search_single_root(
             board_state,
             completed_depth,
             best_move_so_far,
             cancellation_token,
             search_state,
-        ) {
-            let tolerance = search_state.params.conspiracy_tolerance as i32;
-            let stable =
-                (verified_score as i32 - last_score as i32).abs() <= tolerance;
-            if *debug_mode {
-                println!(
-                    "info string conspiracy depth {} {} (iter {} vs verify {})",
-                    completed_depth,
-                    if stable { "verified=yes" } else { "verified=no" },
-                    last_score,
-                    verified_score
-                );
-                let _ = std::io::Write::flush(&mut std::io::stdout());
-            }
-            if stable {
-                search_state.score = verified_score;
-            }
+        )
+    {
+        let tolerance = search_state.params.conspiracy_tolerance as i32;
+        let stable = (verified_score as i32 - last_score as i32).abs() <= tolerance;
+        if *debug_mode {
+            println!(
+                "info string conspiracy depth {} {} (iter {} vs verify {})",
+                completed_depth,
+                if stable {
+                    "verified=yes"
+                } else {
+                    "verified=no"
+                },
+                last_score,
+                verified_score
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        }
+        if stable {
+            search_state.score = verified_score;
         }
     }
     search_state.best_previous_score = Some(search_state.score);
@@ -916,13 +918,7 @@ fn search_split_root(
             handles.push(s.spawn(move || {
                 let (bm, bs) =
                     split_root::search_subset(&mut board, &subset, depth, cancel, &mut state);
-                (
-                    bm,
-                    bs,
-                    state.nodes,
-                    state.tbhits,
-                    state.seldepth,
-                )
+                (bm, bs, state.nodes, state.tbhits, state.seldepth)
             }));
         }
         let mut best_move = Move::NO_MOVE;

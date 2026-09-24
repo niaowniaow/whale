@@ -248,11 +248,10 @@ impl UciClient {
             if name.eq_ignore_ascii_case("UseBook") || name.eq_ignore_ascii_case("Use_Book") {
                 state.use_book = flag_on;
             }
-            if name.eq_ignore_ascii_case("BookDepth") || name.eq_ignore_ascii_case("Book_Depth")
+            if (name.eq_ignore_ascii_case("BookDepth") || name.eq_ignore_ascii_case("Book_Depth"))
+                && let Ok(v) = value.parse::<u8>()
             {
-                if let Ok(v) = value.parse::<u8>() {
-                    state.book_depth = v;
-                }
+                state.book_depth = v;
             }
             if name.eq_ignore_ascii_case("BookFile")
                 || name.eq_ignore_ascii_case("Book_File")

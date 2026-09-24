@@ -565,8 +565,7 @@ fn search_internal(
             if ctx.search_state.params.nmp_verify_enabled
                 && !is_pv_node
                 && depth >= 7
-                && static_eval.saturating_sub(beta)
-                    < ctx.search_state.params.nmp_verify_margin
+                && static_eval.saturating_sub(beta) < ctx.search_state.params.nmp_verify_margin
             {
                 let verify_depth = depth.saturating_sub(6).max(1);
                 let verify_score = search_internal(
@@ -1435,9 +1434,11 @@ fn update_history_stats(
             actual_malus = actual_malus * 921 / 1024;
             let q_piece = board_state.get_piece_on(quiet_move.source);
             if q_piece >= 0 {
-                search_state
-                    .move_ordering
-                    .update_history(q_piece as usize, quiet_move, -actual_malus);
+                search_state.move_ordering.update_history(
+                    q_piece as usize,
+                    quiet_move,
+                    -actual_malus,
+                );
                 search_state
                     .move_ordering
                     .update_quiet_history(side, quiet_move, -actual_malus);
