@@ -18,6 +18,6 @@ jobs:
       - name: Push to GitLab
         run: |
           git remote add mirror "https://oauth2:${GITLAB_TOKEN}@gitlab.com/niaowniaow/whale.git"
-          git push --mirror mirror
+          git push mirror --all --tags
         env:
           GITLAB_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}   
