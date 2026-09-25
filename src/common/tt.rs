@@ -306,6 +306,7 @@ impl TranspositionTable {
         self.get_entry_with_verify(hash, alpha, beta, depth, ply, halfmove, None)
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn get_entry_with_verify(
         &self,
         hash: u64,

@@ -2,7 +2,7 @@ use crate::common::constants::MAX_SEARCH_DEPTH;
 use std::cell::RefCell;
 
 thread_local! {
-    static CUTOFF_COUNTS: RefCell<[u8; 64]> = RefCell::new([0; 64]);
+    static CUTOFF_COUNTS: RefCell<[u8; 64]> = const { RefCell::new([0; 64]) };
 }
 
 #[inline(always)]

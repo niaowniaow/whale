@@ -316,15 +316,15 @@ pub fn root_move(board: &mut BoardState) -> Option<Move> {
     if let Some((m, _)) = best_win {
         return Some(m);
     }
-    if cur == 0 || cur == -1 {
-        if let Some((m, _)) = best_draw {
-            return Some(m);
-        }
+    if (cur == 0 || cur == -1)
+        && let Some((m, _)) = best_draw
+    {
+        return Some(m);
     }
-    if cur == -1 {
-        if let Some((m, _)) = best_loss {
-            return Some(m);
-        }
+    if cur == -1
+        && let Some((m, _)) = best_loss
+    {
+        return Some(m);
     }
     if cur == 1 {
         if let Some((m, _)) = best_draw {
@@ -333,10 +333,10 @@ pub fn root_move(board: &mut BoardState) -> Option<Move> {
         if let Some((m, _)) = best_loss {
             return Some(m);
         }
-    } else if cur == 0 {
-        if let Some((m, _)) = best_loss {
-            return Some(m);
-        }
+    } else if cur == 0
+        && let Some((m, _)) = best_loss
+    {
+        return Some(m);
     }
     fallback_best_move(board, &pos, &loaded)
 }

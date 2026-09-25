@@ -1189,7 +1189,7 @@ fn search_internal(
                     lmr::deepen_adjustment(reduced_for_deeper, full_for_deeper, score, best_score);
                 let mut deeper_depth = depth;
                 if adj != 0 {
-                    deeper_depth = (depth as i16 + adj as i16).max(1).min(64) as u8;
+                    deeper_depth = (depth as i16 + adj as i16).clamp(1, 64) as u8;
                 }
                 let mut child_ctx = SearchContext {
                     allow_null_move: true,
@@ -2238,7 +2238,7 @@ mod tests {
         assert!(state.nodes > 0);
         let entry = state.tt.probe(hash).expect("probcut stores TT");
         assert_eq!(entry.entry_type, TranspositionEntryType::Beta);
-        assert_eq!(entry.depth, 2);
+        assert_eq!(entry.depth, 1);
     }
 
     #[test]

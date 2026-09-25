@@ -37,7 +37,7 @@ pub struct DirtyUpdate {
     pub n_dels: u8,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StateCache {
     pub checkers: u64,
     pub pinned: u64,
@@ -47,21 +47,6 @@ pub struct StateCache {
     pub check_squares: [u64; 6],
     pub threats_us: [u64; 6],
     pub threats_them: [u64; 6],
-}
-
-impl Default for StateCache {
-    fn default() -> Self {
-        Self {
-            checkers: 0,
-            pinned: 0,
-            pinners: 0,
-            pinned_them: 0,
-            all_threats: 0,
-            check_squares: [0; 6],
-            threats_us: [0; 6],
-            threats_them: [0; 6],
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

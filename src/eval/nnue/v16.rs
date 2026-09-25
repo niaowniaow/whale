@@ -3085,6 +3085,11 @@ mod tests {
 
     #[test]
     fn regression_rudi_dynamic_features() {
+        let _eval_guard = EVAL_TEST_LOCK.lock().unwrap();
+        let was_active = maintenance_active();
+        if !was_active {
+            load_net("models/whale_big_1.nnue").expect("bundled net loads");
+        }
         let board = BoardState::parse_fen("4k3/8/8/8/2p5/2n5/1PP5/4K3 w - - 0 1");
         let pos = SfnnPosition::from_board(&board);
         let mut arch = SfnnArch {
@@ -3130,6 +3135,9 @@ mod tests {
         assert_ne!(eval(&net), baseline);
         net.use_threats = false;
         assert_eq!(eval(&net), baseline);
+        if !was_active {
+            unload_nets();
+        }
     }
 
     #[test]
@@ -4298,6 +4306,11 @@ mod tests {
 
     #[test]
     fn eval_with_net_sf_threats_covers_branches() {
+        let _eval_guard = EVAL_TEST_LOCK.lock().unwrap();
+        let was_active = maintenance_active();
+        if !was_active {
+            load_net("models/whale_big_1.nnue").expect("bundled net loads");
+        }
         let board = BoardState::parse_fen("4k3/8/8/8/2p5/2n5/1PP5/4K3 w - - 0 1");
         let pos = SfnnPosition::from_board(&board);
         let base = [10i16, 20];
@@ -4373,6 +4386,9 @@ mod tests {
         let _ = eval_with_net(&pos, &net_pairs, [&base; 2], [&psqt; 2], Side::Black, 0);
         let _ = eval_with_net(&pos, &net_nopairs, [&base; 2], [&psqt; 2], Side::Black, 0);
         let _ = base_nopairs;
+        if !was_active {
+            unload_nets();
+        }
     }
 
     #[test]

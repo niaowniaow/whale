@@ -429,25 +429,35 @@ mod tests {
 
     #[test]
     fn should_resize_transposition_table() {
+        use crate::common::tt::TranspositionTable;
         let mut uci_client = UciClient::new();
 
         {
             let state = uci_client.search_state.lock().unwrap();
-            assert_eq!(state.tt.capacity(), 524288);
+            assert_eq!(
+                state.tt.capacity(),
+                TranspositionTable::new_mb(16).capacity()
+            );
         }
 
         uci_client.run_setoption(&["name", "Hash", "value", "128"]);
 
         {
             let state = uci_client.search_state.lock().unwrap();
-            assert_eq!(state.tt.capacity(), 4194304);
+            assert_eq!(
+                state.tt.capacity(),
+                TranspositionTable::new_mb(128).capacity()
+            );
         }
 
         uci_client.run_setoption(&["name", "hash", "value", "1"]);
 
         {
             let state = uci_client.search_state.lock().unwrap();
-            assert_eq!(state.tt.capacity(), 32768);
+            assert_eq!(
+                state.tt.capacity(),
+                TranspositionTable::new_mb(1).capacity()
+            );
         }
     }
 

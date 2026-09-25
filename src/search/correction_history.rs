@@ -120,14 +120,16 @@ impl CorrectionHistory {
         self.continuation_multi[offset_idx][idx][target]
     }
     #[inline(always)]
-    pub fn get_via_ptr(ptr: *const [i32; 64], target: usize) -> i32 {
+    #[allow(clippy::missing_safety_doc)]
+    pub unsafe fn get_via_ptr(ptr: *const [i32; 64], target: usize) -> i32 {
         if target >= 64 {
             return 0;
         }
         unsafe { (*ptr)[target] }
     }
     #[inline(always)]
-    pub fn update_via_ptr(ptr: *mut [i32; 64], target: usize, bonus: i32) {
+    #[allow(clippy::missing_safety_doc)]
+    pub unsafe fn update_via_ptr(ptr: *mut [i32; 64], target: usize, bonus: i32) {
         if target >= 64 {
             return;
         }

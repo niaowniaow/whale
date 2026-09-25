@@ -481,14 +481,16 @@ impl MoveOrdering {
         self.continuation_histories[offset_idx][prev_piece][prev_target][target]
     }
     #[inline(always)]
-    pub fn get_continuation_ptr_score(ptr: *const [i16; SQUARES], target: usize) -> i32 {
+    #[allow(clippy::missing_safety_doc)]
+    pub unsafe fn get_continuation_ptr_score(ptr: *const [i16; SQUARES], target: usize) -> i32 {
         if target >= SQUARES {
             return 0;
         }
         unsafe { (*ptr)[target] as i32 }
     }
     #[inline(always)]
-    pub fn update_continuation_ptr(ptr: *mut [i16; SQUARES], target: usize, bonus: i32) {
+    #[allow(clippy::missing_safety_doc)]
+    pub unsafe fn update_continuation_ptr(ptr: *mut [i16; SQUARES], target: usize, bonus: i32) {
         if target >= SQUARES {
             return;
         }
@@ -622,6 +624,7 @@ impl MoveOrdering {
         }
         s
     }
+    #[allow(clippy::too_many_arguments)]
     pub fn populate_quiet_scores_with_stack(
         &self,
         moves: &mut [ScoredMove],

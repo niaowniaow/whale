@@ -4,8 +4,8 @@ use crate::search::alp::{AlpFeatures, AlpModel};
 use std::cell::{Cell, RefCell};
 
 thread_local! {
-    static NMP_MIN_PLY: Cell<u8> = Cell::new(0);
-    static PRIOR_FAIL_HIGH: RefCell<[u8; 64]> = RefCell::new([0; 64]);
+    static NMP_MIN_PLY: Cell<u8> = const { Cell::new(0) };
+    static PRIOR_FAIL_HIGH: RefCell<[u8; 64]> = const { RefCell::new([0; 64]) };
 }
 
 #[inline(always)]
@@ -127,7 +127,7 @@ pub fn get_reduction_with_margin(
     eval_margin: i16,
 ) -> u8 {
     let _ = params;
-    let mut red = 7 + depth / 3 + ((eval_margin as i32 / 256).max(0).min(6) as u8);
+    let mut red = 7 + depth / 3 + ((eval_margin as i32 / 256).clamp(0, 6) as u8);
     if momentum > 120 && depth >= 6 {
         red = red.saturating_add(1);
     }
@@ -264,7 +264,7 @@ mod tests {
         assert_eq!(get_reduction(6, &params, 121), base + 1);
         assert_eq!(get_reduction(6, &params, 120), base);
         assert_eq!(get_reduction(5, &params, 200), 7 + 5 / 3);
-        assert_eq!(get_reduction(2, &params, 0), 7 + 2 / 3);
+        assert_eq!(get_reduction(2, &params, 0), 7);
     }
 
     #[test]
