@@ -83,7 +83,7 @@ impl NodeThreats {
         }
         let stm = board.side_to_move;
         Self {
-            checkers: 0,
+            checkers: board.checkers(stm).0,
             pinned: board.pinned_pieces(stm).0,
             pinned_them: 0,
             threats_us: [0; 6],

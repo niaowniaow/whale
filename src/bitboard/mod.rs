@@ -20,11 +20,17 @@ impl Bitboard {
 
     #[inline(always)]
     pub fn set_bit(&mut self, square: usize) {
+        if square >= 64 {
+            return;
+        }
         self.0 |= 1u64 << square;
     }
 
     #[inline(always)]
     pub fn clear_bit(&mut self, square: usize) {
+        if square >= 64 {
+            return;
+        }
         self.0 &= !(1u64 << square);
     }
 

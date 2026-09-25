@@ -15,7 +15,7 @@ Whale is a UCI chess engine written in Rust. It is intended as a readable, hacka
 - 64-bit bitboards with precomputed attack tables and magic bitboards for sliding pieces (regenerate with `--generate-magics`).
 - Phased move generation with a staged move picker: hash move → good captures → killers → counter moves → quiets → bad captures.
 - Exact boolean SEE (`see_ge`) with an early-exit shortcut for clearly winning exchanges.
-- Incremental Zobrist hashing, repetition detection, Chess960-agnostic castling handling.
+- Incremental Zobrist hashing, repetition detection, standard castling.
 
 ### Search (`src/search/`)
 
