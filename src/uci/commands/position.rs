@@ -64,7 +64,11 @@ impl UciClient {
                 return;
             }
 
-            self.board.lock().unwrap().make_move(found_move);
+            let mut board = self.board.lock().unwrap();
+            if board.history.index + 1 >= crate::board::history::HISTORY_SIZE {
+                return;
+            }
+            board.make_move(found_move);
         }
     }
 

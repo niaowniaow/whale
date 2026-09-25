@@ -368,7 +368,7 @@ impl BoardState {
                         if m.target != self.en_passant_square {
                             return false;
                         }
-                    } else if !is_target_occupied {
+                    } else if m.is_capture() != is_target_occupied {
                         return false;
                     }
                 }
@@ -1647,7 +1647,7 @@ mod tests {
         board.add_piece(Square::E4, Side::White, Piece::Pawn, false);
         board.add_piece(Square::D5, Side::Black, Piece::Pawn, false);
         assert!(board.is_pseudo_legal(Move::new(Square::E4, Square::D5, MoveType::Capture)));
-        assert!(board.is_pseudo_legal(Move::new(Square::E4, Square::D5, MoveType::Quiet)));
+        assert!(!board.is_pseudo_legal(Move::new(Square::E4, Square::D5, MoveType::Quiet)));
 
         assert!(!board.is_pseudo_legal(Move::new(Square::E4, Square::E6, MoveType::Quiet)));
 

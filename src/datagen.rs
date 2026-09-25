@@ -590,6 +590,12 @@ pub fn run_with_teacher(
     };
     let mut behavior_writer = BufWriter::new(behavior_file);
 
+    let num_threads = num_threads.clamp(1, 256);
+    if num_games == 0 {
+        println!("Nothing to do: number of games is 0.");
+        return;
+    }
+
     let (tx, rx) = mpsc::sync_channel(256);
 
     let games_per_thread = num_games / num_threads;

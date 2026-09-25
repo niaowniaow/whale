@@ -38,7 +38,7 @@ impl BoardState {
         if moved_piece == Piece::Pawn || m.is_capture() {
             self.half_move_clock = 0;
         } else {
-            self.half_move_clock += 1;
+            self.half_move_clock = self.half_move_clock.saturating_add(1);
         }
 
         let mut final_moved_piece = moved_piece;

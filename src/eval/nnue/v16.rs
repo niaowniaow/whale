@@ -83,12 +83,9 @@ impl SfnnPosition {
             pieces[p as usize] = board.pieces[p].0.swap_bytes();
         }
         let mut mapping = [6u8; 64];
-        let src = board.piece_mapping.as_ptr() as *const u64;
-        let dst = mapping.as_mut_ptr() as *mut u64;
-        unsafe {
-            for r in 0..8 {
-                *dst.add(r) = *src.add(7 - r);
-            }
+        for (i, slot) in mapping.iter_mut().enumerate() {
+            let rank = 7 - (i >> 3);
+            *slot = board.piece_mapping[(rank << 3) | (i & 7)] as u8;
         }
         Self {
             pieces,
@@ -1907,6 +1904,9 @@ pub fn update_perspective_finny_or_refresh(
 ) {
     let pi = perspective as usize;
     let ksq = pos.king_square(perspective);
+    if ksq >= 64 {
+        return;
+    }
     let current_generation = current_gen();
 
     FINNY_CACHE.with(|cache| {

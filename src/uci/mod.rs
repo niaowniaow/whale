@@ -208,7 +208,8 @@ impl UciClient {
         let depth: u8 = parameters
             .first()
             .and_then(|d| d.parse::<u8>().ok())
-            .unwrap_or(5);
+            .unwrap_or(5)
+            .clamp(1, 10);
         let mut board = self.board.lock().unwrap().clone();
         let start = std::time::Instant::now();
         let nodes = perft_count(&mut board, depth);
@@ -237,7 +238,8 @@ impl UciClient {
         let depth: u8 = parameters
             .get(2)
             .and_then(|v| v.parse::<u8>().ok())
-            .unwrap_or(12);
+            .unwrap_or(12)
+            .clamp(1, 64);
         if let Some(&model) = parameters.get(3) {
             let _ = crate::eval::nnue::v16::set_eval_file("Model", model);
         }

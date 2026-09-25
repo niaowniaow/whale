@@ -112,6 +112,12 @@ impl BoardState {
     }
 
     pub fn record_pending_updates(&mut self, target_idx: usize) {
+        if target_idx >= crate::board::history::HISTORY_SIZE {
+            self.pending_adds = 0;
+            self.pending_removes = 0;
+            self.sfnn16_pending.clear();
+            return;
+        }
         self.history.dirty_updates[target_idx] = crate::board::history::DirtyUpdate {
             adds_w: self.pending_adds_w,
             dels_w: self.pending_dels_w,
