@@ -682,9 +682,7 @@ pub fn run_with_teacher(
                             .unwrap_or(search_state.score);
 
                         let ply = positions.len();
-                        if let Some(winner) =
-                            resign_winner(score, ply, board_state.side_to_move)
-                        {
+                        if let Some(winner) = resign_winner(score, ply, board_state.side_to_move) {
                             positions.push(SelfPlayPosition {
                                 side_to_move: board_state.side_to_move,
                                 mv: best_move,

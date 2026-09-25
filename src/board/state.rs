@@ -997,13 +997,13 @@ impl BoardState {
                     return false;
                 }
                 let cap_sq = Square::from_rank_file(from.rank(), to.file());
-                let occ_after = self.occupancy().0 ^ (1u64 << (from as usize))
-                    ^ (1u64 << (cap_sq as usize))
-                    | (1u64 << (to as usize));
-                let enemy_bq = self.get_pieces(them, Piece::Bishop).0
-                    | self.get_pieces(them, Piece::Queen).0;
-                let enemy_rq = self.get_pieces(them, Piece::Rook).0
-                    | self.get_pieces(them, Piece::Queen).0;
+                let occ_after =
+                    self.occupancy().0 ^ (1u64 << (from as usize)) ^ (1u64 << (cap_sq as usize))
+                        | (1u64 << (to as usize));
+                let enemy_bq =
+                    self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
+                let enemy_rq =
+                    self.get_pieces(them, Piece::Rook).0 | self.get_pieces(them, Piece::Queen).0;
                 let mut sliders = enemy_bq | enemy_rq;
                 while sliders != 0 {
                     let psq = sliders.trailing_zeros() as usize;
@@ -1015,9 +1015,8 @@ impl BoardState {
                     if between != 0 {
                         continue;
                     }
-                    let is_diag = get_bishop_attacks_from_table(ksq, Bitboard(0)).0
-                        & (1u64 << psq)
-                        != 0;
+                    let is_diag =
+                        get_bishop_attacks_from_table(ksq, Bitboard(0)).0 & (1u64 << psq) != 0;
                     if is_diag {
                         if (enemy_bq & (1u64 << psq)) != 0 {
                             return false;

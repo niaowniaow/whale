@@ -232,10 +232,7 @@ impl CorrectionHistory {
                 let prev_side = board_state.side_to_move.other();
                 let idx0 = prev_side as usize * 6 + pc0 as usize;
                 if idx0 < 12 {
-                    Self::apply_bonus(
-                        &mut self.continuation_table[idx0][sq0],
-                        bonus * 130 / 128,
-                    );
+                    Self::apply_bonus(&mut self.continuation_table[idx0][sq0], bonus * 130 / 128);
                 }
             }
         }
@@ -258,10 +255,7 @@ impl CorrectionHistory {
             if pc3 != Piece::None && sq3 < 64 {
                 let idx3 = stm * 6 + pc3 as usize;
                 if idx3 < 12 {
-                    Self::apply_bonus(
-                        &mut self.continuation_multi[1][idx3][sq3],
-                        bonus * 70 / 128,
-                    );
+                    Self::apply_bonus(&mut self.continuation_multi[1][idx3][sq3], bonus * 70 / 128);
                 }
             }
         }
@@ -271,10 +265,7 @@ impl CorrectionHistory {
             if pc5 != Piece::None && sq5 < 64 {
                 let idx5 = stm * 6 + pc5 as usize;
                 if idx5 < 12 {
-                    Self::apply_bonus(
-                        &mut self.continuation_multi[2][idx5][sq5],
-                        bonus * 35 / 128,
-                    );
+                    Self::apply_bonus(&mut self.continuation_multi[2][idx5][sq5], bonus * 35 / 128);
                 }
             }
         }

@@ -27,11 +27,7 @@ impl MoveList {
             let to = targets.get_lsb() as usize;
             targets.clear_lsb();
             if from < 64 && to < 64 {
-                self.push(ScoredMove::new(
-                    Square::from(from),
-                    Square::from(to),
-                    mt,
-                ));
+                self.push(ScoredMove::new(Square::from(from), Square::from(to), mt));
             }
         }
     }
@@ -41,11 +37,7 @@ impl MoveList {
             targets &= targets - 1;
             let from = (to as i32 - dir) as usize;
             if from < 64 && to < 64 {
-                self.push(ScoredMove::new(
-                    Square::from(from),
-                    Square::from(to),
-                    mt,
-                ));
+                self.push(ScoredMove::new(Square::from(from), Square::from(to), mt));
             }
         }
     }

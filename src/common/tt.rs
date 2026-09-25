@@ -1146,8 +1146,7 @@ mod tests {
         let tt = TranspositionTable::new(1024);
         let m = Move::new(Square::E2, Square::E4, MoveType::Quiet);
         tt.submit_entry_with_eval(424252, 50, 20, 8, m, TranspositionEntryType::Exact);
-        let (found, score, got) =
-            tt.get_entry_with_verify(424252, 0, 40, 8, 0, 0, Some(-60));
+        let (found, score, got) = tt.get_entry_with_verify(424252, 0, 40, 8, 0, 0, Some(-60));
         assert!(found);
         assert_eq!(score, 50);
         assert_eq!(got, Some(m));

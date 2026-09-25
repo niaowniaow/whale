@@ -160,8 +160,7 @@ impl BoardState {
         }
     }
 
-    pub fn pop_accumulator(&mut self) {
-    }
+    pub fn pop_accumulator(&mut self) {}
 
     fn apply_dirty(
         acc: &mut crate::eval::nnue::accumulator::Accumulators,

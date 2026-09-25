@@ -1,8 +1,6 @@
 use crate::bitboard::Bitboard;
 use crate::bitboard::attacks::{FILE_A, FILE_H};
-use crate::bitboard::lookups::{
-    get_bishop_attacks_from_table, knight_attacks, pawn_attacks,
-};
+use crate::bitboard::lookups::{get_bishop_attacks_from_table, knight_attacks, pawn_attacks};
 use crate::board::state::{BoardState, CASTLING_CONSTANTS};
 use crate::common::castle::Castle;
 use crate::common::move_list::MoveList;
@@ -165,8 +163,7 @@ impl BoardState {
         while takers != 0 {
             let from = takers.trailing_zeros() as usize;
             takers &= takers - 1;
-            let occ_after =
-                (self.occupancy().0 ^ (1u64 << from) ^ (1u64 << cap_sq)) | (1u64 << ep);
+            let occ_after = (self.occupancy().0 ^ (1u64 << from) ^ (1u64 << cap_sq)) | (1u64 << ep);
             if (enemy_pawns & pawn_attacks()[capturer as usize][ksq as usize]) != 0 {
                 continue;
             }
@@ -184,9 +181,8 @@ impl BoardState {
                 if (crate::board::state::BETWEEN_BB[ksq as usize][psq] & occ_after) != 0 {
                     continue;
                 }
-                let is_diag = get_bishop_attacks_from_table(ksq, Bitboard(0)).0
-                    & (1u64 << psq)
-                    != 0;
+                let is_diag =
+                    get_bishop_attacks_from_table(ksq, Bitboard(0)).0 & (1u64 << psq) != 0;
                 if is_diag {
                     if (enemy_bq & (1u64 << psq)) != 0 {
                         blocked = true;

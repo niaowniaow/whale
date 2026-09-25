@@ -87,7 +87,9 @@ pub fn apply_contempt(
     let contempt = if stm == engine_side { c } else { -c };
     let scaled_contempt = ((contempt as f32) * att).round() as i16;
     let scaled_draw = ((d as f32) * att).round() as i16;
-    score.saturating_add(scaled_draw).saturating_sub(scaled_contempt)
+    score
+        .saturating_add(scaled_draw)
+        .saturating_sub(scaled_contempt)
 }
 
 #[inline(always)]

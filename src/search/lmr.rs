@@ -283,10 +283,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
-                    cutoff_cnt: 0,
-                    all_node: false,
-                    tt_capture: false,
-                    is_tt_move: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
         };
         let pv_query = LmrQuery {
             is_pv_node: true,
@@ -323,10 +323,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
-                    cutoff_cnt: 0,
-                    all_node: false,
-                    tt_capture: false,
-                    is_tt_move: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
         };
         let improving_query = LmrQuery {
             is_improving: true,
@@ -357,10 +357,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
-                    cutoff_cnt: 0,
-                    all_node: false,
-                    tt_capture: false,
-                    is_tt_move: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
         };
         let crisis_query = LmrQuery {
             momentum: -150,
@@ -397,10 +397,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
-                    cutoff_cnt: 0,
-                    all_node: false,
-                    tt_capture: false,
-                    is_tt_move: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
         };
         let no_pv_query = LmrQuery {
             found_pv: false,
@@ -431,10 +431,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
-                    cutoff_cnt: 0,
-                    all_node: false,
-                    tt_capture: false,
-                    is_tt_move: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
         };
         let dis_query = LmrQuery {
             structural_disagreement: 150,
@@ -485,10 +485,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
-                    cutoff_cnt: 0,
-                    all_node: false,
-                    tt_capture: false,
-                    is_tt_move: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
         };
         assert_eq!(compute_reduction(&base, &table, &divisors), 1);
         let shallow = LmrQuery { depth: 1, ..base };
@@ -515,10 +515,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
-                    cutoff_cnt: 0,
-                    all_node: false,
-                    tt_capture: false,
-                    is_tt_move: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
         };
         let hi = compute_reduction(&base, &table, &divisors);
         let lo_query = LmrQuery {
@@ -567,10 +567,10 @@ mod tests {
             structural_disagreement: 0,
             cut_node: false,
             tt_pv: false,
-                    cutoff_cnt: 0,
-                    all_node: false,
-                    tt_capture: false,
-                    is_tt_move: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
         };
         let r_base = compute_reduction(&base, &table, &divisors);
         let r_cut = compute_reduction(

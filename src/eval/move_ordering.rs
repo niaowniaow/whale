@@ -49,7 +49,9 @@ impl MoveOrdering {
             capture_history: [[[0; PIECES]; SQUARES]; PIECES * 2],
             pawn_history: Box::new([[[0i16; SQUARES]; PIECES * 2]; PAWN_HISTORY_BUCKETS]),
             low_ply_history: [[[0i16; SQUARES]; SQUARES]; LOW_PLY_HISTORY_SIZE],
-            continuation_histories: Box::new([[[[0i16; SQUARES]; SQUARES]; PIECES * 2]; CONT_HISTORY_COUNT]),
+            continuation_histories: Box::new(
+                [[[[0i16; SQUARES]; SQUARES]; PIECES * 2]; CONT_HISTORY_COUNT],
+            ),
             tt_move_history: 0,
         }
     }
@@ -99,8 +101,7 @@ impl MoveOrdering {
         }
         self.tt_move_history = 0;
     }
-    pub fn decay_history(&mut self) {
-    }
+    pub fn decay_history(&mut self) {}
     pub fn is_move_heuristic_empty(&self) -> bool {
         self.killer_moves
             .iter()
@@ -134,10 +135,10 @@ impl MoveOrdering {
                 .low_ply_history
                 .iter()
                 .all(|ply| ply.iter().all(|row| row.iter().all(|&s| s == 0)))
-            && self
-                .continuation_histories
-                .iter()
-                .all(|off| off.iter().all(|piece| piece.iter().all(|row| row.iter().all(|&s| s == 0))))
+            && self.continuation_histories.iter().all(|off| {
+                off.iter()
+                    .all(|piece| piece.iter().all(|row| row.iter().all(|&s| s == 0)))
+            })
             && self.tt_move_history == 0
     }
     #[inline(always)]
@@ -259,8 +260,11 @@ impl MoveOrdering {
                         let raw = self.low_ply_history[ply][source][target] as i32;
                         low_score = 8 * raw / (1 + ply as i32);
                     }
-                    let mut score =
-                        2 * history_score + i32::from(from_to_score) + continuation_score + 2 * pawn_score + low_score;
+                    let mut score = 2 * history_score
+                        + i32::from(from_to_score)
+                        + continuation_score
+                        + 2 * pawn_score
+                        + low_score;
                     let pt = (piece as usize) % PIECES;
                     let to_mask = 1u64 << target;
                     let from_mask = 1u64 << source;
@@ -447,8 +451,16 @@ impl MoveOrdering {
         } else {
             0
         };
-        let pp = if prev_piece < PIECES * 2 { prev_piece } else { 0 };
-        let pt = if prev_target < SQUARES { prev_target } else { 0 };
+        let pp = if prev_piece < PIECES * 2 {
+            prev_piece
+        } else {
+            0
+        };
+        let pt = if prev_target < SQUARES {
+            prev_target
+        } else {
+            0
+        };
         &mut self.continuation_histories[oi][pp][pt] as *mut [i16; SQUARES]
     }
     #[inline(always)]

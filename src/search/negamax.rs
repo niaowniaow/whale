@@ -268,9 +268,10 @@ fn search_internal(
             let tt_capture_sing = tt_best
                 .map(|m| m.is_capture() || m.is_promotion())
                 .unwrap_or(false);
-            let corr_raw =
-                ctx.search_state.correction_history.get_correction(board_state, previous_move)
-                    as i32;
+            let corr_raw = ctx
+                .search_state
+                .correction_history
+                .get_correction(board_state, previous_move) as i32;
             let corr_adj = (corr_raw.abs() / 198368).min(1000) as i16;
             let need = 6 + ((tt_pv_sing && !is_pv_node) as u8);
             if depth >= need && original_score.abs() < mate_bound {
@@ -309,12 +310,10 @@ fn search_internal(
                 }
 
                 if se_score < singular_beta {
-                    let double_margin = -2
-                        + 204 * (is_pv_node as i16)
+                    let double_margin = -2 + 204 * (is_pv_node as i16)
                         - 152 * ((!tt_capture_sing) as i16)
                         - corr_adj;
-                    let triple_margin = 70
-                        + 279 * (is_pv_node as i16)
+                    let triple_margin = 70 + 279 * (is_pv_node as i16)
                         - 188 * ((!tt_capture_sing) as i16)
                         + 81 * (tt_pv_sing as i16)
                         - corr_adj;
@@ -324,13 +323,16 @@ fn search_internal(
                     singular_depth_bonus = 1;
                 } else if se_score >= beta && se_score.abs() < mate_bound {
                     if has_static_eval && !in_check && se_score > static_eval {
-                        let bonus =
-                            (((se_score as i32 - static_eval as i32) * ((depth as i32 - 1) / 2) * 177)
-                                / 1024)
-                                .clamp(-256, 256);
-                        ctx.search_state
-                            .correction_history
-                            .update(board_state, previous_move, bonus);
+                        let bonus = (((se_score as i32 - static_eval as i32)
+                            * ((depth as i32 - 1) / 2)
+                            * 177)
+                            / 1024)
+                            .clamp(-256, 256);
+                        ctx.search_state.correction_history.update(
+                            board_state,
+                            previous_move,
+                            bonus,
+                        );
                     }
                     return se_score;
                 } else if original_score >= beta || cut_node {
@@ -382,7 +384,8 @@ fn search_internal(
         let tt_hit_rfp = tt_entry.is_some();
         let opponent_worsening = ply > 0
             && ctx.search_state.eval_stack[(ply as usize).saturating_sub(1)] != i16::MIN
-            && (static_eval as i32) > -(ctx.search_state.eval_stack[(ply as usize).saturating_sub(1)] as i32);
+            && (static_eval as i32)
+                > -(ctx.search_state.eval_stack[(ply as usize).saturating_sub(1)] as i32);
         if !tt_hit_rfp {
             margin = margin.saturating_sub(20 * depth as i16);
         }
@@ -593,7 +596,11 @@ fn search_internal(
             if nmp::get_nmp_min_ply() != 0 || depth < 16 {
                 nmp::inc_prior_fail_high(ply);
                 let mate_bound_inner = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
-                let score_out = if score >= mate_bound_inner { beta } else { score };
+                let score_out = if score >= mate_bound_inner {
+                    beta
+                } else {
+                    score
+                };
                 if ctx.excluded_move.is_none() {
                     ctx.search_state.tt.submit_entry(
                         board_state.board_hash,
@@ -634,7 +641,11 @@ fn search_internal(
             if verify_score >= beta {
                 nmp::inc_prior_fail_high(ply);
                 let mate_bound_inner = MAX_CENTIPAWN_EVAL - MAX_PLY as i16;
-                let score_out = if score >= mate_bound_inner { beta } else { score };
+                let score_out = if score >= mate_bound_inner {
+                    beta
+                } else {
+                    score
+                };
                 if ctx.excluded_move.is_none() {
                     ctx.search_state.tt.submit_entry(
                         board_state.board_hash,
@@ -658,7 +669,9 @@ fn search_internal(
     let mut found_pv = false;
     let mut entry_type = TranspositionEntryType::Alpha;
     let mut coarse_failed_low = false;
-    let mut current_depth = depth.saturating_add(singular_depth_bonus).min(constants::MAX_PLY as u8 - 1);
+    let mut current_depth = depth
+        .saturating_add(singular_depth_bonus)
+        .min(constants::MAX_PLY as u8 - 1);
 
     if ctx.search_state.params.iir_enabled {
         let iir_red = iir::reduction(
@@ -885,7 +898,9 @@ fn search_internal(
         {
             if cap_or_promo {
                 if !gives_check && lmr_depth_fut < 8 {
-                    let fut_val = static_eval as i32 + 234 + 247 * lmr_depth_fut as i32
+                    let fut_val = static_eval as i32
+                        + 234
+                        + 247 * lmr_depth_fut as i32
                         + captured_see_val as i32
                         + history_score * 134 / 1024;
                     if fut_val <= alpha as i32 {
@@ -894,7 +909,8 @@ fn search_internal(
                     }
                 }
             } else if lmr_depth_fut < 12 && !gives_check {
-                let fut_val = static_eval as i32 + 119 * lmr_depth_fut as i32
+                let fut_val = static_eval as i32
+                    + 119 * lmr_depth_fut as i32
                     + 90 * ((static_eval > alpha) as i32)
                     + 164;
                 if fut_val <= alpha as i32 {
@@ -1169,12 +1185,8 @@ fn search_internal(
             if score > alpha {
                 let reduced_for_deeper = depth.saturating_sub(1 + reduction);
                 let full_for_deeper = depth.saturating_sub(1).max(1);
-                let adj = lmr::deepen_adjustment(
-                    reduced_for_deeper,
-                    full_for_deeper,
-                    score,
-                    best_score,
-                );
+                let adj =
+                    lmr::deepen_adjustment(reduced_for_deeper, full_for_deeper, score, best_score);
                 let mut deeper_depth = depth;
                 if adj != 0 {
                     deeper_depth = (depth as i16 + adj as i16).max(1).min(64) as u8;

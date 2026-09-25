@@ -120,11 +120,7 @@ pub fn is_stable_position(best_move_changed: bool, swing_cp: i16) -> bool {
 }
 
 #[inline(always)]
-pub fn stable_streak_next(
-    streak: u32,
-    best_move_changed: bool,
-    swing_cp: i16,
-) -> u32 {
+pub fn stable_streak_next(streak: u32, best_move_changed: bool, swing_cp: i16) -> u32 {
     if is_stable_position(best_move_changed, swing_cp) {
         streak.saturating_add(1)
     } else {
@@ -133,11 +129,7 @@ pub fn stable_streak_next(
 }
 
 #[inline(always)]
-pub fn should_stop_early(
-    stable_streak: u32,
-    best_move_changed: bool,
-    swing_cp: i16,
-) -> bool {
+pub fn should_stop_early(stable_streak: u32, best_move_changed: bool, swing_cp: i16) -> bool {
     if best_move_changed {
         return false;
     }

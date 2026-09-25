@@ -146,10 +146,18 @@ mod tests {
         clear_nmp_state();
         let board = BoardState::parse_fen(STARTING_FEN);
         let _ = can_prune(false, &board, true, 3, false, 500, 0, 0, true, 0, true);
-        assert!(!can_prune(true, &board, true, 3, false, 500, 0, 0, true, 0, true));
-        assert!(!can_prune(false, &board, false, 3, false, 500, 0, 0, true, 0, true));
-        assert!(!can_prune(false, &board, true, 3, true, 500, 0, 0, true, 0, true));
-        assert!(!can_prune(false, &board, true, 1, false, 500, 0, 0, true, 0, true));
+        assert!(!can_prune(
+            true, &board, true, 3, false, 500, 0, 0, true, 0, true
+        ));
+        assert!(!can_prune(
+            false, &board, false, 3, false, 500, 0, 0, true, 0, true
+        ));
+        assert!(!can_prune(
+            false, &board, true, 3, true, 500, 0, 0, true, 0, true
+        ));
+        assert!(!can_prune(
+            false, &board, true, 1, false, 500, 0, 0, true, 0, true
+        ));
         assert!(!can_prune(
             false,
             &board,
@@ -163,24 +171,42 @@ mod tests {
             0,
             true
         ));
-        assert!(!can_prune(false, &board, true, 3, false, 500, 0, -151, true, 0, true));
+        assert!(!can_prune(
+            false, &board, true, 3, false, 500, 0, -151, true, 0, true
+        ));
         let bare = BoardState::parse_fen(BARE_KINGS);
-        assert!(!can_prune(false, &bare, true, 3, false, 500, 0, 0, true, 0, true));
-        assert!(!can_prune(false, &board, true, 3, false, 500, 0, 0, false, 0, true));
-        assert!(!can_prune(false, &board, true, 3, false, 500, -3000, 0, true, 0, true));
+        assert!(!can_prune(
+            false, &bare, true, 3, false, 500, 0, 0, true, 0, true
+        ));
+        assert!(!can_prune(
+            false, &board, true, 3, false, 500, 0, 0, false, 0, true
+        ));
+        assert!(!can_prune(
+            false, &board, true, 3, false, 500, -3000, 0, true, 0, true
+        ));
         set_nmp_min_ply(4);
-        assert!(!can_prune(false, &board, true, 6, false, 2000, 0, 0, true, 2, true));
+        assert!(!can_prune(
+            false, &board, true, 6, false, 2000, 0, 0, true, 2, true
+        ));
         set_nmp_min_ply(0);
-        assert!(!can_prune(false, &board, true, 6, false, 0, 500, 0, true, 0, false));
+        assert!(!can_prune(
+            false, &board, true, 6, false, 0, 500, 0, true, 0, false
+        ));
     }
 
     #[test]
     fn static_eval_below_beta_with_momentum_margin() {
         clear_nmp_state();
         let board = BoardState::parse_fen(STARTING_FEN);
-        assert!(!can_prune(false, &board, true, 4, false, 100, 100, -70, true, 0, true));
-        assert!(!can_prune(false, &board, true, 4, false, 139, 100, -70, true, 0, true));
-        assert!(!can_prune(false, &board, true, 4, false, 99, 100, 0, true, 0, true));
+        assert!(!can_prune(
+            false, &board, true, 4, false, 100, 100, -70, true, 0, true
+        ));
+        assert!(!can_prune(
+            false, &board, true, 4, false, 139, 100, -70, true, 0, true
+        ));
+        assert!(!can_prune(
+            false, &board, true, 4, false, 99, 100, 0, true, 0, true
+        ));
     }
 
     #[test]
@@ -192,7 +218,19 @@ mod tests {
             for margin in [-600i32, -100, 0, 200, 600, 1500] {
                 let beta = 100i16;
                 let static_eval = beta.saturating_add(margin.clamp(-30000, 30000) as i16);
-                let got = can_prune(false, &board, true, depth, false, static_eval, beta, 0, true, 0, true);
+                let got = can_prune(
+                    false,
+                    &board,
+                    true,
+                    depth,
+                    false,
+                    static_eval,
+                    beta,
+                    0,
+                    true,
+                    0,
+                    true,
+                );
                 let alp = AlpModel::should_prune(
                     &AlpFeatures {
                         eval_margin: (static_eval as i32 - beta as i32).clamp(-32768, 32767),
