@@ -15,9 +15,15 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Push to GitLab
+      - name: Sync to GitLab
         run: |
           git remote add mirror "https://oauth2:${GITLAB_TOKEN}@gitlab.com/niaowniaow/whale.git"
-          git push mirror --all --tags
+
+          if [ "${{ github.event_name }}" = "delete" ]; then
+            git push mirror --delete "${{ github.event.ref }}" || true
+          else
+            git push mirror --all --force
+            git push mirror --tags --force
+          fi
         env:
-          GITLAB_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}   
+          GITLAB_TOKEN: ${{ secrets.GITLAB_MIRROR_TOKEN }}
