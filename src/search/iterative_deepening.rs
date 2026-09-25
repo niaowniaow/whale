@@ -177,6 +177,8 @@ fn search_primary(
     let prev_score = search_state.best_previous_score.unwrap_or(0);
     let mut iter_scores = [prev_score; 4];
     let mut iter_idx = 0usize;
+    let mut score_avg = crate::eval::optimism::ScoreAverage::new();
+    score_avg.push(prev_score as i32);
 
     let timer = Instant::now();
 
@@ -191,14 +193,9 @@ fn search_primary(
         }
 
         let us = board_state.side_to_move;
-        let avg_sf = (last_score as i32) * 208 / 100;
-        let opt = if avg_sf != 0 {
-            114 * avg_sf / (avg_sf.abs() + 85)
-        } else {
-            0
-        };
-        search_state.optimism[us as usize] = opt;
-        search_state.optimism[us.other() as usize] = -opt;
+        let pair = score_avg.pair();
+        search_state.optimism[us as usize] = pair[0];
+        search_state.optimism[us.other() as usize] = pair[1];
 
         let mut alpha = i16::MIN + 1;
         let mut beta = i16::MAX - 1;
@@ -294,6 +291,7 @@ fn search_primary(
 
             let prev_iter_score = last_score;
             last_score = current_score;
+            score_avg.push(current_score as i32);
             search_state.score = current_score;
             completed_depth = current_depth;
             if !current_pv.is_empty() {

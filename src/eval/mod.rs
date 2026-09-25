@@ -2,6 +2,7 @@ pub mod backend;
 pub mod heads;
 pub mod move_ordering;
 pub mod nnue;
+pub mod optimism;
 
 pub use nnue::{
     evaluate, evaluate_fast, evaluate_qsearch, evaluate_with_depth, evaluate_with_depth_cached,

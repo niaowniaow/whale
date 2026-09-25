@@ -1,294 +1,179 @@
 # 🐋 Whale
 
-Whale is a fast chess engine that works with UCI, built using Rust.
+**A sample chess engine project to help you build a more complete chess engine with NNUE.**
 
-It started as a fork of [znxftw/rudim](https://github.com/znxftw/rudim). We’ve completely rebuilt the core engine, including **Board Representation & Move Generation**, **Search Pipeline**, **Evaluation Architecture**, and **NNUE Subsystems**. We took inspiration from [Stockfish](https://github.com/official-stockfish/Stockfish) for algorithms and used high-performance Rust patterns from [Reckless](https://github.com/codedeliveryservice/Reckless).
+Whale is a UCI chess engine written in Rust. It is intended as a readable, hackable starting point: board representation, move generation, alpha-beta search, NNUE evaluation, multi-threading, Syzygy tablebases and an opening book, all in one place so you can learn how the pieces fit together and extend them toward a stronger, more complete engine.
 
-We're training evaluation networks with [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch).
-
-**Training Backend Research:** We’re exploring [Bullet](https://github.com/jw1912/bullet) as a possible replacement for `nnue-pytorch` in NNUE model training.
+> **Origin:** Whale started as a fork of [znxftw/rudim](https://github.com/znxftw/rudim). The core engine (board, search, evaluation, NNUE plumbing) has since been rebuilt. See [Acknowledgements](#acknowledgements) for the projects it learns from.
 
 ---
 
-## Technical Architecture
+## Feature tour
 
-### 1. Board Representation & Move Generation
+### Board & move generation (`src/board/`, `src/bitboard/`)
 
-* **High-Performance Bitboards:** A new 64-bit board model that tracks piece placements and colors.
-* **Magic Bitboards:** Custom precomputed lookups for sliding piece attacks (bishops, rooks, queens) with a generator for runtime use (`--generate-magics`).
-* **Phased Move Generation & Staged Picker:**
+- 64-bit bitboards with precomputed attack tables and magic bitboards for sliding pieces (regenerate with `--generate-magics`).
+- Phased move generation with a staged move picker: hash move → good captures → killers → counter moves → quiets → bad captures.
+- Exact boolean SEE (`see_ge`) with an early-exit shortcut for clearly winning exchanges.
+- Incremental Zobrist hashing, repetition detection, Chess960-agnostic castling handling.
 
-  * Gradually generate candidates: Hash/PV Move → Good Captures (SEE ≥ 0) → Killer Moves → Counter Moves → Quiet Moves → Bad Captures.
-  * Check for legality directly in the search loop to skip illegal moves.
-  * **Exact Boolean SEE:** `see_ge()` returns exactly `see() >= threshold`, short-circuiting as soon as the worst case (the opponent's recapture) already clears the bound, so pruning and ordering gates no longer pay for a full exchange evaluation.
-* **Fast Zobrist Hashing & History:** Updates hash states quickly during moves, captures, promotions, castling, and en-passant; includes a check for three-fold repetition.
-* **Syzygy Tablebase Support:** Endgame tablebase probing using `shakmaty-syzygy` (WDL bounds and optimal move extraction).
+### Search (`src/search/`)
 
-### 2. Search Engine & Novel Heuristics
+- Iterative deepening with aspiration windows and Principal Variation Search (NegaScout).
+- Standard pruning and reductions: mate-distance pruning, razoring, reverse futility pruning, null-move pruning with zugzwang verification, ProbCut, internal iterative reduction, late-move pruning, futility pruning, SEE pruning, singular extensions, and a history-driven LMR table.
+- Quiescence search over captures, promotions and selected checking moves.
+- Two worker models: Lazy SMP (default) and opt-in split-at-root; search threads run on 16 MB stacks (`SEARCH_THREAD_STACK_SIZE`).
+- Transposition table with generational replacement, mate-score adjustment and 50-move-rule downgrade.
+- History families: killer moves, history, counter moves, capture history, continuation histories and correction histories.
+- Experimental, individually toggleable heuristics (threat-conditioned extensions, bandit ordering, annealing, personas, …) so you can A/B each idea with SPRT.
+- Game-state modules (`src/world/`, `src/risk/`, `src/opportunity/`, …) that shape pruning, extensions and time usage, plus `MultiPV` diagnostics.
 
-The search engine uses a multi-threaded Principal Variation Search (PVS) with iterative deepening and 16 new search and pruning algorithms:
+### Evaluation (`src/eval/`)
 
-* **Depth Allocation & Root Search:**
+- Embedded small NNUE network with incremental (dual-accumulator) updates and an eval cache.
+- Optional large Stockfish-style network (`models/whale_*.nnue`) with threat/pair features, auto-loaded when present.
+- Depth-conditioned blending, material-aware optimism (`src/eval/optimism.rs`), contempt and draw-score controls, WDL reporting.
 
-  * **Disagreement-Allocated Depth (DAD):** Adjusts depth and time for tactical positions based on score disagreements.
-  * **Speculative Persona Search (SPS):** Helper threads search under different strategies (Aggressive, Tactical, Solid, Standard) on top of the usual depth stagger. Personas only reshape pruning/LMR — never eval optimism — so shared Transposition Table entries stay sound across threads.
+### Endgames & openings
 
-* **Heuristic & Adaptive Pruning (transparent formulas, SPSA-tunable thresholds):**
-
-  * **Adaptive Late-move Pruner (ALP):** Scores safe pruning chances from move index, eval margin, history and momentum.
-  * **Graph-guided Tree Pruner (GTP):** Ranks subtree importance by node quality averaged over tree neighbors.
-  * **Eval Momentum (Δ static eval over 2 plies):** Feeds RFP/NMP/LMR margins; late-move LMR reduction also keys on sibling-cutoff rate at all-nodes.
-  * **Reverse Futility Pruning (RFP)** & **ProbCut:** Dynamically adjusts margins.
-  * **Null Move Pruning (NMP):** Verifies searches with adaptive reductions.
-
-* **Extensions & Quiescence:**
-
-  * **Threat-Conditioned Extension (TCE):** Predicts extensions for threats.
-  * **Tactical Quiescence Control (LQT):** Prevents early termination during tactical shifts.
-
-* **Memory, Ordering & Multi-Resolution Search:**
-
-  * **Persistent Search Memory (PSM):** Shares context across sibling nodes to avoid unproductive lines.
-  * **Bandit Move Ordering (BMO):** Adapts move ordering strategies.
-  * **Coarse-to-Fine Selective Search (CFSS):** Filters out unpromising moves before detailed expansion.
-  * **Runtime Annealing Search (RAS):** Dynamically adjusts search parameters.
-  * **Speculative Move Pre-computation (SMP):** Prepares responses to expected opponent moves.
-  * **Per-Node Threat Snapshot:** Checkers, pinners, lesser-piece threat maps and check squares are computed once per node and shared by legality tests, DCN evaluation, quiet-move scoring, TCE and LQT.
-* **Transposition Table:** Two-tiered design for efficient storage.
-* **Multi-Level History:** Tracks various move histories.
-* **Classic Checklist (all wired, SPSA-tunable):**
-  * **Razoring (frontier):** depth-1 `eval + margin <= alpha` → straight to qsearch (`src/search/razoring.rs`).
-  * **IIR:** no TT best move on PV (depth ≥ 5) / cut (depth ≥ 7) nodes → shave 1–2 plies first (`src/search/iir.rs`).
-  * **NMP zugzwang verification:** close high-depth null-move cutoffs re-searched shallow with null moves forbidden (`src/search/negamax.rs`, `NMP_Verify_Margin`).
-  * **PVS / NegaScout:** zero-window `[α, α+1]` + full re-search (`principal_variation_search` / `negascout_search` alias).
-  * **Mate Distance Pruning, RFP/Futility, LMP, SEE pruning, ProbCut, Singular Extensions, Aspiration Windows:** all in `src/search/negamax.rs` + `src/search/iterative_deepening.rs`.
-  * **GHI:** explicit repetition module (`src/search/ghi.rs`) over graph-history-aware draw detection.
-  * **Split at root:** opt-in root-move partitioning across threads (`src/search/split_root.rs`); Lazy SMP stays the default.
-  * **Conspiracy Numbers:** opt-in root verification for close MultiPV lines (`src/search/conspiracy.rs`, off by default — PVS is stronger per node).
-  * **Opening Book:** playable EPD book with moves probed at the root before search (`src/opening/book.rs`, `data/book.epd`).
-  * **Texel tuning:** logistic tuner for classical weights + search margins (`tools/texel_tuner.py`); NNUE weights stay on nnue-pytorch/Bullet, search margins on `tools/spsa_tuner.py`.
-
-### 2b. Adaptive Pressure Layer (S1–S8)
-
-Behavioral policy on top of search — TT-safe (shapes pruning/ordering/
-extension/time only, never leaf eval), one UCI toggle per subsystem:
-
-* **S1 State & Phase Controller** (`position_state.rs`): DEFEND → … → CONVERT classification at the root + `info string aprm state=…`.
-* **S2 Counterplay Model** (`counterplay.rs`): node-local CPI from the per-node threat snapshot; widens RFP margin when the side to move has resources.
-* **S3 Risk Envelope & Must-Try Gate** (`risk.rs`): gain + urgency + risk + counterplay gate; passed gates buy +25% root time.
-* **S4 Concession Tracker** (`concession.rs`): eval-swing detection + Temporary → Permanent ladder.
-* **S5 Pressure Planner** (`pressure.rs`): pressure trajectory + ΔCPI/ΔRisk efficiency.
-* **S6 Attack & Conversion** (`attack.rs`, `conversion.rs`): urgency → verification budget; tunable convert/crush thresholds.
-* **S8 Verification** (`multipv.rs`, `metrics.rs`, `tests/aprm.rs`, `tests/aprm_suite.rs`): UCI `MultiPV` (1–8) root lines with candidate classes + `info string aprm` diagnostics (CPI, freedom, plans, momentum, pressure, concession, musttry, convert, reset, simplify, verified) + 6-category Style Suite + Ultimate 12-step chain. Metric mapping in `docs/adaptive-pressure-metrics.md`.
-* **Threshold tuning:** `MustTryGain`, `MustTryRisk`, `ConvertScore`, `CrushScore`, `DefendCPI` are UCI spins wired into `tools/spsa_tuner.py` (spec §24: tune, don't hard-code).
-
-### 3. NNUE Evaluation
-
-* **Primary Network:** Custom dual-accumulator architecture with efficient execution.
-* **Depth-Conditioned NNUE (DCN):** Adjusts network representation based on tactical and strategic depth.
-* **Robustness & Augmentation:**
-
-  * **Adversarial Robustness Regularization (ARR):** Regularizes against noise in training.
-  * **Counterfactual Move Augmentation (CMA):** Evaluates potential threats for long-range awareness.
-* **SFNNv16 Dual-Net Architecture:** Supports large Stockfish 19 style setups.
-* **Training Pipeline:** Utilizes [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch).
-
-### 4. NNUE Training Backend Research
-
-Whale is looking into new training setups to enhance its evaluation network training.
-
-#### Bullet Training Backend
-
-We’re checking out [Bullet](https://github.com/jw1912/bullet) as a potential alternative to [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch).
-
-The focus is on:
-
-* Evaluating Bullet as a new NNUE training backend.
-* Comparing performance and resource use.
-* Checking compatibility with Whale's NNUE setups.
-* Exploring integration with current training data.
-* Assessing replacing the existing `nnue-pytorch` workflow.
-
-> **Status:** Research is ongoing. `nnue-pytorch` is still in use until we finish evaluating Bullet.
+- Syzygy tablebase probing (WDL bounds) via `shakmaty-syzygy`; ship `tables/K*vK` for smoke tests.
+- EPD opening book probed at the root (`data/book.epd`, `resources/openings.epd`).
 
 ---
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-* [Rust](https://www.rust-lang.org/) (stable version 1.75+)
-* Cargo
+- Recent stable Rust (1.88+) with Cargo. Install via [rustup](https://rustup.rs/).
 
-### Building the Release Binary
+### Build
 
 ```bash
 cargo build --release
 ```
 
-The optimized binary will be at:
+The binary lands at `target/release/whale` (`whale.exe` on Windows).
 
-* `target/release/whale` (Linux / macOS)
-* `target/release/whale.exe` (Windows)
-
-To build with NNUE training and datagen support:
+Optional features:
 
 ```bash
-cargo build --release --features train
+cargo build --release --features train   # self-play datagen + Bullet trainer plumbing
+cargo build --release --features cuda    # train with CUDA
 ```
 
-With CUDA acceleration:
+> The build downloads the default small NNUE weights once (`build.rs`). Keep network access enabled for the first build.
+
+### Run
 
 ```bash
-cargo build --release --features cuda
-```
-
----
-
-## CLI & Engine Modes
-
-### UCI Interactive Mode
-
-```bash
-cargo run --release
-```
-
-### Engine Benchmark (NPS Measurement)
-
-```bash
-cargo run --release -- bench
-```
-
-### CPU Profiling
-
-```bash
-cargo run --release -- --profile
-```
-
-### Self-Play Binpack Datagen
-
-```bash
-cargo run --release --features train -- datagen <output.binpack> <games> <book.fen> [depth] [threads]
-```
-
-### Teacher-Supervised Datagen
-
-```bash
-cargo run --release --features train -- datagen-teacher <output.binpack> <games> <book.fen> [depth] [threads] <stockfish_binary>
-```
-
-### Recompute Magic Bitboards
-
-```bash
+cargo run --release                 # UCI loop (talks to cutechess, Arena, …)
+cargo run --release -- bench        # NPS benchmark
+cargo run --release -- --profile    # CPU profiling run
 cargo run --release -- --generate-magics
 ```
 
----
-
-## UCI Options
-
-| Option          |  Type  |    Default   | Description                                             |
-| :-------------- | :----: | :----------: | :------------------------------------------------------ |
-| `Hash`          |  spin  |      16      | Size of the Transposition Table in MB (1 to 2048 MB).  |
-| `Threads`       |  spin  |       1      | Number of concurrent search threads (1 to 256).        |
-| `Move Overhead` |  spin  |      10      | Latency buffer in milliseconds (0 to 5000 ms).         |
-| `SyzygyPath`    | string |   `<empty>`  | Path to directory with `.rtbw` and `.rtbz` files.     |
-| `EvalFile`      | string | `<embedded>` | Path to custom NNUE weights file.                       |
-| `EvalFileSmall` | string |   `<empty>`  | Path to small NNUE net for dual-net mode.              |
-| `Contempt`      |  spin  |       0      | Engine-relative draw aversion in cp (-200 to 200, Lc0-inspired). |
-| `DrawScore`     |  spin  |       0      | Absolute draw value override in cp.                    |
-| `ShowWDL`       | check  |     true     | Emit `wdl w d l` on search info lines.                 |
-| `CFSS_Enabled`  | check  |     true     | Coarse-to-fine selective search.                       |
-| `RAS_Enabled`   | check  |     true     | Runtime annealing LMR perturbation.                    |
-| `BMO_Enabled`   | check  |     true     | Bandit move ordering arm selection.                    |
-| `TCE_Enabled`   | check  |     true     | Threat-conditioned extensions.                         |
-| `LQT_Enabled`   | check  |     true     | Tactical quiescence termination.                       |
-| `SPS_Enabled`   | check  |     true     | Speculative persona search (helper threads).           |
-| `DAD_Enabled`           | check  |     true     | Disagreement-allocated depth time factor.              |
-| `Extension_Cap_Enabled` | check  |     true     | Consecutive extension cap (prevents tactical dive).    |
-| `MultiPV`               |  spin  |       1      | Ranked root lines 1–8 (spec §28 behavioral verification). |
-| `CPI_Enabled`           | check  |     true     | S2 counterplay model (CPI → RFP margin).               |
-| `State_Enabled`         | check  |     true     | S1 state controller (root shaping + diagnostics).      |
-| `Risk_Enabled`          | check  |     true     | S3 risk envelope + must-try time gate.                 |
-| `Pressure_Enabled`      | check  |     true     | S5 pressure trajectory tracking.                       |
-| `Attack_Enabled`        | check  |     true     | S6a attack urgency budgets.                            |
-| `Conversion_Enabled`    | check  |     true     | S6b conversion signal in diagnostics.                  |
-| `MustTryGain`  |  spin  |      30      | Min gain (cp) for must-try gate (10–100, SPSA).        |
-| `MustTryRisk`  |  spin  |      120     | Max risk units for must-try gate (40–250, SPSA).       |
-| `ConvertScore` |  spin  |      250     | Score (cp) to prefer simplification (100–600, SPSA).   |
-| `CrushScore`   |  spin  |      600     | Score (cp) for forced conversion (300–1200, SPSA).     |
-| `DefendCPI`    |  spin  |      120     | Opp CPI triggering defend state (40–250, SPSA).        |
-| `DualNet`               | check  |     true     | Dual-Net optimistic evaluation gating.                 |
-| `UseBook`               | check  |     true     | Probe the EPD opening book at the root.                |
-| `BookFile`              | string |   `<empty>`  | Path to EPD book with moves (see `data/book.epd`).     |
-| `BookDepth`             |  spin  |      30      | Max game ply to play book moves (0 to 200).            |
-| `Razor_Enabled`         | check  |     true     | Frontier razoring (depth-1 drop to qsearch).           |
-| `Razor_Margin`          |  spin  |     350      | Razor base margin in cp (100 to 800, SPSA).            |
-| `IIR_Enabled`           | check  |     true     | Internal iterative reduction without TT move.          |
-| `NMP_Verify`            | check  |     true     | Zugzwang verification search on close NMP cutoffs.     |
-| `NMP_Verify_Margin`     |  spin  |     150      | Max eval-beta gap verified, cp (0 to 500, SPSA).       |
-| `Conspiracy_Enabled`    | check  |    false     | Conspiracy-number root verification (experimental).    |
-| `Conspiracy_Tolerance`  |  spin  |      30      | Verification tolerance in cp (5 to 200, SPSA).         |
-| `SplitRoot_Enabled`     | check  |    false     | Split-at-root parallelism (alt. to Lazy SMP).          |
-| `Clear Hash`            | button |       -      | Clears all entries in the Transposition Table.         |
-
----
-
-### 2b. Whale Adaptive Architecture (§61 Domain Modules)
-
-Whale structures its behavioral playing policy into clean, decoupled domain crates:
-
-* **`perception`** ([`src/perception/`](file:///C:/Users/newo/Downloads/whale/src/perception/mod.rs)): Strategic snapshot, pawn islands, passed/isolated/backward pawns, open files, king shelter.
-* **`world`** ([`src/world/`](file:///C:/Users/newo/Downloads/whale/src/world/mod.rs)): 7-state behavioral machine (`Defend`, `Stabilize`, `Improve`, `Press`, `Attack`, `Crush`, `Convert`), hysteresis, volatility levels, CPI calculations, and pressure trajectories.
-* **`opponent`** ([`src/opponent/`](file:///C:/Users/newo/Downloads/whale/src/opponent/mod.rs)): Opponent modeling, defense/escape capacity, and proactive break detection (`plans.rs`).
-* **`opportunity`** ([`src/opportunity/`](file:///C:/Users/newo/Downloads/whale/src/opportunity/mod.rs)): Weakness classification across 4 persistence levels (`Temporary`, `Latent`, `Structural`, `Permanent`).
-* **`risk`** ([`src/risk/`](file:///C:/Users/newo/Downloads/whale/src/risk/mod.rs)): Risk envelope and Must-Try tactical gate.
-* **`endgame`** ([`src/endgame/`](file:///C:/Users/newo/Downloads/whale/src/endgame/mod.rs)): Simplification incentives and anti-fortress conversion gates.
-* **`root`** ([`src/root/`](file:///C:/Users/newo/Downloads/whale/src/root/mod.rs)): Multi-PV candidate classification, root attack commitment verification, and 16-metric search telemetry.
-
----
-
-## 🚀 Cloud & Kaggle CPU Pipeline
-
-A ready-to-run Jupyter notebook is provided in [`notebooks/whale_kaggle_pipeline.ipynb`](file:///C:/Users/newo/Downloads/whale/notebooks/whale_kaggle_pipeline.ipynb) for running on free Kaggle Linux CPU instances (4 vCPUs):
-* Auto-installs Rust toolchain & Linux build tools.
-* Builds Whale in Release mode.
-* Performs SPSA parameter tuning with matplotlib convergence graphs.
-* Runs fastchess SPRT match validation.
-* Analyzes 16 Core Behavioral Metrics (MTR, PCR, CRI, RSI, ODI).
-* Demos Multi-Head NNUE PyTorch training on CPU.
-
----
-
-## Testing
-
-To run the full verification suite — 700+ unit tests plus the APRM behavioral, transition, and EPD benchmark suites:
+Datagen (needs `--features train`):
 
 ```bash
-# Run unit & regression tests
-cargo test --release --test aprm
-
-# Run 12-step state transition chain & style categories
-cargo test --release --test aprm_suite
-
-# Run 6-category position benchmark suite (Defensive, Quiet, Opportunity, MustTry, Pressure, Conversion)
-cargo test --release --test epd_suite
+cargo run --release --features train -- datagen <out.binpack> <games> <book.fen> [depth] [threads]
+cargo run --release --features train -- datagen-teacher <out.binpack> <games> <book.fen> [depth] [threads] <stockfish>
 ```
 
+---
+
+## UCI options
+
+| Option | Type | Default | Description |
+| :----- | :--: | :-----: | :---------- |
+| `Hash` | spin | 16 | Transposition table size in MB (1–2048). |
+| `Threads` | spin | 1 | Search threads (1–256). |
+| `Move Overhead` | spin | 10 | Clock-latency buffer in ms. |
+| `SyzygyPath` | string | `<empty>` | Directory with `.rtbw`/`.rtbz` files. |
+| `EvalFile` | string | `<embedded>` | Custom NNUE weights file. |
+| `EvalFileSmall` | string | `<empty>` | Small net (deprecated, single-net engine). |
+| `Contempt` | spin | 0 | Draw aversion in cp (-200–200). |
+| `DrawScore` | spin | 0 | Absolute draw value override in cp. |
+| `ShowWDL` | check | true | Emit `wdl` on info lines. |
+| `MultiPV` | spin | 1 | Ranked root lines (1–8). |
+| `UseBook` / `BookFile` / `BookDepth` | check/string/spin | true/`<empty>`/30 | EPD opening book control. |
+| `DualNet` | check | true | Gate the large network on cheap-net bounds. |
+| `Clear Hash` | button | - | Clear the transposition table. |
+| `CFSS_Enabled` | check | true | Coarse-to-fine selective search. |
+| `RAS_Enabled` | check | true | Runtime annealing for LMR. |
+| `BMO_Enabled` | check | true | Bandit move ordering. |
+| `TCE_Enabled` | check | true | Threat-conditioned extensions. |
+| `LQT_Enabled` | check | true | Tactical quiescence control. |
+| `SPS_Enabled` | check | true | Speculative persona search threads. |
+| `DAD_Enabled` | check | true | Disagreement-based time factor. |
+| `Extension_Cap_Enabled` | check | true | Cap consecutive extensions. |
+| `Razor_Enabled` / `Razor_Margin` | check/spin | true/350 | Frontier razoring. |
+| `IIR_Enabled` | check | true | Internal iterative reduction. |
+| `NMP_Verify` / `NMP_Verify_Margin` | check/spin | true/150 | Null-move zugzwang verification. |
+| `Conspiracy_Enabled` / `Conspiracy_Tolerance` | check/spin | false/30 | Root conspiracy verification (experimental). |
+| `SplitRoot_Enabled` | check | false | Split-at-root instead of Lazy SMP. |
+| `CPI_Enabled` / `State_Enabled` / `Risk_Enabled` | check | true | Counterplay, state and risk shaping. |
+| `Pressure_Enabled` / `Attack_Enabled` / `Conversion_Enabled` | check | true | Pressure, attack and conversion modules. |
+| `MustTryGain` / `MustTryRisk` | spin | 30/120 | Must-try tactical gate thresholds. |
+| `ConvertScore` / `CrushScore` / `DefendCPI` | spin | 250/600/120 | Conversion/defense thresholds. |
+
+---
+
+## Testing & quality
+
+Full gate (format, lints, unit tests, integration suites, coverage):
+
+```bash
+make quality
+```
+
+Targeted runs:
+
+```bash
+cargo test --lib
+cargo test --release --test aprm
+cargo test --release --test aprm_suite
+cargo test --release --test epd_suite
+cargo test --release -- bench
+```
+
+> Test threads run search, so the quality targets set `RUST_MIN_STACK=16777216` (16 MB, same as production search threads). If you run `cargo test` by hand on deep-search tests and hit a stack overflow, export that variable first.
+
+Tuning helpers live in `tools/`: SPSA tuner, Texel tuner, SPRT runner and match scripts. Validate every strength-related change with SPRT before keeping it.
+
+---
+
+## Project layout
+
+```text
+src/
+  bitboard/   bitboards, magics, attack tables
+  board/      state, movegen, make/unmake, SEE, FEN, history
+  search/     negamax, quiescence, iterative deepening, LMR, TT use, heuristics
+  eval/       NNUE nets, loaders, optimism, move ordering histories
+  uci/        UCI loop, go/position/setoption, time management
+  syzygy.rs   tablebase probing          opening/  EPD book
+  world/ risk/ opportunity/ opponent/
+  perception/ endgame/ root/            game-state shaping + diagnostics
+  datagen.rs teacher.rs train.rs        self-play data + training (feature `train`)
+tests/        perft, search, APRM suites, EPD benchmarks, eval equivalence
+tools/        SPSA/Texel/SPRT/match scripts
+models/       large NNUE weights        tables/  Syzygy files
+```
 
 ---
 
 ## Acknowledgements
 
-* [znxftw/rudim](https://github.com/znxftw/rudim): Base repository.
-* [Stockfish](https://github.com/official-stockfish/Stockfish): Ideas and benchmarks.
-* [Reckless](https://github.com/codedeliveryservice/Reckless): Design references and optimization patterns.
-* [Lc0](https://github.com/LeelaChessZero/lc0): Ideas for contempt, draw scoring and WDL reporting.
-* [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch): NNUE training pipeline.
-* [Bullet](https://github.com/jw1912/bullet): Alternative NNUE training backend under research.
+- [znxftw/rudim](https://github.com/znxftw/rudim): the original project Whale forked from.
+- [Stockfish](https://github.com/official-stockfish/Stockfish): search and evaluation ideas, and the benchmark for correctness.
+- [Reckless](https://github.com/codedeliveryservice/Reckless): high-performance Rust engine patterns.
+- [Lc0](https://github.com/LeelaChessZero/lc0): contempt, draw scoring and WDL reporting ideas.
+- [nnue-pytorch](https://github.com/official-stockfish/nnue-pytorch): NNUE training pipeline.
+- [Bullet](https://github.com/jw1912/bullet): alternative NNUE training backend under research.
 
 ---
 
 ## License
 
-This project is licensed under the [GNU General Public License v3.0](LICENSE).
+GNU General Public License v3.0 — see [LICENSE](LICENSE).
