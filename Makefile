@@ -53,6 +53,6 @@ mutants:
 quality:
 	cargo fmt --check
 	cargo clippy --all-targets -- -D warnings
-	cargo test --lib
-	cargo test --tests --release
-	cargo llvm-cov --lib --html --fail-under-lines 90
+	RUST_MIN_STACK=16777216 cargo test --lib
+	RUST_MIN_STACK=16777216 cargo test --tests --release
+	RUST_MIN_STACK=16777216 cargo llvm-cov --lib --html --fail-under-lines 90

@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use whale::bitboard::magics::generate_all_magic_numbers;
 use whale::board::state::BoardState;
+use whale::common::constants::SEARCH_THREAD_STACK_SIZE;
 use whale::common::helpers::{
     ADVANCED_MOVE_FEN, BENCH_FENS, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN,
 };
@@ -16,7 +17,7 @@ use whale::uci::cli::run as uci_run;
 fn main() {
     let builder = std::thread::Builder::new()
         .name("whale-main".into())
-        .stack_size(16 * 1024 * 1024);
+        .stack_size(SEARCH_THREAD_STACK_SIZE);
     let handler = builder.spawn(real_main).unwrap();
     if let Err(e) = handler.join() {
         std::panic::resume_unwind(e);

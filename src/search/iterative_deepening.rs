@@ -1,7 +1,9 @@
 use crate::board::node_threats::NodeThreats;
 use crate::board::plans;
 use crate::board::state::BoardState;
-use crate::common::constants::{ASPIRATION_WINDOW_MARGIN, MAX_CENTIPAWN_EVAL, MAX_PLY};
+use crate::common::constants::{
+    ASPIRATION_WINDOW_MARGIN, MAX_CENTIPAWN_EVAL, MAX_PLY, SEARCH_THREAD_STACK_SIZE,
+};
 use crate::common::move_list::MoveList;
 use crate::common::moves::Move;
 use crate::common::side::Side;
@@ -915,11 +917,17 @@ fn search_split_root(
             let mut board = board_state.clone();
             let mut state = search_state.clone_for_worker(tid);
             let cancel = cancellation_token;
-            handles.push(s.spawn(move || {
-                let (bm, bs) =
-                    split_root::search_subset(&mut board, &subset, depth, cancel, &mut state);
-                (bm, bs, state.nodes, state.tbhits, state.seldepth)
-            }));
+            handles.push(
+                std::thread::Builder::new()
+                    .stack_size(SEARCH_THREAD_STACK_SIZE)
+                    .spawn_scoped(s, move || {
+                        let (bm, bs) = split_root::search_subset(
+                            &mut board, &subset, depth, cancel, &mut state,
+                        );
+                        (bm, bs, state.nodes, state.tbhits, state.seldepth)
+                    })
+                    .unwrap(),
+            );
         }
         let mut best_move = Move::NO_MOVE;
         let mut best_score = i16::MIN + 1;
@@ -1057,18 +1065,21 @@ pub fn search(
                 let worker_nodes_ref = &worker_nodes;
                 let worker_tbhits_ref = &worker_tbhits;
                 let worker_seldepth_ref = &worker_seldepth;
-                s.spawn(move || {
-                    let (nodes, tbhits, seldepth) = worker_search(
-                        worker_board,
-                        max_depth,
-                        cancellation_token,
-                        worker_search_state,
-                        thread_id,
-                    );
-                    worker_nodes_ref.fetch_add(nodes, Ordering::Relaxed);
-                    worker_tbhits_ref.fetch_add(tbhits, Ordering::Relaxed);
-                    worker_seldepth_ref.fetch_max(seldepth, Ordering::Relaxed);
-                });
+                std::thread::Builder::new()
+                    .stack_size(SEARCH_THREAD_STACK_SIZE)
+                    .spawn_scoped(s, move || {
+                        let (nodes, tbhits, seldepth) = worker_search(
+                            worker_board,
+                            max_depth,
+                            cancellation_token,
+                            worker_search_state,
+                            thread_id,
+                        );
+                        worker_nodes_ref.fetch_add(nodes, Ordering::Relaxed);
+                        worker_tbhits_ref.fetch_add(tbhits, Ordering::Relaxed);
+                        worker_seldepth_ref.fetch_max(seldepth, Ordering::Relaxed);
+                    })
+                    .unwrap();
             }
 
             search_primary(
