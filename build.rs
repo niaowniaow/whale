@@ -180,6 +180,18 @@ fn main() {
     download_nnue_if_needed();
 }
 
+fn fnv1a64_file(path: &std::path::Path) -> Option<u64> {
+    let bytes = std::fs::read(path).ok()?;
+    let mut hash: u64 = 14695981039346656037;
+    for b in bytes {
+        hash ^= b as u64;
+        hash = hash.wrapping_mul(1099511628211);
+    }
+    Some(hash)
+}
+
+const NNUE_FNV1A64: u64 = 0xc1a3536e88a9d8e4;
+
 fn download_nnue_if_needed() {
     use std::fs::{create_dir_all, metadata};
     use std::path::Path;
@@ -193,14 +205,16 @@ fn download_nnue_if_needed() {
 
     let expected_size = struct_size.div_ceil(64) * 64;
 
-    let needs_recreate = if !dest_path.exists() {
-        true
-    } else {
-        match metadata(dest_path) {
-            Ok(meta) => meta.len() != expected_size as u64,
-            Err(_) => true,
+    let valid = |path: &Path| -> bool {
+        match metadata(path) {
+            Ok(meta) => {
+                meta.len() == expected_size as u64 && fnv1a64_file(path) == Some(NNUE_FNV1A64)
+            }
+            Err(_) => false,
         }
     };
+
+    let needs_recreate = !valid(dest_path);
 
     if needs_recreate {
         create_dir_all("resources").unwrap();
@@ -223,22 +237,14 @@ fn download_nnue_if_needed() {
             .status();
 
         let success = match status {
-            Ok(exit_status) => {
-                if exit_status.success() {
-                    match metadata(dest_path) {
-                        Ok(meta) => meta.len() == expected_size as u64,
-                        Err(_) => false,
-                    }
-                } else {
-                    false
-                }
-            }
+            Ok(exit_status) => exit_status.success() && valid(dest_path),
             Err(_) => false,
         };
 
         if !success {
             panic!(
-                "build.rs: failed to download NNUE weights (expected {expected_size} bytes at {dest_path:?}); refusing to embed zero-initialized weights"
+                "build.rs: failed to download NNUE weights (expected {expected_size} bytes with hash {:016x} at {dest_path:?}); refusing to embed zero-initialized weights",
+                NNUE_FNV1A64
             );
         } else {
             println!("cargo:warning=Successfully downloaded NNUE weights.");

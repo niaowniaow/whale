@@ -41,13 +41,15 @@ impl UciClient {
     }
 
     fn parse_fen(&mut self, fen: &str, moves: &[&str]) {
-        *self.board.lock().unwrap() = crate::board::state::BoardState::parse_fen(fen);
+        *self.board.lock().unwrap_or_else(|e| e.into_inner()) =
+            crate::board::state::BoardState::parse_fen(fen);
         self.parse_moves(moves);
         self.is_ready = true;
     }
 
     fn parse_startpos(&mut self, moves: &[&str]) {
-        *self.board.lock().unwrap() = crate::board::state::BoardState::default();
+        *self.board.lock().unwrap_or_else(|e| e.into_inner()) =
+            crate::board::state::BoardState::default();
         self.parse_moves(moves);
         self.is_ready = true;
     }
@@ -64,7 +66,7 @@ impl UciClient {
                 return;
             }
 
-            let mut board = self.board.lock().unwrap();
+            let mut board = self.board.lock().unwrap_or_else(|e| e.into_inner());
             if board.history.index + 1 >= crate::board::history::HISTORY_SIZE {
                 return;
             }
@@ -73,7 +75,7 @@ impl UciClient {
     }
 
     fn find_move_from_move_list(&mut self, move_obj: Move) -> Move {
-        let mut board = self.board.lock().unwrap();
+        let mut board = self.board.lock().unwrap_or_else(|e| e.into_inner());
         let mut move_list = MoveList::new();
         board.generate_moves(&mut move_list);
 

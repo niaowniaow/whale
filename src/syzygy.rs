@@ -65,16 +65,23 @@ pub fn set_path(path: &str) -> Result<usize, String> {
         return Ok(0);
     }
     let mut tables = Tablebase::<Chess>::new();
-    let loaded = tables
-        .add_directory(path)
-        .map_err(|e| format!("syzygy load error: {e}"))?;
-    if let Ok(mut guard) = TABLES.write() {
-        *guard = Some(Arc::new(LoadedTables {
-            tables,
-            count: loaded,
-        }));
+    match tables.add_directory(path) {
+        Ok(loaded) => {
+            if let Ok(mut guard) = TABLES.write() {
+                *guard = Some(Arc::new(LoadedTables {
+                    tables,
+                    count: loaded,
+                }));
+            }
+            Ok(loaded)
+        }
+        Err(e) => {
+            if let Ok(mut guard) = TABLES.write() {
+                *guard = None;
+            }
+            Err(format!("syzygy load error: {e}"))
+        }
     }
-    Ok(loaded)
 }
 
 pub fn table_count() -> usize {

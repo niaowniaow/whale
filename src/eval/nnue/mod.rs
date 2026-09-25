@@ -24,7 +24,10 @@ struct EvalCacheEntry {
     optimism: i32,
     halfmove: u8,
     score: i16,
+    epoch: u64,
 }
+
+static EVAL_CACHE_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 std::thread_local! {
     static EVAL_CACHE: std::cell::RefCell<Box<[EvalCacheEntry]>> = std::cell::RefCell::new(
@@ -33,7 +36,8 @@ std::thread_local! {
                 hash: u64::MAX,
                 optimism: 0,
                 halfmove: 0,
-                score: 0
+                score: 0,
+                epoch: 0
             };
             EVAL_CACHE_SIZE
         ]
@@ -43,34 +47,33 @@ std::thread_local! {
 
 #[inline(always)]
 fn probe_eval_cache(hash: u64, optimism: i32, halfmove: u8) -> Option<i16> {
+    let epoch = EVAL_CACHE_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
     EVAL_CACHE.with(|cache| {
         let entry = cache.borrow()[(hash & EVAL_CACHE_MASK) as usize];
-        (entry.hash == hash && entry.optimism == optimism && entry.halfmove == halfmove)
+        (entry.epoch == epoch
+            && entry.hash == hash
+            && entry.optimism == optimism
+            && entry.halfmove == halfmove)
             .then_some(entry.score)
     })
 }
 
 #[inline(always)]
 fn store_eval_cache(hash: u64, optimism: i32, halfmove: u8, score: i16) {
+    let epoch = EVAL_CACHE_EPOCH.load(std::sync::atomic::Ordering::Relaxed);
     EVAL_CACHE.with(|cache| {
         cache.borrow_mut()[(hash & EVAL_CACHE_MASK) as usize] = EvalCacheEntry {
             hash,
             optimism,
             halfmove,
             score,
+            epoch,
         };
     });
 }
 
 pub fn clear_eval_cache() {
-    EVAL_CACHE.with(|cache| {
-        cache.borrow_mut().fill(EvalCacheEntry {
-            hash: u64::MAX,
-            optimism: 0,
-            halfmove: 0,
-            score: 0,
-        });
-    });
+    EVAL_CACHE_EPOCH.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 static DUAL_NET_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
@@ -78,6 +81,7 @@ static DUAL_NET_ENABLED: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 #[inline(always)]
 pub fn set_dual_net(enabled: bool) {
     DUAL_NET_ENABLED.store(enabled, std::sync::atomic::Ordering::Relaxed);
+    clear_eval_cache();
 }
 
 #[inline(always)]

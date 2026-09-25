@@ -210,7 +210,7 @@ impl UciClient {
             .and_then(|d| d.parse::<u8>().ok())
             .unwrap_or(5)
             .clamp(1, 10);
-        let mut board = self.board.lock().unwrap().clone();
+        let mut board = self.board.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let start = std::time::Instant::now();
         let nodes = perft_count(&mut board, depth);
         let elapsed = start.elapsed();

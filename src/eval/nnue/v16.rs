@@ -494,8 +494,8 @@ pub fn append_threats(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize
 }
 
 #[inline(always)]
-fn make_pawn_id(color: Side, square_sf: usize) -> usize {
-    (color as usize) * 48 + square_sf - 8
+fn make_pawn_id(color: Side, square_sf: usize) -> Option<usize> {
+    square_sf.checked_sub(8).map(|s| (color as usize) * 48 + s)
 }
 
 const PAWN_PAIR_BB_TABLE: [u64; 64] = {
@@ -526,7 +526,7 @@ pub fn pair_make_index(
     to_sf: usize,
     paired_color: Side,
     ksq_sf: usize,
-) -> usize {
+) -> Option<usize> {
     let flip = if perspective == Side::Black { 56 } else { 0 };
     let left_files = (ksq_sf & 7) < 4;
     let orient = flip ^ if left_files { 0 } else { 7 };
@@ -545,13 +545,13 @@ pub fn pair_make_index(
         Side::Black
     };
 
-    let id_a = make_pawn_id(color_oriented, from_oriented);
-    let id_b = make_pawn_id(paired_color_oriented, to_oriented);
+    let id_a = make_pawn_id(color_oriented, from_oriented)?;
+    let id_b = make_pawn_id(paired_color_oriented, to_oriented)?;
 
     let hi = id_a.max(id_b);
     let lo = id_a.min(id_b);
 
-    hi * (hi - 1) / 2 + lo + PSQ_DIMS + THREAT_DIMS
+    Some(hi * (hi - 1) / 2 + lo + PSQ_DIMS + THREAT_DIMS)
 }
 
 pub fn pair_index_for(
@@ -561,9 +561,9 @@ pub fn pair_index_for(
     to_sf: usize,
     paired_color: Side,
     ksq_sf: usize,
-) -> usize {
+) -> Option<usize> {
     pair_make_index(perspective, color, from_sf, to_sf, paired_color, ksq_sf)
-        - (PSQ_DIMS + THREAT_DIMS)
+        .map(|abs| abs - (PSQ_DIMS + THREAT_DIMS))
 }
 
 pub fn for_each_pair(pos: &SfnnPosition, mut emit: impl FnMut(Side, usize, usize, Side)) {
@@ -609,7 +609,9 @@ pub fn for_each_pair(pos: &SfnnPosition, mut emit: impl FnMut(Side, usize, usize
 pub fn append_pairs(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>) {
     let ksq = pos.king_square(perspective);
     for_each_pair(pos, |color, from, to, paired| {
-        out.push(pair_make_index(perspective, color, from, to, paired, ksq));
+        if let Some(idx) = pair_make_index(perspective, color, from, to, paired, ksq) {
+            out.push(idx);
+        }
     });
 }
 
@@ -651,8 +653,10 @@ pub fn collect_pairs(
         while ww != 0 {
             let to = ww.trailing_zeros() as usize;
             ww &= ww - 1;
-            if len < MAX_PAIR_ACTIVE {
-                out[len] = pair_make_index(perspective, Side::White, from, to, Side::White, ksq);
+            if let Some(idx) = pair_make_index(perspective, Side::White, from, to, Side::White, ksq)
+                && len < MAX_PAIR_ACTIVE
+            {
+                out[len] = idx;
                 len += 1;
             }
         }
@@ -661,8 +665,10 @@ pub fn collect_pairs(
         while wb != 0 {
             let to = wb.trailing_zeros() as usize;
             wb &= wb - 1;
-            if len < MAX_PAIR_ACTIVE {
-                out[len] = pair_make_index(perspective, Side::White, from, to, Side::Black, ksq);
+            if let Some(idx) = pair_make_index(perspective, Side::White, from, to, Side::Black, ksq)
+                && len < MAX_PAIR_ACTIVE
+            {
+                out[len] = idx;
                 len += 1;
             }
         }
@@ -678,8 +684,10 @@ pub fn collect_pairs(
         while bbk != 0 {
             let to = bbk.trailing_zeros() as usize;
             bbk &= bbk - 1;
-            if len < MAX_PAIR_ACTIVE {
-                out[len] = pair_make_index(perspective, Side::Black, from, to, Side::Black, ksq);
+            if let Some(idx) = pair_make_index(perspective, Side::Black, from, to, Side::Black, ksq)
+                && len < MAX_PAIR_ACTIVE
+            {
+                out[len] = idx;
                 len += 1;
             }
         }
@@ -2535,8 +2543,12 @@ fn eval_with_net(
                         } else {
                             paired
                         };
-                        let p1 = make_pawn_id(color_oriented, from_oriented);
-                        let p2 = make_pawn_id(paired_oriented, to_oriented);
+                        let (Some(p1), Some(p2)) = (
+                            make_pawn_id(color_oriented, from_oriented),
+                            make_pawn_id(paired_oriented, to_oriented),
+                        ) else {
+                            continue;
+                        };
                         let (a, b) = if p1 <= p2 { (p1, p2) } else { (p2, p1) };
                         let idx = (b * (b - 1)) / 2 + a + PSQ_DIMS + THREAT_DIMS;
                         pair_lists[slot][len] = idx;
@@ -3495,8 +3507,8 @@ mod tests {
             }
         }
 
-        let rel = pair_index_for(Side::White, Side::White, 12, 20, Side::White, 4);
-        let abs = pair_make_index(Side::White, Side::White, 12, 20, Side::White, 4);
+        let rel = pair_index_for(Side::White, Side::White, 12, 20, Side::White, 4).unwrap();
+        let abs = pair_make_index(Side::White, Side::White, 12, 20, Side::White, 4).unwrap();
         assert_eq!(rel, abs - (PSQ_DIMS + THREAT_DIMS));
         assert!(rel < PAIR_DIMS);
 
@@ -3685,11 +3697,11 @@ mod tests {
                     (Side::White, Side::Black),
                     (Side::Black, Side::Black),
                 ] {
-                    let abs = pair_make_index(persp, c, 12, 20, pc, ksq);
+                    let abs = pair_make_index(persp, c, 12, 20, pc, ksq).unwrap();
                     assert!(
                         (PSQ_DIMS + THREAT_DIMS..PSQ_DIMS + THREAT_DIMS + PAIR_DIMS).contains(&abs)
                     );
-                    let rel = pair_index_for(persp, c, 12, 20, pc, ksq);
+                    let rel = pair_index_for(persp, c, 12, 20, pc, ksq).unwrap();
                     assert_eq!(rel, abs - (PSQ_DIMS + THREAT_DIMS));
                 }
             }

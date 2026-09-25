@@ -17,7 +17,7 @@ impl UciClient {
                 std::thread::sleep(std::time::Duration::from_millis(5));
             }
         }
-        let mut state = self.search_state.lock().unwrap();
+        let mut state = self.search_state.lock().unwrap_or_else(|e| e.into_inner());
         state.tt.clear();
         state.reset_heuristics();
         self.is_ready = true;

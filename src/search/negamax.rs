@@ -73,6 +73,13 @@ fn search_internal(
     }
 
     ctx.search_state.nodes += 1;
+    if ctx.search_state.nodes & 1023 == 0
+        && ctx.search_state.max_nodes > 0
+        && ctx.search_state.nodes >= ctx.search_state.max_nodes
+    {
+        ctx.cancellation_token.store(true, Ordering::Relaxed);
+        return 0;
+    }
     if is_pv_node {
         let sd = ply as u32 + 1;
         if sd > ctx.search_state.seldepth {
@@ -84,6 +91,7 @@ fn search_internal(
     let mut best_score = -constants::MAX_CENTIPAWN_EVAL;
 
     if ply > 0 && ghi::is_draw(board_state, ply as u16) {
+        ctx.search_state.rep_draw_ply = ctx.search_state.rep_draw_ply.min(ply);
         let base = draw::draw_score(ctx.search_state.nodes);
         return draw::apply_contempt(
             base,
@@ -513,7 +521,7 @@ fn search_internal(
                         } else {
                             score
                         };
-                        if ctx.excluded_move.is_none() {
+                        if ctx.excluded_move.is_none() && ctx.search_state.tt_store_allowed(ply) {
                             ctx.search_state.tt.submit_entry(
                                 board_state.board_hash,
                                 tt::TranspositionTable::adjust_score(score, ply as i32, halfmove),
@@ -601,7 +609,7 @@ fn search_internal(
                 } else {
                     score
                 };
-                if ctx.excluded_move.is_none() {
+                if ctx.excluded_move.is_none() && ctx.search_state.tt_store_allowed(ply) {
                     ctx.search_state.tt.submit_entry(
                         board_state.board_hash,
                         tt::TranspositionTable::adjust_score(score_out, ply as i32, halfmove),
@@ -646,7 +654,7 @@ fn search_internal(
                 } else {
                     score
                 };
-                if ctx.excluded_move.is_none() {
+                if ctx.excluded_move.is_none() && ctx.search_state.tt_store_allowed(ply) {
                     ctx.search_state.tt.submit_entry(
                         board_state.board_hash,
                         tt::TranspositionTable::adjust_score(score_out, ply as i32, halfmove),
@@ -1336,7 +1344,7 @@ fn search_internal(
     }
 
     if !is_cancelled(ctx) {
-        if ctx.excluded_move.is_none() {
+        if ctx.excluded_move.is_none() && ctx.search_state.tt_store_allowed(ply) {
             ctx.search_state.tt.submit_entry(
                 board_state.board_hash,
                 tt::TranspositionTable::adjust_score(best_score, ply as i32, halfmove),
@@ -1588,13 +1596,15 @@ fn beta_cutoff(
     if excluded_move.is_some() {
         return score;
     }
-    search_state.tt.submit_entry(
-        board_state.board_hash,
-        tt::TranspositionTable::adjust_score(score, ply as i32, board_state.half_move_clock),
-        depth,
-        move_obj,
-        TranspositionEntryType::Beta,
-    );
+    if search_state.tt_store_allowed(ply as u8) {
+        search_state.tt.submit_entry(
+            board_state.board_hash,
+            tt::TranspositionTable::adjust_score(score, ply as i32, board_state.half_move_clock),
+            depth,
+            move_obj,
+            TranspositionEntryType::Beta,
+        );
+    }
 
     if !move_obj.is_capture() {
         search_state.move_ordering.add_killer_move(move_obj, ply);

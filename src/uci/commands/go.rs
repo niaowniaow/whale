@@ -24,7 +24,7 @@ impl UciClient {
         self.current_search = Some(Arc::clone(&cancel_token));
 
         {
-            let mut state = SEARCH_STATE.lock().unwrap();
+            let mut state = SEARCH_STATE.lock().unwrap_or_else(|e| e.into_inner());
             state.best_move = Move::NO_MOVE;
             state.ponder_move = Move::NO_MOVE;
         }
@@ -60,7 +60,7 @@ impl UciClient {
                 if wanted.is_empty() {
                     return Vec::new();
                 }
-                let board = self.board.lock().unwrap();
+                let board = self.board.lock().unwrap_or_else(|e| e.into_inner());
                 let mut generated = MoveList::new();
                 board.generate_moves(&mut generated);
                 wanted
@@ -77,7 +77,7 @@ impl UciClient {
             .unwrap_or_default();
 
         let (clock_opt, increment, opp_clock_opt) = {
-            let board = self.board.lock().unwrap();
+            let board = self.board.lock().unwrap_or_else(|e| e.into_inner());
             if board.side_to_move == Side::White {
                 (wtime, winc, btime)
             } else {
@@ -86,12 +86,12 @@ impl UciClient {
         };
 
         let ply = {
-            let board = self.board.lock().unwrap();
+            let board = self.board.lock().unwrap_or_else(|e| e.into_inner());
             board.move_count
         };
 
         {
-            let mut guard = self.search_state.lock().unwrap();
+            let mut guard = self.search_state.lock().unwrap_or_else(|e| e.into_inner());
             guard.max_nodes = nodes;
             guard.mate_in = mate.min(u8::MAX as u64) as u8;
             guard.searchmoves = searchmoves;
@@ -160,7 +160,7 @@ impl UciClient {
             });
         }
 
-        let board_snapshot = self.board.lock().unwrap().clone();
+        let board_snapshot = self.board.lock().unwrap_or_else(|e| e.into_inner()).clone();
         let debug = Arc::clone(&self.debug_mode);
         let cancel_for_search = Arc::clone(&cancel_token);
         let search_state = Arc::clone(&self.search_state);
@@ -181,7 +181,7 @@ impl UciClient {
         thread::spawn(move || {
             let mut board = board_snapshot;
             let mut debug_mode = debug.load(Ordering::Relaxed);
-            let mut search_state_guard = search_state.lock().unwrap();
+            let mut search_state_guard = search_state.lock().unwrap_or_else(|e| e.into_inner());
             search_state_guard.opt_time = inner_opt;
             search_state_guard.max_time = inner_max;
             let best_move = board.find_best_move(
@@ -196,7 +196,7 @@ impl UciClient {
             let ponder_move = search_state_guard.ponder_move;
 
             {
-                let mut state = SEARCH_STATE.lock().unwrap();
+                let mut state = SEARCH_STATE.lock().unwrap_or_else(|e| e.into_inner());
                 state.best_move = best_move;
                 state.ponder_move = ponder_move;
             }

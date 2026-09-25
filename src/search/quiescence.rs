@@ -76,6 +76,7 @@ pub fn search(
     }
 
     if board_state.is_draw_in_search(ply as u16) {
+        search_state.rep_draw_ply = search_state.rep_draw_ply.min(ply);
         let base = draw::draw_score(search_state.nodes);
         return draw::apply_contempt(
             base,
@@ -167,7 +168,8 @@ pub fn search(
                 if eval.abs() < MAX_CENTIPAWN_EVAL - 200 {
                     stand_pat = ((441 * eval as i32 + 583 * beta as i32) / 1024) as i16;
                 }
-                if !cancellation_token.load(Ordering::Relaxed) {
+                if !cancellation_token.load(Ordering::Relaxed) && search_state.tt_store_allowed(ply)
+                {
                     search_state.tt.submit_entry(
                         board_state.board_hash,
                         tt::TranspositionTable::adjust_score(stand_pat, ply as i32, halfmove),
@@ -286,7 +288,7 @@ pub fn search(
             if score.abs() < MAX_CENTIPAWN_EVAL - 200 && score > beta {
                 fail_high = ((462 * score as i32 + 562 * beta as i32) / 1024) as i16;
             }
-            if !cancellation_token.load(Ordering::Relaxed) {
+            if !cancellation_token.load(Ordering::Relaxed) && search_state.tt_store_allowed(ply) {
                 search_state.tt.submit_entry(
                     board_state.board_hash,
                     tt::TranspositionTable::adjust_score(fail_high, ply as i32, halfmove),
@@ -405,7 +407,7 @@ pub fn search(
         TranspositionEntryType::Alpha
     };
 
-    if !cancellation_token.load(Ordering::Relaxed) {
+    if !cancellation_token.load(Ordering::Relaxed) && search_state.tt_store_allowed(ply) {
         search_state.tt.submit_entry(
             board_state.board_hash,
             tt::TranspositionTable::adjust_score(final_value, ply as i32, halfmove),

@@ -139,6 +139,8 @@ pub struct SearchState {
 
     pub draw_score_cp: i16,
 
+    pub rep_draw_ply: u8,
+
     pub show_wdl: bool,
     pub move_ordering: MoveOrdering,
     pub tt: Arc<TranspositionTable>,
@@ -237,6 +239,7 @@ impl SearchState {
             engine_side: Side::White,
             contempt_cp: 0,
             draw_score_cp: 0,
+            rep_draw_ply: u8::MAX,
             show_wdl: true,
             move_ordering: MoveOrdering::new(),
             tt: Arc::new(TranspositionTable::new(
@@ -319,6 +322,7 @@ impl SearchState {
             engine_side: self.engine_side,
             contempt_cp: self.contempt_cp,
             draw_score_cp: self.draw_score_cp,
+            rep_draw_ply: u8::MAX,
             show_wdl: self.show_wdl,
             move_ordering: MoveOrdering::new(),
             tt: Arc::clone(&self.tt),
@@ -381,6 +385,7 @@ impl SearchState {
         self.root_best_move_nodes = 0;
         self.best_move_changes = 0;
         self.optimism = [0; 2];
+        self.rep_draw_ply = u8::MAX;
 
         self.multipv_lines.clear();
         self.book_hit = false;
@@ -395,6 +400,10 @@ impl SearchState {
         *self.extension_streak = [0u8; MAX_PLY];
         self.bmo.reset();
         self.psm_stack.reset();
+    }
+
+    pub fn tt_store_allowed(&self, ply: u8) -> bool {
+        self.rep_draw_ply == u8::MAX || self.rep_draw_ply <= ply
     }
 
     pub fn reset_heuristics(&mut self) {
