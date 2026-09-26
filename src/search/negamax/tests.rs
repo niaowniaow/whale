@@ -1,9 +1,17 @@
 use super::context::SearchContext;
 use super::core::{search, search_internal};
+use super::early::{
+    apply_iir, coarse_pass, null_move_search, probcut_search, rfp_gate, singular_search,
+    tablebase_probe, tt_cutoff,
+};
 use super::history::beta_cutoff;
+use super::moves::{MoveOut, extension_depth, finish_node, gtp_gate, move_scores, search_move};
 use super::*;
 use crate::common::helpers::STARTING_FEN;
 use crate::common::square::Square;
+use crate::common::tt::TranspositionTableEntry;
+use crate::search::intent::SearchIntent;
+use crate::search::nmp;
 
 const MATE_IN_ONE: &str = "7k/5Q2/6K1/8/8/8/8/8 w - - 0 1";
 const STALEMATE: &str = "7k/5K2/6Q1/8/8/8/8/8 b - - 0 1";
@@ -784,4 +792,401 @@ fn beta_cutoff_en_passant_updates_capture_history() {
     );
     assert_eq!(score, 250);
     assert!(state.tt.probe(board.board_hash).is_some());
+}
+
+fn test_context<'a>(
+    cancel: &'a AtomicBool,
+    pv_table: &'a mut PvTable,
+    state: &'a mut SearchState,
+) -> SearchContext<'a> {
+    SearchContext {
+        allow_null_move: true,
+        on_pv_path: true,
+        previous_pv: &[],
+        excluded_move: None,
+        cut_node: false,
+        gtp_graph: gtp::GtpTreeGraph::new(),
+        gtp_parent: None,
+        pv_table,
+        cancellation_token: cancel,
+        search_state: state,
+    }
+}
+
+fn test_tt_entry() -> TranspositionTableEntry {
+    TranspositionTableEntry {
+        hash: 1,
+        score: 0,
+        best_move: Move::new(Square::E2, Square::E4, MoveType::DoublePush),
+        depth: 10,
+        entry_type: TranspositionEntryType::Exact,
+        generation: 0,
+        eval: 0,
+        raw_eval: 0,
+    }
+}
+
+#[test]
+fn early_exit_guards_cover_all_arms() {
+    let entry = test_tt_entry();
+    assert!(tt_cutoff(entry, true, false, 5, 0, 10, false, 0, 0).is_none());
+    assert!(tt_cutoff(entry, false, true, 5, 0, 10, false, 0, 0).is_none());
+    let mut none_entry = entry;
+    none_entry.entry_type = TranspositionEntryType::None;
+    assert!(tt_cutoff(none_entry, false, false, 5, 0, 10, false, 0, 0).is_none());
+
+    let cancel = AtomicBool::new(false);
+    let mut pv_table = PvTable::new();
+    let mut state = SearchState::new();
+    let mut board = BoardState::parse_fen(STARTING_FEN);
+    let nt = NodeThreats::compute(&board);
+    let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
+    assert!(
+        rfp_gate(
+            &nt, 0, 10, 8, 0, false, true, true, false, 0, None, 0, 30000, false, &mut ctx
+        )
+        .is_none()
+    );
+    let tb = tablebase_probe(&mut board, 0, 8, -10, 10, -32000, false, 0, &mut ctx);
+    assert!(tb.score.is_none());
+    assert_eq!((tb.alpha, tb.best), (-10, -32000));
+    let coarse = coarse_pass(&mut board, 4, 0, -10, 10, true, false, None, None, &mut ctx);
+    assert!(!coarse.cancelled);
+    assert_eq!(coarse.depth, 4);
+    assert!(!coarse.failed_low);
+    assert!(coarse.tt_best.is_none());
+    assert_eq!(apply_iir(10, true, false, true, false, false), 10);
+
+    let mut check_board = BoardState::parse_fen(IN_CHECK_ESCAPE);
+    let sing = singular_search(
+        &mut check_board,
+        8,
+        0,
+        0,
+        0,
+        true,
+        true,
+        false,
+        None,
+        None,
+        false,
+        None,
+        0,
+        30000,
+        &mut ctx,
+    );
+    assert!(sing.score.is_none());
+    assert_eq!(sing.extension, 0);
+    assert_eq!(sing.depth_bonus, 0);
+}
+
+#[test]
+fn cancelled_helpers_bail_out_deterministically() {
+    let cancel = AtomicBool::new(true);
+    let mut pv_table = PvTable::new();
+    let mut state = SearchState::new();
+    let mut board = BoardState::parse_fen(STARTING_FEN);
+    let before = board.clone();
+    let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
+
+    let tb = tablebase_probe(&mut board, 1, 8, -10, 10, -32000, false, 0, &mut ctx);
+    assert_eq!(tb.score, Some(0));
+
+    let tiny = "7k/8/8/8/3p4/8/3R4/K7 w - - 0 1";
+    let mut cap_board = BoardState::parse_fen(tiny);
+    let cap_nt = NodeThreats::compute(&cap_board);
+    let prob = probcut_search(
+        &mut cap_board,
+        8,
+        0,
+        -500,
+        0,
+        false,
+        false,
+        false,
+        0,
+        30000,
+        &cap_nt,
+        &mut ctx,
+    );
+    assert_eq!(prob, Some(0));
+    assert_eq!(cap_board, BoardState::parse_fen(tiny));
+
+    nmp::clear_nmp_state();
+    let material = "7k/8/8/8/8/8/QQQ5/K7 w - - 0 1";
+    let mut null_board = BoardState::parse_fen(material);
+    let nul = null_move_search(
+        &mut null_board,
+        8,
+        0,
+        0,
+        2000,
+        0,
+        false,
+        false,
+        false,
+        true,
+        None,
+        0,
+        30000,
+        &mut ctx,
+    );
+    assert_eq!(nul, Some(0));
+    assert_eq!(null_board, BoardState::parse_fen(material));
+
+    let coarse = coarse_pass(
+        &mut board, 10, 0, -10, 10, false, false, None, None, &mut ctx,
+    );
+    assert!(coarse.cancelled);
+
+    let e2e4 = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+    let nt = NodeThreats::compute(&board);
+    board.make_move(e2e4);
+    let sm = search_move(
+        &mut board,
+        8,
+        0,
+        -50,
+        50,
+        false,
+        e2e4,
+        false,
+        false,
+        false,
+        false,
+        true,
+        true,
+        0,
+        10,
+        0,
+        0,
+        -1000,
+        None,
+        false,
+        None,
+        true,
+        ctx.gtp_graph,
+        0,
+        5,
+        0,
+        &nt,
+        &mut ctx,
+    );
+    assert!(matches!(sm, MoveOut::Cancelled));
+    assert_eq!(board, before);
+
+    let fin = finish_node(
+        &mut board,
+        0,
+        0,
+        30000,
+        false,
+        false,
+        0,
+        true,
+        8,
+        10,
+        Move::NO_MOVE,
+        TranspositionEntryType::Alpha,
+        None,
+        &[],
+        0,
+        false,
+        crate::search::bmo::BanditArm::CapturesFirst,
+        &mut ctx,
+    );
+    assert_eq!(fin, 0);
+}
+
+#[test]
+fn nmp_verification_path_executes() {
+    let material = "4k3/8/8/8/8/8/PPPP4/R3K3 w - - 0 1";
+    nmp::clear_nmp_state();
+    let mut board = BoardState::parse_fen(material);
+    let before = board.clone();
+    let cancel = AtomicBool::new(false);
+    let mut pv_table = PvTable::new();
+    let mut state = SearchState::new();
+    let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
+    let mate_bound = constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16;
+    let out = null_move_search(
+        &mut board, 16, 1, -100, 800, 0, false, false, false, true, None, 0, mate_bound, &mut ctx,
+    );
+    nmp::clear_nmp_state();
+    assert!(out.is_some());
+    assert_eq!(board, before);
+}
+
+#[test]
+fn lmr_adjust_arms_covered() {
+    let cancel = AtomicBool::new(true);
+    let mut pv_table = PvTable::new();
+    let mut state = SearchState::new();
+    let mut board = BoardState::parse_fen(STARTING_FEN);
+    let before = board.clone();
+    let nt = NodeThreats::compute(&board);
+    let e2e4 = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+
+    state.last_intent = SearchIntent::Attack;
+    let out = {
+        let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
+        board.make_move(e2e4);
+        search_move(
+            &mut board,
+            8,
+            0,
+            -50,
+            50,
+            false,
+            e2e4,
+            false,
+            false,
+            false,
+            false,
+            true,
+            true,
+            0,
+            10,
+            0,
+            0,
+            -1000,
+            None,
+            false,
+            None,
+            true,
+            ctx.gtp_graph,
+            0,
+            5,
+            0,
+            &nt,
+            &mut ctx,
+        )
+    };
+    assert!(matches!(out, MoveOut::Cancelled));
+
+    let mut check_board = BoardState::parse_fen("k3r3/8/8/8/8/3n4/2P1Q3/4K3 w - - 0 1");
+    let check_nt = NodeThreats::compute(&check_board);
+    let capture = Move::new(Square::C2, Square::D3, MoveType::Capture);
+    state.last_intent = SearchIntent::Improvement;
+    let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
+    check_board.make_move(capture);
+    let out = search_move(
+        &mut check_board,
+        8,
+        0,
+        -50,
+        50,
+        false,
+        capture,
+        true,
+        false,
+        false,
+        false,
+        true,
+        true,
+        -5000,
+        10,
+        0,
+        0,
+        -1000,
+        None,
+        false,
+        None,
+        true,
+        ctx.gtp_graph,
+        0,
+        5,
+        0,
+        &check_nt,
+        &mut ctx,
+    );
+    assert!(matches!(out, MoveOut::Cancelled));
+    assert_eq!(board, before);
+}
+
+#[test]
+fn extension_max_ply_streak_capped() {
+    let mut state = SearchState::new();
+    let mut board = BoardState::parse_fen(STARTING_FEN);
+    let e2e4 = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+    let max_ply = constants::MAX_PLY as u8;
+    let (depth, extension) = extension_depth(
+        &mut board, &mut state, e2e4, None, 0, 8, false, false, false, max_ply, None,
+    );
+    assert_eq!((depth, extension), (8, 0));
+}
+
+#[test]
+fn move_scores_capture_to_empty() {
+    let state = SearchState::new();
+    let board = BoardState::parse_fen("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
+    let mv = Move::new(Square::D1, Square::D5, MoveType::Capture);
+    assert_eq!(move_scores(&board, &state, mv, true, None), (0, 0));
+}
+
+#[test]
+fn gtp_gate_taken_prunes() {
+    let mut graph = gtp::GtpTreeGraph::new();
+    let idx = graph.add_node(gtp::GtpNode {
+        depth: 3,
+        eval_margin: -400,
+        history_score: -2000,
+        ..gtp::GtpNode::default()
+    });
+    let score = gtp::GtpModel::message_passing(&graph)[idx];
+    assert!(gtp_gate(
+        true,
+        false,
+        false,
+        false,
+        false,
+        false,
+        3,
+        10,
+        false,
+        &graph,
+        idx,
+        score.saturating_add(1),
+    ));
+}
+
+#[test]
+fn tablebase_probe_hits_real_tables() {
+    use crate::syzygy::{SYZYGY_TEST_LOCK, set_path, set_probe_depth, set_probe_limit};
+    let _serial = SYZYGY_TEST_LOCK.lock().unwrap();
+    if !std::path::Path::new("tables/KQvK.rtbw").exists() {
+        return;
+    }
+    let (old_limit, old_depth) = crate::syzygy::probe_config();
+    set_path("tables").expect("load tables");
+    set_probe_limit(7);
+    set_probe_depth(1);
+
+    let cancel = AtomicBool::new(false);
+    let mut pv_table = PvTable::new();
+    let mut state = SearchState::new();
+    let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
+
+    let mut win = BoardState::parse_fen("8/8/8/8/8/2K5/2Q5/7k w - - 0 1");
+    let hit = tablebase_probe(&mut win, 1, 8, -100, 100, -32000, false, 0, &mut ctx);
+    assert!(hit.score.is_some());
+
+    let raise = tablebase_probe(&mut win, 1, 8, 0, 31000, -32000, true, 0, &mut ctx);
+    assert!(raise.score.is_none());
+    assert!(raise.alpha > 0 && raise.best > 0 && raise.alpha == raise.best);
+
+    let ret = tablebase_probe(&mut win, 1, 8, 0, 100, -32000, true, 0, &mut ctx);
+    assert!(ret.score.is_some());
+
+    let mut draw = BoardState::parse_fen("8/8/8/4k3/8/8/4K3/8 w - - 0 1");
+    let dull = tablebase_probe(&mut draw, 1, 8, -100, 100, -32000, false, 0, &mut ctx);
+    assert_eq!(dull.score, Some(0));
+
+    let mut lost = BoardState::parse_fen("7k/8/8/8/8/2K5/2Q5/8 b - - 0 1");
+    let doomed = tablebase_probe(&mut lost, 1, 8, -100, 100, -32000, false, 0, &mut ctx);
+    assert!(doomed.score.is_some());
+
+    set_probe_limit(old_limit);
+    set_probe_depth(old_depth);
+    set_path("<empty>").ok();
 }

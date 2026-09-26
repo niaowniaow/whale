@@ -1892,3 +1892,63 @@ fn cover_rudi_1024_threat_pair_avx2() {
     let b = eval_with_net(&pos, &net, [&base; 2], [&psqt; 2], Side::White, 0);
     assert_eq!(a, b);
 }
+
+#[test]
+fn lazy_and_cached_collectors_cover_both_arms() {
+    use crate::common::helpers::STARTING_FEN;
+    let _eval_guard = EVAL_TEST_LOCK.lock().unwrap();
+    if !maintenance_active() && !try_load_default() {
+        return;
+    }
+    let board = BoardState::parse_fen(STARTING_FEN);
+    let pos = SfnnPosition::from_board(&board);
+    let mut threat_buf = [0usize; MAX_THREAT_ACTIVE];
+    let mut pair_buf = [0usize; MAX_PAIR_ACTIVE];
+    assert_eq!(
+        collect_threats_lazy(&pos, Side::White, &mut threat_buf, false),
+        0
+    );
+    assert_eq!(
+        collect_pairs_lazy(&pos, Side::White, &mut pair_buf, false),
+        0
+    );
+    assert!(collect_threats_lazy(&pos, Side::White, &mut threat_buf, true) > 0);
+    assert!(collect_pairs_lazy(&pos, Side::White, &mut pair_buf, true) > 0);
+    assert!(threats_cached_len(&pos, Side::White) > 0);
+    assert!(pairs_cached_len(&pos, Side::White) > 0);
+}
+
+#[test]
+fn model_path_resolution_covers_fallbacks() {
+    let _eval_guard = EVAL_TEST_LOCK.lock().unwrap();
+    assert!(resolve_model_path("<empty>").is_none());
+    assert!(resolve_model_path("").is_none());
+    assert!(resolve_model_path("embedded").is_none());
+    if std::path::Path::new("models/whale_big.nnue").exists() {
+        let resolved = resolve_model_path("whale_big").expect("bundled model resolves");
+        assert!(resolved.ends_with("whale_big.nnue"));
+    }
+    assert_eq!(
+        set_eval_file("BogusOption", "whatever"),
+        Err("unknown eval file option")
+    );
+    assert!(set_eval_file("EvalFileSmall", "whatever").is_ok());
+    if maintenance_active() || try_load_default() {
+        assert_eq!(try_load_default_path(), Some("active"));
+    }
+}
+
+#[test]
+fn garbage_net_file_fails_to_load() {
+    use std::io::Write;
+    let _eval_guard = EVAL_TEST_LOCK.lock().unwrap();
+    assert!(load_net("definitely/not/here.nnue").is_err());
+    let path = std::env::temp_dir().join("whale_cov_garbage.nnue");
+    {
+        let mut file = std::fs::File::create(&path).expect("temp file");
+        file.write_all(b"not a network").expect("write temp");
+    }
+    let result = load_net(path.to_str().unwrap());
+    let _ = std::fs::remove_file(&path);
+    assert!(result.is_err());
+}
