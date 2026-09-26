@@ -19,6 +19,7 @@ pub use crate::root::learned;
 pub use crate::root::metrics;
 pub mod move_picker;
 pub use crate::root::multipv;
+#[path = "negamax/mod.rs"]
 pub mod negamax;
 pub mod nmp;
 pub mod perf;

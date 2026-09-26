@@ -2,6 +2,7 @@ pub mod accumulator;
 pub mod dcn;
 pub mod features;
 pub mod loader;
+#[path = "v16/mod.rs"]
 pub mod v16;
 
 use crate::board::state::BoardState;

@@ -6,5 +6,6 @@ pub mod nnue;
 pub mod node_threats;
 pub use crate::opponent::plans;
 pub mod see;
+#[path = "state/mod.rs"]
 pub mod state;
 pub use crate::perception::strategic;
