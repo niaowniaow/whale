@@ -86,16 +86,15 @@ def adjudicate(scores_white, plies):
 
 def play_game(proc_a, proc_b, book_fen, a_is_white, movetime, max_plies):
     board = chess.Board(book_fen)
-    scores_white = []
+    moves = []
     plies = 0
-    adjudicated = None
+    method = "natural"
     while not board.is_game_over() and plies < max_plies:
         proc = proc_a if (board.turn == chess.WHITE) == a_is_white else proc_b
         mv_str, score_cp = query_move(proc, board.fen(), movetime)
+        score_white = None
         if score_cp is not None:
-            if board.turn == chess.BLACK:
-                score_cp = -score_cp
-            scores_white.append(score_cp)
+            score_white = score_cp if board.turn == chess.WHITE else -score_cp
         if not mv_str or mv_str == "(none)":
             break
         try:
@@ -106,13 +105,23 @@ def play_game(proc_a, proc_b, book_fen, a_is_white, movetime, max_plies):
         except Exception:
             break
         board.push(mv)
+        moves.append((mv.uci(), score_white))
         plies += 1
-        adjudicated = adjudicate(scores_white, plies)
+        adjudicated = adjudicate(
+            [s for _, s in moves],
+            plies,
+        )
         if adjudicated:
-            break
-    if adjudicated:
-        return adjudicated
-    return board.result(claim_draw=True)
+            method = "adjudication"
+            return adjudicated, moves, method
+    if plies >= max_plies and not board.is_game_over():
+        method = "plycap"
+        return "1/2-1/2", moves, method
+    return board.result(claim_draw=True), moves, method
+
+
+def node_moves(board, scores_white):
+    return (board, scores_white)
 
 
 def parse_opt(text):
@@ -152,7 +161,7 @@ def main():
             for g in range(1, args.games + 1):
                 fen = book[(g - 1) % len(book)]
                 a_is_white = (g % 2 == 1)
-                res = play_game(proc_a, proc_b, fen, a_is_white, args.movetime, args.max_plies)
+                res, moves, method = play_game(proc_a, proc_b, fen, a_is_white, args.movetime, args.max_plies)
                 if res == "1-0":
                     if a_is_white:
                         score_a += 1.0
@@ -171,6 +180,14 @@ def main():
                 game.headers["White"] = args.label_a if a_is_white else args.label_b
                 game.headers["Black"] = args.label_b if a_is_white else args.label_a
                 game.headers["Result"] = res
+                game.headers["FEN"] = fen
+                game.headers["SetUp"] = "1"
+                game.headers["Adjudication"] = method
+                node = game
+                for uci, score_white in moves:
+                    node = node.add_variation(chess.Move.from_uci(uci))
+                    if score_white is not None:
+                        node.comment = f"eval={score_white / 100.0:+.2f}"
                 f.write(str(game) + "\n\n")
                 f.flush()
                 print(f"game {g}/{args.games}: {res} ({args.label_a} {score_a} - {score_b} {args.label_b})",
