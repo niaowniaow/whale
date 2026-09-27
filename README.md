@@ -34,7 +34,7 @@ It is designed to be more than a chess-playing program. Whale is a **readable en
 ```text
                    ┌─────────────────────┐
                    │       UCI           │
-                   │  GUI / CLI / Match   │
+                   │  GUI / CLI / Match  │
                    └──────────┬──────────┘
                               │
                               ▼
