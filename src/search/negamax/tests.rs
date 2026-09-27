@@ -5,7 +5,7 @@ use super::early::{
     tablebase_probe, tt_cutoff,
 };
 use super::history::beta_cutoff;
-use super::moves::{MoveOut, extension_depth, finish_node, gtp_gate, move_scores, search_move};
+use super::moves::{MoveOut, extension_depth, finish_node, move_scores, search_move};
 use super::*;
 use crate::common::helpers::STARTING_FEN;
 use crate::common::square::Square;
@@ -853,7 +853,6 @@ fn early_exit_guards_cover_all_arms() {
     let coarse = coarse_pass(&mut board, 4, 0, -10, 10, true, false, None, None, &mut ctx);
     assert!(!coarse.cancelled);
     assert_eq!(coarse.depth, 4);
-    assert!(!coarse.failed_low);
     assert!(coarse.tt_best.is_none());
     assert_eq!(apply_iir(10, true, false, true, false, false), 10);
 
@@ -1122,32 +1121,6 @@ fn move_scores_capture_to_empty() {
     let board = BoardState::parse_fen("4k3/8/8/8/8/8/8/3QK3 w - - 0 1");
     let mv = Move::new(Square::D1, Square::D5, MoveType::Capture);
     assert_eq!(move_scores(&board, &state, mv, true, None), (0, 0));
-}
-
-#[test]
-fn gtp_gate_taken_prunes() {
-    let mut graph = gtp::GtpTreeGraph::new();
-    let idx = graph.add_node(gtp::GtpNode {
-        depth: 3,
-        eval_margin: -400,
-        history_score: -2000,
-        ..gtp::GtpNode::default()
-    });
-    let score = gtp::GtpModel::message_passing(&graph)[idx];
-    assert!(gtp_gate(
-        true,
-        false,
-        false,
-        false,
-        false,
-        false,
-        3,
-        10,
-        false,
-        &graph,
-        idx,
-        score.saturating_add(1),
-    ));
 }
 
 #[test]

@@ -152,34 +152,20 @@ pub fn search(
             evaluate_qsearch(&mut *board_state, optimism, alpha, beta)
         };
         if eval >= beta {
-            let continue_qs = search_state.params.lqt_enabled
-                && ply < 4
-                && crate::search::lqt::should_continue_quiescence(
-                    board_state,
-                    &crate::board::node_threats::NodeThreats::compute_for_qsearch(board_state),
-                    eval,
-                    alpha,
-                    beta,
-                    ply,
-                    search_state.params.lqt_threshold,
-                );
-            if !continue_qs {
-                let mut stand_pat = beta;
-                if eval.abs() < MAX_CENTIPAWN_EVAL - 200 {
-                    stand_pat = ((441 * eval as i32 + 583 * beta as i32) / 1024) as i16;
-                }
-                if !cancellation_token.load(Ordering::Relaxed) && search_state.tt_store_allowed(ply)
-                {
-                    search_state.tt.submit_entry(
-                        board_state.board_hash,
-                        tt::TranspositionTable::adjust_score(stand_pat, ply as i32, halfmove),
-                        0,
-                        best_move,
-                        TranspositionEntryType::Beta,
-                    );
-                }
-                return stand_pat;
+            let mut stand_pat = beta;
+            if eval.abs() < MAX_CENTIPAWN_EVAL - 200 {
+                stand_pat = ((441 * eval as i32 + 583 * beta as i32) / 1024) as i16;
             }
+            if !cancellation_token.load(Ordering::Relaxed) && search_state.tt_store_allowed(ply) {
+                search_state.tt.submit_entry(
+                    board_state.board_hash,
+                    tt::TranspositionTable::adjust_score(stand_pat, ply as i32, halfmove),
+                    0,
+                    best_move,
+                    TranspositionEntryType::Beta,
+                );
+            }
+            return stand_pat;
         }
         if eval > alpha {
             alpha = eval;

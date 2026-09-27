@@ -754,7 +754,6 @@ pub(super) fn apply_iir(
 pub(super) struct CoarseOut {
     pub cancelled: bool,
     pub depth: u8,
-    pub failed_low: bool,
     pub tt_best: Option<Move>,
 }
 
@@ -774,7 +773,6 @@ pub(super) fn coarse_pass(
     let mut out = CoarseOut {
         cancelled: false,
         depth: current_depth,
-        failed_low: false,
         tt_best,
     };
     if ctx.search_state.params.cfss_enabled
@@ -815,7 +813,6 @@ pub(super) fn coarse_pass(
             return CoarseOut {
                 cancelled: true,
                 depth: out.depth,
-                failed_low: out.failed_low,
                 tt_best: out.tt_best,
             };
         }
@@ -827,7 +824,6 @@ pub(super) fn coarse_pass(
         }
 
         if coarse_score <= alpha.saturating_sub(250) {
-            out.failed_low = true;
             out.depth = current_depth.saturating_sub(1).max(1);
         }
     }

@@ -5,9 +5,8 @@ use super::early::{
 };
 use super::history::beta_cutoff;
 use super::moves::{
-    MoveOut, alp_gate, cfss_gate, extension_depth, finish_node, futility_gate, gtp_gate,
-    history_gate, lmp_gate, losing_history_gate, move_scores, psm_gate, root_filter, search_move,
-    see_gate,
+    MoveOut, alp_gate, extension_depth, finish_node, futility_gate, history_gate, lmp_gate,
+    losing_history_gate, move_scores, psm_gate, root_filter, search_move, see_gate,
 };
 use super::*;
 
@@ -320,7 +319,6 @@ pub(super) fn search_internal(
         return 0;
     }
     current_depth = coarse.depth;
-    let coarse_failed_low = coarse.failed_low;
     tt_best = coarse.tt_best;
 
     let bandit_arm = if !is_pv_node && ctx.search_state.params.bmo_enabled {
@@ -490,19 +488,6 @@ pub(super) fn search_internal(
             continue;
         }
 
-        let is_tactical = cap_or_promo || gives_check;
-
-        if cfss_gate(
-            excluded_here,
-            coarse_failed_low,
-            number_of_legal_moves,
-            is_tactical,
-            current_depth,
-        ) {
-            board_state.unmake_move(move_obj);
-            continue;
-        }
-
         if psm_gate(
             ctx.search_state.params.psm_enabled,
             is_pv_node,
@@ -516,35 +501,6 @@ pub(super) fn search_internal(
             number_of_legal_moves,
             depth,
             consecutive_fail_lows,
-        ) {
-            board_state.unmake_move(move_obj);
-            continue;
-        }
-
-        let gtp_node = gtp::GtpNode {
-            depth,
-            eval_margin: (static_eval as i32 - alpha as i32).clamp(-32768, 32767) as i16,
-            is_capture: cap_or_promo,
-            in_check,
-            history_score,
-            parent_idx: ctx.gtp_parent,
-        };
-        let mut gtp_graph = ctx.gtp_graph;
-        let gtp_idx = gtp_graph.add_node(gtp_node);
-
-        if gtp_gate(
-            ctx.search_state.params.gtp_enabled,
-            is_pv_node,
-            excluded_here,
-            in_check,
-            cap_or_promo,
-            found_pv,
-            depth,
-            number_of_legal_moves,
-            gives_check,
-            &gtp_graph,
-            gtp_idx,
-            ctx.search_state.params.gtp_threshold,
         ) {
             board_state.unmake_move(move_obj);
             continue;
@@ -589,8 +545,8 @@ pub(super) fn search_internal(
             cut_node,
             pv_move,
             ctx.on_pv_path,
-            gtp_graph,
-            gtp_idx,
+            ctx.gtp_graph,
+            0,
             number_of_legal_moves,
             consecutive_fail_lows,
             &nt,

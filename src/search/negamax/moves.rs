@@ -229,18 +229,6 @@ pub(super) fn alp_gate(
     alp::AlpModel::should_prune(&features, alp_threshold)
 }
 
-#[inline(always)]
-pub(super) fn cfss_gate(
-    has_excluded: bool,
-    coarse_failed_low: bool,
-    moves: usize,
-    is_tactical: bool,
-    current_depth: u8,
-) -> bool {
-    !has_excluded
-        && cfss::should_prune_coarse_quiet(coarse_failed_low, moves, is_tactical, current_depth)
-}
-
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn psm_gate(
@@ -266,34 +254,6 @@ pub(super) fn psm_gate(
         && (ply as usize) < constants::MAX_PLY
         && !gives_check
         && psm::PsmEngine::should_prune_sibling(psm_state, moves, depth, fail_lows)
-}
-
-#[inline]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn gtp_gate(
-    gtp_enabled: bool,
-    is_pv_node: bool,
-    has_excluded: bool,
-    in_check: bool,
-    cap_or_promo: bool,
-    found_pv: bool,
-    depth: u8,
-    moves: usize,
-    gives_check: bool,
-    graph: &crate::search::gtp::GtpTreeGraph,
-    idx: usize,
-    threshold: u8,
-) -> bool {
-    gtp_enabled
-        && !is_pv_node
-        && !has_excluded
-        && !in_check
-        && !cap_or_promo
-        && !found_pv
-        && depth <= 4
-        && moves >= 10
-        && !gives_check
-        && gtp::GtpModel::should_prune_subtree(graph, idx, threshold)
 }
 
 #[inline(always)]
