@@ -100,7 +100,7 @@ jobs:
 
       - name: Upload match PGN
         if: always()
-        uses: actions/upload-artifact@b7c566a7725b93ec8317e8bd5058f4df6b0d06d # v6.0.0
+        uses: actions/upload-artifact@v4
         with:
           name: sprt-match
           path: |
