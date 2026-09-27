@@ -58,7 +58,7 @@ impl Accumulator {
         let weights = &network.transformer_weights[start..start + ACC_SIZE];
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx2") {
+            if *super::HAS_AVX2 {
                 unsafe {
                     Self::add_feature_avx2(&mut self.state, weights);
                 }
@@ -76,7 +76,7 @@ impl Accumulator {
         let weights = &network.transformer_weights[start..start + ACC_SIZE];
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx2") {
+            if *super::HAS_AVX2 {
                 unsafe {
                     Self::remove_feature_avx2(&mut self.state, weights);
                 }
@@ -96,7 +96,7 @@ impl Accumulator {
         let remove_weights = &network.transformer_weights[remove_start..remove_start + ACC_SIZE];
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx2") {
+            if *super::HAS_AVX2 {
                 unsafe {
                     Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
                 }
@@ -124,7 +124,7 @@ impl Accumulator {
         let remove2_weights = &network.transformer_weights[remove2_start..remove2_start + ACC_SIZE];
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx2") {
+            if *super::HAS_AVX2 {
                 unsafe {
                     Self::add_1_sub_2_avx2(
                         &mut self.state,
@@ -160,7 +160,7 @@ impl Accumulator {
         let r2 = &network.transformer_weights[remove2_start..remove2_start + ACC_SIZE];
         #[cfg(target_arch = "x86_64")]
         {
-            if is_x86_feature_detected!("avx2") {
+            if *super::HAS_AVX2 {
                 unsafe {
                     Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
                 }

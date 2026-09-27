@@ -1,7 +1,7 @@
 use super::context::{SearchContext, is_cancelled};
 use super::early::{
-    apply_iir, coarse_pass, mate_window, null_move_search, probcut_search, razor_gate, rfp_gate,
-    singular_search, static_info, tablebase_probe, tt_cutoff,
+    apply_iir, coarse_pass, hindsight_adjust, mate_window, null_move_search, probcut_search,
+    razor_gate, rfp_gate, singular_search, static_info, tablebase_probe, tt_cutoff,
 };
 use super::history::beta_cutoff;
 use super::moves::{
@@ -122,6 +122,8 @@ pub(super) fn search_internal(
         }
 
         if let Some(score) = tt_cutoff(
+            board_state,
+            ctx.search_state,
             entry,
             is_pv_node,
             ctx.excluded_move.is_some(),
@@ -184,6 +186,20 @@ pub(super) fn search_internal(
     let momentum = st.momentum;
     let structural_disagreement = st.disagreement;
     let is_improving = st.is_improving;
+
+    let prev_eval = if ply > 0 {
+        let p = ctx.search_state.eval_stack[ply as usize - 1];
+        (p != i16::MIN).then_some(p)
+    } else {
+        None
+    };
+    let depth = hindsight_adjust(
+        depth,
+        in_check,
+        static_eval,
+        prev_eval,
+        ctx.search_state.reduction_stack[ply as usize],
+    );
 
     let sing = singular_search(
         board_state,

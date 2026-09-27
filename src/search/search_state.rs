@@ -148,6 +148,7 @@ pub struct SearchState {
     pub captures_stack: Box<[MoveList; MAX_PLY]>,
     pub quiets_stack: Box<[MoveList; MAX_PLY]>,
     pub eval_stack: Box<[i16; MAX_PLY]>,
+    pub reduction_stack: Box<[u8; MAX_PLY]>,
 
     pub extension_streak: Box<[u8; MAX_PLY]>,
 
@@ -248,6 +249,7 @@ impl SearchState {
             captures_stack: Box::new([MoveList::new(); MAX_PLY]),
             quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
             eval_stack: Box::new([i16::MIN; MAX_PLY]),
+            reduction_stack: Box::new([0u8; MAX_PLY]),
             extension_streak: Box::new([0u8; MAX_PLY]),
             lmr_table,
             correction_history: crate::search::correction_history::CorrectionHistory::new(),
@@ -329,6 +331,7 @@ impl SearchState {
             captures_stack: Box::new([MoveList::new(); MAX_PLY]),
             quiets_stack: Box::new([MoveList::new(); MAX_PLY]),
             eval_stack: Box::new([i16::MIN; MAX_PLY]),
+            reduction_stack: Box::new([0u8; MAX_PLY]),
             extension_streak: Box::new([0u8; MAX_PLY]),
             lmr_table,
             correction_history: crate::search::correction_history::CorrectionHistory::new(),
@@ -397,6 +400,7 @@ impl SearchState {
         self.last_risk = 0;
         self.last_urgency = crate::search::risk::Urgency::Low;
         *self.eval_stack = [i16::MIN; MAX_PLY];
+        *self.reduction_stack = [0u8; MAX_PLY];
         *self.extension_streak = [0u8; MAX_PLY];
         self.bmo.reset();
         self.psm_stack.reset();

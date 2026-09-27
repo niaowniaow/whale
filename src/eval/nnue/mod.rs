@@ -15,6 +15,10 @@ pub const INPUT_SIZE: usize = 768;
 
 pub const SCALE: i32 = 400;
 
+#[cfg(target_arch = "x86_64")]
+pub(crate) static HAS_AVX2: std::sync::LazyLock<bool> =
+    std::sync::LazyLock::new(|| is_x86_feature_detected!("avx2"));
+
 const EVAL_CACHE_BITS: u32 = 18;
 const EVAL_CACHE_SIZE: usize = 1 << EVAL_CACHE_BITS;
 const EVAL_CACHE_MASK: u64 = (EVAL_CACHE_SIZE as u64) - 1;
@@ -279,7 +283,7 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
 
     #[cfg(target_arch = "x86_64")]
     {
-        if is_x86_feature_detected!("avx2") {
+        if *HAS_AVX2 {
             unsafe {
                 output +=
                     evaluate_side_avx2(&acc_active.state, &network.output_weights[0..ACC_SIZE]);
@@ -295,6 +299,9 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
                 .zip(&network.output_weights[0..ACC_SIZE])
             {
                 let val = i64::from(input).clamp(0, 255);
+                if val == 0 {
+                    continue;
+                }
                 let screlu = val * val;
                 output += screlu * i64::from(weight);
             }
@@ -305,6 +312,9 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
                 .zip(&network.output_weights[ACC_SIZE..2 * ACC_SIZE])
             {
                 let val = i64::from(input).clamp(0, 255);
+                if val == 0 {
+                    continue;
+                }
                 let screlu = val * val;
                 output += screlu * i64::from(weight);
             }

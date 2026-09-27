@@ -20,6 +20,7 @@ pub struct MoveOrdering {
     pub killer_moves: [[Move; MAX_PLY]; 2],
     pub history_moves: [[i32; SQUARES]; PIECES * 2],
     pub quiet_history: [[[i16; SQUARES]; SQUARES]; SIDES],
+    pub quiet_threat_history: [[[[i16; SQUARES]; SQUARES]; 2]; 2],
     pub continuation_history: [[[i16; SQUARES]; SQUARES]; PIECES * 2],
     pub counter_moves: [[[Move; SQUARES]; PIECES]; SIDES],
     pub capture_history: [[[i16; PIECES]; SQUARES]; PIECES * 2],
@@ -44,6 +45,7 @@ impl MoveOrdering {
             killer_moves: [[Move::NO_MOVE; MAX_PLY]; 2],
             history_moves: [[0; SQUARES]; PIECES * 2],
             quiet_history: [[[0; SQUARES]; SQUARES]; SIDES],
+            quiet_threat_history: [[[[0; SQUARES]; SQUARES]; 2]; 2],
             continuation_history: [[[0; SQUARES]; SQUARES]; PIECES * 2],
             counter_moves: [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES],
             capture_history: [[[0; PIECES]; SQUARES]; PIECES * 2],
@@ -73,6 +75,15 @@ impl MoveOrdering {
         self.killer_moves = [[Move::NO_MOVE; MAX_PLY]; 2];
         self.history_moves = [[0; SQUARES]; PIECES * 2];
         self.quiet_history = [[[0; SQUARES]; SQUARES]; SIDES];
+        for from_threat in self.quiet_threat_history.iter_mut() {
+            for to_threat in from_threat.iter_mut() {
+                for row in to_threat.iter_mut() {
+                    for s in row.iter_mut() {
+                        *s = 0;
+                    }
+                }
+            }
+        }
         self.continuation_history = [[[0; SQUARES]; SQUARES]; PIECES * 2];
         self.counter_moves = [[[Move::NO_MOVE; SQUARES]; PIECES]; SIDES];
         self.capture_history = [[[0; PIECES]; SQUARES]; PIECES * 2];
@@ -138,6 +149,10 @@ impl MoveOrdering {
             && self.continuation_histories.iter().all(|off| {
                 off.iter()
                     .all(|piece| piece.iter().all(|row| row.iter().all(|&s| s == 0)))
+            })
+            && self.quiet_threat_history.iter().all(|from| {
+                from.iter()
+                    .all(|to| to.iter().all(|row| row.iter().all(|&s| s == 0)))
             })
             && self.tt_move_history == 0
     }
@@ -260,19 +275,23 @@ impl MoveOrdering {
                         let raw = self.low_ply_history[ply][source][target] as i32;
                         low_score = 8 * raw / (1 + ply as i32);
                     }
+                    let pt = (piece as usize) % PIECES;
+                    let to_mask = 1u64 << target;
+                    let from_mask = 1u64 << source;
+                    let was_threatened = (threats[pt] & from_mask) != 0;
+                    let is_threatened = (threats[pt] & to_mask) != 0;
+                    let threat_score = self.quiet_threat_history[was_threatened as usize]
+                        [is_threatened as usize][source][target]
+                        as i32;
                     let mut score = 2 * history_score
                         + i32::from(from_to_score)
                         + continuation_score
                         + 2 * pawn_score
-                        + low_score;
-                    let pt = (piece as usize) % PIECES;
-                    let to_mask = 1u64 << target;
-                    let from_mask = 1u64 << source;
+                        + low_score
+                        + threat_score;
                     if (check_squares[pt] & to_mask) != 0 && board_state.see_ge(move_obj.mv, -75) {
                         score += 16384;
                     }
-                    let was_threatened = (threats[pt] & from_mask) != 0;
-                    let is_threatened = (threats[pt] & to_mask) != 0;
                     let v = 20 * (was_threatened as i32 - is_threatened as i32);
                     let pt_val = match pt {
                         0 => 100,
@@ -289,7 +308,13 @@ impl MoveOrdering {
         }
     }
     #[inline(always)]
-    pub fn update_quiet_history(&mut self, side: Side, move_obj: Move, bonus: i32) {
+    pub fn update_quiet_history(
+        &mut self,
+        board_state: &BoardState,
+        side: Side,
+        move_obj: Move,
+        bonus: i32,
+    ) {
         let source = move_obj.source as usize;
         let target = move_obj.target as usize;
         if source < SQUARES && target < SQUARES {
@@ -298,6 +323,19 @@ impl MoveOrdering {
                 bonus,
                 16384,
             );
+            let piece = board_state.get_piece_on(move_obj.source);
+            if piece >= 0 {
+                let pt = (piece as usize) % PIECES;
+                let threats = board_state.cached_threats_us();
+                let from_threatened = (threats[pt] >> source) & 1;
+                let to_threatened = (threats[pt] >> target) & 1;
+                Self::update_gravity_i16(
+                    &mut self.quiet_threat_history[from_threatened as usize]
+                        [to_threatened as usize][source][target],
+                    bonus,
+                    16384,
+                );
+            }
         }
     }
     #[inline(always)]
@@ -682,19 +720,23 @@ impl MoveOrdering {
                         let raw = self.low_ply_history[ply][source][target] as i32;
                         low_score = 8 * raw / (1 + ply as i32);
                     }
+                    let pt = (piece as usize) % PIECES;
+                    let to_mask = 1u64 << target;
+                    let from_mask = 1u64 << source;
+                    let was_threatened = (threats[pt] & from_mask) != 0;
+                    let is_threatened = (threats[pt] & to_mask) != 0;
+                    let threat_score = self.quiet_threat_history[was_threatened as usize]
+                        [is_threatened as usize][source][target]
+                        as i32;
                     let mut score = 2 * history_score
                         + i32::from(from_to_score)
                         + cont_score
                         + 2 * pawn_score
-                        + low_score;
-                    let pt = (piece as usize) % PIECES;
-                    let to_mask = 1u64 << target;
-                    let from_mask = 1u64 << source;
+                        + low_score
+                        + threat_score;
                     if (check_squares[pt] & to_mask) != 0 && board_state.see_ge(move_obj.mv, -75) {
                         score += 16384;
                     }
-                    let was_threatened = (threats[pt] & from_mask) != 0;
-                    let is_threatened = (threats[pt] & to_mask) != 0;
                     let v = 20 * (was_threatened as i32 - is_threatened as i32);
                     let pt_val = match pt {
                         0 => 100,
@@ -1001,9 +1043,15 @@ mod tests {
     }
     #[test]
     fn quiet_history_is_separated_by_side_and_from_to() {
+        use crate::common::helpers::STARTING_FEN;
+        let board = BoardState::parse_fen(STARTING_FEN);
         let mut ordering = MoveOrdering::new();
         let move_obj = Move::new(Square::E2, Square::E4, MoveType::Quiet);
-        ordering.update_quiet_history(Side::White, move_obj, 1000);
+        ordering.update_quiet_history(&board, Side::White, move_obj, 1000);
+        assert!(
+            ordering.quiet_history[Side::White as usize][Square::E2 as usize][Square::E4 as usize]
+                > 0
+        );
         assert!(
             ordering.quiet_history[Side::White as usize][Square::E2 as usize][Square::E4 as usize]
                 > 0
@@ -1016,6 +1064,29 @@ mod tests {
             ordering.quiet_history[Side::White as usize][Square::E2 as usize][Square::E3 as usize],
             0
         );
+    }
+    #[test]
+    fn quiet_threat_history_separates_threat_context() {
+        use crate::common::helpers::STARTING_FEN;
+        let board = BoardState::parse_fen(STARTING_FEN);
+        let mut ordering = MoveOrdering::new();
+        let move_obj = Move::new(Square::E2, Square::E4, MoveType::Quiet);
+        ordering.update_quiet_history(&board, Side::White, move_obj, 1000);
+        let threats = board.cached_threats_us();
+        let from_bit = ((threats[Piece::Pawn as usize] >> (Square::E2 as usize)) & 1) as usize;
+        let to_bit = ((threats[Piece::Pawn as usize] >> (Square::E4 as usize)) & 1) as usize;
+        assert!(
+            ordering.quiet_threat_history[from_bit][to_bit][Square::E2 as usize]
+                [Square::E4 as usize]
+                > 0
+        );
+        assert_eq!(
+            ordering.quiet_threat_history[1 - from_bit][to_bit][Square::E2 as usize]
+                [Square::E4 as usize],
+            0
+        );
+        let before = ordering.get_quiet_history_score(&board, move_obj, None);
+        assert!(before > 0);
     }
     #[test]
     fn continuation_history_uses_previous_piece_and_target() {
@@ -1088,11 +1159,13 @@ mod tests {
     }
     #[test]
     fn history_reset_decay_and_empty_probe() {
+        use crate::common::helpers::STARTING_FEN;
+        let board = BoardState::parse_fen(STARTING_FEN);
         let mut ordering = MoveOrdering::new();
         assert!(ordering.is_move_heuristic_empty());
         let mv = Move::new(Square::E2, Square::E4, MoveType::Quiet);
         ordering.update_history(0, mv, 1000);
-        ordering.update_quiet_history(Side::White, mv, 1000);
+        ordering.update_quiet_history(&board, Side::White, mv, 1000);
         assert!(!ordering.is_move_heuristic_empty());
         let before = ordering.history_moves[0][Square::E4 as usize];
         ordering.decay_history();

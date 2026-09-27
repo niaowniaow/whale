@@ -297,6 +297,31 @@ pub(super) fn singular_search(
     out
 }
 
+pub(super) fn hindsight_adjust(
+    depth: u8,
+    in_check: bool,
+    static_eval: i16,
+    prev_eval: Option<i16>,
+    prior_reduction: u8,
+) -> u8 {
+    if in_check {
+        return depth;
+    }
+    let mut depth = depth;
+    let opponent_worsening = prev_eval.map(|p| static_eval > -p).unwrap_or(true);
+    if prior_reduction >= 3 && !opponent_worsening {
+        depth = depth.saturating_add(1).min(constants::MAX_PLY as u8 - 1);
+    }
+    if prior_reduction >= 2
+        && depth >= 2
+        && let Some(p) = prev_eval
+        && static_eval as i32 + p as i32 > 166
+    {
+        depth = depth.saturating_sub(1);
+    }
+    depth
+}
+
 #[inline(always)]
 pub(super) fn mate_window(ply: u8, alpha: i16, beta: i16) -> (i16, i16, Option<i16>) {
     let mated = -constants::MAX_CENTIPAWN_EVAL + ply as i16;
@@ -313,6 +338,8 @@ pub(super) fn mate_window(ply: u8, alpha: i16, beta: i16) -> (i16, i16, Option<i
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn tt_cutoff(
+    board_state: &mut BoardState,
+    search_state: &mut SearchState,
     entry: tt::TranspositionTableEntry,
     is_pv_node: bool,
     has_excluded: bool,
@@ -334,11 +361,40 @@ pub(super) fn tt_cutoff(
         TranspositionEntryType::Beta => tt_score >= beta && (cut_node || depth > 5),
         TranspositionEntryType::None => false,
     };
-    if depth_cond && bound_ok && draw::allow_tt_cutoff(halfmove) {
-        Some(tt_score)
-    } else {
-        None
+    if !(depth_cond && bound_ok && draw::allow_tt_cutoff(halfmove)) {
+        return None;
     }
+    if tt_score >= beta && entry.best_move != Move::NO_MOVE && !entry.best_move.is_capture() {
+        search_state.move_ordering.update_quiet_history(
+            board_state,
+            board_state.side_to_move,
+            entry.best_move,
+            crate::eval::move_ordering::MoveOrdering::standard_bonus(depth),
+        );
+    }
+    let mate_bound = constants::MAX_CENTIPAWN_EVAL - constants::MAX_PLY as i16;
+    if depth >= 7
+        && entry.best_move != Move::NO_MOVE
+        && tt_score.abs() < mate_bound
+        && board_state.is_pseudo_legal(entry.best_move)
+        && board_state.is_legal(entry.best_move)
+    {
+        board_state.make_move(entry.best_move);
+        let child_hit = search_state.tt.probe(board_state.board_hash);
+        board_state.unmake_move(entry.best_move);
+        match child_hit {
+            None => return Some(tt_score),
+            Some(child) => {
+                let child_score =
+                    tt::TranspositionTable::retrieve_score(child.score, ply as i32 + 1, halfmove);
+                if (tt_score >= beta) == (-child_score >= beta) {
+                    return Some(tt_score);
+                }
+                return None;
+            }
+        }
+    }
+    Some(tt_score)
 }
 
 #[inline]

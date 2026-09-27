@@ -463,6 +463,9 @@ pub(super) fn search_move(
         } else if ctx.search_state.params.cpi_enabled && nt.checkers.count_ones() > 0 {
             reduction = reduction.saturating_sub(1);
         }
+        if (ply as usize) + 1 < constants::MAX_PLY {
+            ctx.search_state.reduction_stack[(ply as usize) + 1] = reduction.saturating_add(1);
+        }
         score = -search_internal(
             board_state,
             depth.saturating_sub(1 + reduction),
@@ -522,6 +525,9 @@ pub(super) fn search_move(
             );
         }
     } else {
+        if (ply as usize) + 1 < constants::MAX_PLY {
+            ctx.search_state.reduction_stack[(ply as usize) + 1] = 0;
+        }
         let mut child_ctx = SearchContext {
             allow_null_move: true,
             on_pv_path: next_on_pv,

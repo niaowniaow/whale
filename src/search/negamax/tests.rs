@@ -1,13 +1,14 @@
 use super::context::SearchContext;
 use super::core::{search, search_internal};
 use super::early::{
-    apply_iir, coarse_pass, null_move_search, probcut_search, rfp_gate, singular_search,
-    tablebase_probe, tt_cutoff,
+    apply_iir, coarse_pass, hindsight_adjust, null_move_search, probcut_search, rfp_gate,
+    singular_search, tablebase_probe, tt_cutoff,
 };
 use super::history::beta_cutoff;
 use super::moves::{MoveOut, extension_depth, finish_node, move_scores, search_move};
 use super::*;
 use crate::common::helpers::STARTING_FEN;
+use crate::common::side::Side;
 use crate::common::square::Square;
 use crate::common::tt::TranspositionTableEntry;
 use crate::search::intent::SearchIntent;
@@ -829,15 +830,61 @@ fn test_tt_entry() -> TranspositionTableEntry {
 #[test]
 fn early_exit_guards_cover_all_arms() {
     let entry = test_tt_entry();
-    assert!(tt_cutoff(entry, true, false, 5, 0, 10, false, 0, 0).is_none());
-    assert!(tt_cutoff(entry, false, true, 5, 0, 10, false, 0, 0).is_none());
-    let mut none_entry = entry;
-    none_entry.entry_type = TranspositionEntryType::None;
-    assert!(tt_cutoff(none_entry, false, false, 5, 0, 10, false, 0, 0).is_none());
-
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
+    let mut probe_board = BoardState::parse_fen(STARTING_FEN);
+    assert!(
+        tt_cutoff(
+            &mut probe_board,
+            &mut state,
+            entry,
+            true,
+            false,
+            5,
+            0,
+            10,
+            false,
+            0,
+            0
+        )
+        .is_none()
+    );
+    assert!(
+        tt_cutoff(
+            &mut probe_board,
+            &mut state,
+            entry,
+            false,
+            true,
+            5,
+            0,
+            10,
+            false,
+            0,
+            0
+        )
+        .is_none()
+    );
+    let mut none_entry = entry;
+    none_entry.entry_type = TranspositionEntryType::None;
+    assert!(
+        tt_cutoff(
+            &mut probe_board,
+            &mut state,
+            none_entry,
+            false,
+            false,
+            5,
+            0,
+            10,
+            false,
+            0,
+            0
+        )
+        .is_none()
+    );
+
     let mut board = BoardState::parse_fen(STARTING_FEN);
     let nt = NodeThreats::compute(&board);
     let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
@@ -1162,4 +1209,124 @@ fn tablebase_probe_hits_real_tables() {
     set_probe_limit(old_limit);
     set_probe_depth(old_depth);
     set_path("<empty>").ok();
+}
+
+#[test]
+fn hindsight_adjust_respects_guards_and_bounds() {
+    assert_eq!(hindsight_adjust(10, true, 100, Some(0), 5), 10);
+    assert_eq!(hindsight_adjust(10, false, 100, Some(0), 1), 10);
+    assert_eq!(hindsight_adjust(10, false, 100, Some(-50), 3), 10);
+    assert_eq!(hindsight_adjust(10, false, -100, Some(50), 3), 11);
+    assert_eq!(hindsight_adjust(10, false, 100, Some(100), 2), 9);
+    assert_eq!(hindsight_adjust(10, false, 100, Some(0), 2), 10);
+    assert_eq!(hindsight_adjust(1, false, 100, Some(100), 2), 1);
+    assert_eq!(hindsight_adjust(10, false, 100, None, 3), 10);
+    let max = constants::MAX_PLY as u8 - 1;
+    assert_eq!(hindsight_adjust(max, false, -100, Some(50), 9), max);
+}
+
+#[test]
+fn tt_cutoff_reprobe_paths() {
+    let e2e4 = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+    let entry = TranspositionTableEntry {
+        hash: 7,
+        score: 50,
+        best_move: e2e4,
+        depth: 10,
+        entry_type: TranspositionEntryType::Beta,
+        generation: 0,
+        eval: 0,
+        raw_eval: 0,
+    };
+    let mut board = BoardState::parse_fen(STARTING_FEN);
+    let before = board.clone();
+    let mut state = SearchState::new();
+    let out = tt_cutoff(
+        &mut board, &mut state, entry, false, false, 8, 0, 40, false, 0, 0,
+    );
+    assert_eq!(out, Some(50));
+    assert_eq!(board, before);
+    assert!(
+        state.move_ordering.quiet_history[Side::White as usize][Square::E2 as usize]
+            [Square::E4 as usize]
+            > 0
+    );
+
+    let mut child_board = BoardState::parse_fen(STARTING_FEN);
+    child_board.make_move(e2e4);
+    let child_hash = child_board.board_hash;
+    state.tt.submit_entry(
+        child_hash,
+        tt::TranspositionTable::adjust_score(-50, 1, 0),
+        10,
+        Move::NO_MOVE,
+        TranspositionEntryType::Beta,
+    );
+    let out = tt_cutoff(
+        &mut board, &mut state, entry, false, false, 8, 0, 40, false, 0, 0,
+    );
+    assert_eq!(out, Some(50));
+    assert_eq!(board, before);
+}
+
+#[test]
+fn tt_cutoff_reprobe_disagreement_skips_cutoff() {
+    let e2e4 = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
+    let entry = TranspositionTableEntry {
+        hash: 7,
+        score: 50,
+        best_move: e2e4,
+        depth: 10,
+        entry_type: TranspositionEntryType::Beta,
+        generation: 0,
+        eval: 0,
+        raw_eval: 0,
+    };
+    let mut board = BoardState::parse_fen(STARTING_FEN);
+    let before = board.clone();
+    let mut state = SearchState::new();
+    let mut child_board = BoardState::parse_fen(STARTING_FEN);
+    child_board.make_move(e2e4);
+    state.tt.submit_entry(
+        child_board.board_hash,
+        tt::TranspositionTable::adjust_score(0, 1, 0),
+        10,
+        Move::NO_MOVE,
+        TranspositionEntryType::Exact,
+    );
+    let out = tt_cutoff(
+        &mut board, &mut state, entry, false, false, 8, 0, 40, false, 0, 0,
+    );
+    assert_eq!(out, None);
+    assert_eq!(board, before);
+}
+
+#[test]
+fn tt_cutoff_capture_move_skips_history_bonus() {
+    let italian = "r1bqkbnr/pppp1ppp/2n5/4p3/2B1P3/5N2/PPPP1PPP/RNBQK2R w KQkq - 0 1";
+    let capture = Move::new(Square::C4, Square::F7, MoveType::Capture);
+    let entry = TranspositionTableEntry {
+        hash: 9,
+        score: 50,
+        best_move: capture,
+        depth: 10,
+        entry_type: TranspositionEntryType::Beta,
+        generation: 0,
+        eval: 0,
+        raw_eval: 0,
+    };
+    let mut board = BoardState::parse_fen(italian);
+    assert!(board.is_pseudo_legal(capture));
+    let before = board.clone();
+    let mut state = SearchState::new();
+    let out = tt_cutoff(
+        &mut board, &mut state, entry, false, false, 8, 0, 40, false, 0, 0,
+    );
+    assert_eq!(out, Some(50));
+    assert_eq!(board, before);
+    assert_eq!(
+        state.move_ordering.quiet_history[Side::White as usize][Square::C4 as usize]
+            [Square::F7 as usize],
+        0
+    );
 }

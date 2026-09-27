@@ -167,6 +167,8 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
         if query.structural_disagreement > 100 {
             reduction = reduction.saturating_sub(1);
         }
+
+        reduction += (query.move_count as i32) / 16;
     }
 
     if query.tt_capture {
@@ -443,6 +445,43 @@ mod tests {
         let r_normal = compute_reduction(&normal_query, &table, &divisors);
         let r_dis = compute_reduction(&dis_query, &table, &divisors);
         assert!(r_dis <= r_normal);
+    }
+
+    #[test]
+    fn move_count_and_window_adjust_reduction() {
+        let table = LmrTable::default();
+        let divisors = [3000; 16];
+        let base = LmrQuery {
+            depth: 8,
+            move_count: 8,
+            is_pv_node: false,
+            is_improving: false,
+            gives_check: false,
+            is_tactical: false,
+            has_non_pawn_material: true,
+            history_score: 0,
+            alpha: 0,
+            static_eval: 0,
+            momentum: 0,
+            found_pv: true,
+            structural_disagreement: 0,
+            cut_node: false,
+            tt_pv: false,
+            cutoff_cnt: 0,
+            all_node: false,
+            tt_capture: false,
+            is_tt_move: false,
+        };
+        let r_base = compute_reduction(&base, &table, &divisors);
+        let r_late = compute_reduction(
+            &LmrQuery {
+                move_count: 32,
+                ..base
+            },
+            &table,
+            &divisors,
+        );
+        assert!(r_late >= r_base + 2);
     }
 
     #[test]

@@ -487,7 +487,7 @@ mod tests {
             target: Square::B1,
             move_type: MoveType::Quiet,
         };
-        move_ordering.update_quiet_history(board.side_to_move, quiet_to_penalize, -16384);
+        move_ordering.update_quiet_history(&board, board.side_to_move, quiet_to_penalize, -16384);
         let mut returned_moves = Vec::new();
         let nt = crate::board::node_threats::NodeThreats::compute(&board);
         while let Some(mv) =

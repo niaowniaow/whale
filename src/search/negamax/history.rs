@@ -20,7 +20,7 @@ pub(super) fn update_history_stats(
             .update_history(piece as usize, best_move, quiet_bonus);
         search_state
             .move_ordering
-            .update_quiet_history(side, best_move, quiet_bonus);
+            .update_quiet_history(board_state, side, best_move, quiet_bonus);
         update_continuation(
             search_state,
             board_state,
@@ -41,9 +41,12 @@ pub(super) fn update_history_stats(
                     quiet_move,
                     -actual_malus,
                 );
-                search_state
-                    .move_ordering
-                    .update_quiet_history(side, quiet_move, -actual_malus);
+                search_state.move_ordering.update_quiet_history(
+                    board_state,
+                    side,
+                    quiet_move,
+                    -actual_malus,
+                );
                 update_continuation(
                     search_state,
                     board_state,
