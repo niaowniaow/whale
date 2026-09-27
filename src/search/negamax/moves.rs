@@ -360,6 +360,7 @@ pub(super) fn extension_depth(
     extension = extension.max(tce_ext).clamp(-3, 3);
 
     if state.verification_budget > 0 && is_tactical_move && extension < 3 {
+        state.verification_budget = state.verification_budget.saturating_sub(1);
         extension = (extension + 1).min(3);
     }
 
