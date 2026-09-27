@@ -71,15 +71,15 @@ def query_move(proc, fen, movetime):
 
 
 def adjudicate(scores_white, plies):
-    if len(scores_white) >= 8:
-        window = scores_white[-8:]
-        if all(s is not None and s >= 700 for s in window):
+    if len(scores_white) >= 6:
+        window = scores_white[-6:]
+        if all(s is not None and s >= 600 for s in window):
             return "1-0"
-        if all(s is not None and s <= -700 for s in window):
+        if all(s is not None and s <= -600 for s in window):
             return "0-1"
-    if plies >= 100 and len(scores_white) >= 16:
-        window = scores_white[-16:]
-        if all(s is not None and abs(s) <= 25 for s in window):
+    if plies >= 80 and len(scores_white) >= 12:
+        window = scores_white[-12:]
+        if all(s is not None and abs(s) <= 40 for s in window):
             return "1/2-1/2"
     return None
 
@@ -89,6 +89,7 @@ def play_game(proc_a, proc_b, book_fen, a_is_white, movetime, max_plies):
     moves = []
     plies = 0
     method = "natural"
+    adjudicated = None
     while not board.is_game_over() and plies < max_plies:
         proc = proc_a if (board.turn == chess.WHITE) == a_is_white else proc_b
         mv_str, score_cp = query_move(proc, board.fen(), movetime)
@@ -111,13 +112,13 @@ def play_game(proc_a, proc_b, book_fen, a_is_white, movetime, max_plies):
             [s for _, s in moves],
             plies,
         )
-        if adjudicated:
-            method = "adjudication"
-            return adjudicated, moves, method
-    if plies >= max_plies and not board.is_game_over():
-        method = "plycap"
-        return "1/2-1/2", moves, method
-    return board.result(claim_draw=True), moves, method
+    if adjudicated:
+        method = "adjudication"
+        return adjudicated, moves, method
+    if board.is_game_over():
+        return board.result(claim_draw=True), moves, method
+    method = "plycap"
+    return "1/2-1/2", moves, method
 
 
 def node_moves(board, scores_white):
@@ -132,6 +133,8 @@ def parse_opt(text):
 def main():
     ap = argparse.ArgumentParser(description="A/B self-play match with per-side UCI options")
     ap.add_argument("--binary", default="./target/release/whale")
+    ap.add_argument("--binary-b", default=None,
+                    help="binary for side B (defaults to --binary)")
     ap.add_argument("--games", type=int, default=100)
     ap.add_argument("--movetime", type=int, default=300)
     ap.add_argument("--book", default="resources/openings.epd")
@@ -152,7 +155,7 @@ def main():
     chall_opts = base_opts + [parse_opt(o) for o in args.off_opt]
 
     proc_a = init_engine(args.binary, base_opts)
-    proc_b = init_engine(args.binary, chall_opts)
+    proc_b = init_engine(args.binary_b or args.binary, chall_opts)
 
     score_a = 0.0
     score_b = 0.0

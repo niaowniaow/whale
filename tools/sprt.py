@@ -70,12 +70,17 @@ def parse_pgn_results(path):
             if m and m.group(1) in ("1-0", "0-1", "1/2-1/2", "*"):
                 if m.group(1) != "*":
                     results.append(m.group(1))
+                else:
+                    results.append(None)
     return results
 
 
 def results_to_white_points(results, white_is_player_one_pattern=None):
     points = []
     for i, r in enumerate(results):
+        if r is None:
+            points.append(None)
+            continue
         p = game_to_points(r)
         if white_is_player_one_pattern is not None:
             if not white_is_player_one_pattern(i):
@@ -201,6 +206,22 @@ def self_test():
     assert normalize_pair_key(1.0, 0.5) == "WD"
     assert normalize_pair_key(0.0, 0.5) == "LD"
     assert normalize_pair_key(1.0, 0.0) == "WL"
+    assert normalize_pair_key(1.0, None) is None
+    assert normalize_pair_key(None, 0.5) is None
+    import tempfile
+    import os
+
+    with tempfile.NamedTemporaryFile("w", suffix=".pgn", delete=False) as tmp:
+        tmp.write('[Result "1-0"]\n\n[Result "*"]\n\n[Result "0-1"]\n\n[Result "1/2-1/2"]\n')
+        tmp_path = tmp.name
+    try:
+        assert parse_pgn_results(tmp_path) == ["1-0", None, "0-1", "1/2-1/2"]
+        rep = analyze_pgn(tmp_path, elo0=0.0, elo1=5.0)
+        assert rep["games"] == 4, rep
+        assert rep["pairs"] == 1, rep
+        assert rep["counts"]["LD"] == 1, rep
+    finally:
+        os.unlink(tmp_path)
     e, _ = elo_estimate(count_pairs(strong))
     assert e > 0.0, f"expected positive elo, got {e}"
     print("sprt self-test: all assertions passed")

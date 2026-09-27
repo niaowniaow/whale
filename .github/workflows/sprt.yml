@@ -1,0 +1,108 @@
+name: SPRT
+
+on:
+  workflow_dispatch:
+    inputs:
+      base_ref:
+        description: "Git ref to use as the baseline engine"
+        default: "main"
+        type: string
+      games:
+        description: "Maximum games to play"
+        default: "150"
+        type: string
+      movetime:
+        description: "Milliseconds per move for both engines"
+        default: "200"
+        type: string
+  pull_request:
+    branches: [main]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+
+concurrency:
+  group: sprt-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sprt:
+    name: sprt (base vs head)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      RUSTFLAGS: "-C target-cpu=generic"
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+
+      - name: Setup Rust toolchain (rustup)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-stable-
+
+      - name: Install Python chess library
+        run: pip install chess
+
+      - name: Build HEAD engine
+        run: |
+          cargo build --release
+          cp target/release/whale /tmp/whale-head
+          /tmp/whale-head bench 2>&1 | tail -n 1
+
+      - name: Build BASE engine
+        env:
+          BASE_REF: ${{ inputs.base_ref || github.base_ref }}
+        run: |
+          git fetch origin "$BASE_REF" --depth 30
+          git worktree add /tmp/sprt-base FETCH_HEAD
+          cd /tmp/sprt-base
+          CARGO_TARGET_DIR=/tmp/sprt-base-target cargo build --release
+          cp /tmp/sprt-base-target/release/whale /tmp/whale-base
+
+      - name: Play A/B match (HEAD vs BASE)
+        env:
+          GAMES: ${{ inputs.games || '120' }}
+          MOVETIME: ${{ inputs.movetime || '150' }}
+        run: |
+          python3 tools/sprt_match.py \
+            --binary /tmp/whale-head \
+            --binary-b /tmp/whale-base \
+            --games "$GAMES" \
+            --movetime "$MOVETIME" \
+            --label-a HEAD \
+            --label-b BASE \
+            --out sprt.pgn
+
+      - name: SPRT verdict (fail only on proven regression)
+        run: |
+          python3 tools/sprt.py sprt.pgn --elo0 0 --elo1 5 --json sprt.json
+          python3 -c "import json,sys; r=json.load(open('sprt.json')); print(r); sys.exit(1 if r['verdict']=='H0' else 0)"
+
+      - name: Upload match PGN
+        if: always()
+        uses: actions/upload-artifact@b7c566a7725b93ec8317e8bd5058f4df6b0d06d # v6.0.0
+        with:
+          name: sprt-match
+          path: |
+            sprt.pgn
+            sprt.json
