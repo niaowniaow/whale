@@ -12,6 +12,7 @@ pub mod ghi;
 pub mod gtp;
 pub mod iir;
 pub use crate::world::intent;
+#[path = "iterative_deepening/mod.rs"]
 pub mod iterative_deepening;
 pub mod lmr;
 pub mod lqt;
