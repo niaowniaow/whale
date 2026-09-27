@@ -41,7 +41,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          fetch-depth: 1
+          fetch-depth: 0
 
       - name: Setup Rust toolchain (rustup)
         run: |
@@ -73,8 +73,7 @@ jobs:
         env:
           BASE_REF: ${{ inputs.base_ref || github.base_ref }}
         run: |
-          git fetch origin "$BASE_REF" --depth 30
-          git worktree add /tmp/sprt-base FETCH_HEAD
+          git worktree add /tmp/sprt-base "$BASE_REF" 2>/dev/null || { git fetch origin "$BASE_REF" --depth 50 && git worktree add /tmp/sprt-base FETCH_HEAD; }
           cd /tmp/sprt-base
           CARGO_TARGET_DIR=/tmp/sprt-base-target cargo build --release
           cp /tmp/sprt-base-target/release/whale /tmp/whale-base
