@@ -27,8 +27,11 @@ fn run_case(depth: u8, setup: &dyn Fn(&mut SearchState)) -> (u128, u64) {
 }
 
 fn main() {
-    let depth: u8 = 10;
-    let want: Vec<String> = std::env::args().skip(1).collect();
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let (depth, want): (u8, Vec<String>) = match raw.first().and_then(|s| s.parse::<u8>().ok()) {
+        Some(d) => (d, raw[1..].to_vec()),
+        None => (10, raw),
+    };
     let cases: Vec<(&str, Setup)> = vec![
         ("base", Box::new(|_: &mut SearchState| {})),
         (
@@ -58,6 +61,26 @@ fn main() {
         (
             "no-learned",
             Box::new(|s: &mut SearchState| s.params.learned_enabled = false),
+        ),
+        (
+            "atk-score-150",
+            Box::new(|s: &mut SearchState| s.state_thresholds.attack_score = 150),
+        ),
+        (
+            "atk-score-200",
+            Box::new(|s: &mut SearchState| s.state_thresholds.attack_score = 200),
+        ),
+        (
+            "atk-cpi-120",
+            Box::new(|s: &mut SearchState| s.state_thresholds.attack_cpi = 120),
+        ),
+        (
+            "urg-min-50",
+            Box::new(|s: &mut SearchState| s.urgency_thresholds.min_gain = 50),
+        ),
+        (
+            "urg-musttry-100",
+            Box::new(|s: &mut SearchState| s.urgency_thresholds.musttry_gain = 100),
         ),
     ];
     for (name, setup) in &cases {
