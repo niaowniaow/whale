@@ -142,17 +142,11 @@ impl UciClient {
         cli::write_line("option name LMR_Base type spin default 65 min 10 max 150");
         cli::write_line("option name LMR_Div type spin default 215 min 100 max 350");
         cli::write_line("option name History_Weight type spin default 2 min 1 max 4");
-        cli::write_line("option name ALP_Enabled type check default true");
-        cli::write_line("option name ALP_Threshold type spin default 75 min 50 max 95");
-        cli::write_line("option name LQT_Threshold type spin default 620 min 300 max 900");
         cli::write_line("option name PSM_Enabled type check default true");
-        cli::write_line("option name GTP_Enabled type check default true");
-        cli::write_line("option name GTP_Threshold type spin default 15 min 5 max 50");
         cli::write_line("option name CFSS_Enabled type check default true");
         cli::write_line("option name RAS_Enabled type check default true");
         cli::write_line("option name BMO_Enabled type check default true");
         cli::write_line("option name TCE_Enabled type check default true");
-        cli::write_line("option name LQT_Enabled type check default true");
         cli::write_line("option name SPS_Enabled type check default true");
         cli::write_line("option name DAD_Enabled type check default true");
         cli::write_line("option name Extension_Cap_Enabled type check default true");
@@ -163,7 +157,6 @@ impl UciClient {
         cli::write_line("option name Pressure_Enabled type check default true");
         cli::write_line("option name Attack_Enabled type check default true");
         cli::write_line("option name Conversion_Enabled type check default true");
-        cli::write_line("option name QS_Checks_Enabled type check default true");
         cli::write_line("option name LearnedHeads_Enabled type check default false");
         cli::write_line("option name MustTryGain type spin default 30 min 10 max 100");
         cli::write_line("option name MustTryRisk type spin default 120 min 40 max 250");
@@ -192,10 +185,6 @@ impl UciClient {
         cli::write_line("option name Razor_Enabled type check default true");
         cli::write_line("option name Razor_Margin type spin default 350 min 100 max 800");
         cli::write_line("option name IIR_Enabled type check default true");
-        cli::write_line("option name NMP_Verify type check default true");
-        cli::write_line("option name NMP_Verify_Margin type spin default 150 min 0 max 500");
-        cli::write_line("option name Conspiracy_Enabled type check default false");
-        cli::write_line("option name Conspiracy_Tolerance type spin default 30 min 5 max 200");
         cli::write_line("option name SplitRoot_Enabled type check default false");
 
         if let Some(path) = crate::eval::nnue::v16::try_load_default_path() {
@@ -295,6 +284,7 @@ impl UciClient {
             total_elapsed.as_millis(),
             shared_tt.hashfull()
         ));
+        cli::write_line(&format!("info string Nodes searched  : {total_nodes}"));
     }
 
     pub(crate) fn run_model(&mut self, parameters: &[&str]) {

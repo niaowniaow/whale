@@ -193,44 +193,6 @@ pub(super) fn history_gate(
 
 #[inline]
 #[allow(clippy::too_many_arguments)]
-pub(super) fn alp_gate(
-    alp_enabled: bool,
-    alp_threshold: u8,
-    is_pv_node: bool,
-    has_excluded: bool,
-    in_check: bool,
-    found_pv: bool,
-    cap_or_promo: bool,
-    depth: u8,
-    moves: usize,
-    gives_check: bool,
-    static_eval: i16,
-    alpha: i16,
-    history_score: i32,
-    momentum: i16,
-) -> bool {
-    if !alp_enabled || is_pv_node || has_excluded || in_check || found_pv || cap_or_promo {
-        return false;
-    }
-    if depth > 4 || moves < 8 || gives_check {
-        return false;
-    }
-    let features = alp::AlpFeatures {
-        eval_margin: (static_eval as i32 - alpha as i32).clamp(-32768, 32767),
-        depth: depth as i32,
-        move_index: moves,
-        is_null_move: false,
-        is_capture: cap_or_promo,
-        is_pv: is_pv_node,
-        in_check,
-        history_score,
-        momentum: momentum as i32,
-    };
-    alp::AlpModel::should_prune(&features, alp_threshold)
-}
-
-#[inline]
-#[allow(clippy::too_many_arguments)]
 pub(super) fn psm_gate(
     psm_enabled: bool,
     is_pv_node: bool,

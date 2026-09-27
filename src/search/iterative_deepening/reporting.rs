@@ -285,64 +285,9 @@ pub(super) fn report_diagnostics(
 
 pub(super) fn conclude_search(
     board_state: &mut BoardState,
-    cancellation_token: &AtomicBool,
     search_state: &mut SearchState,
-    debug_mode: bool,
-    last_score: i16,
-    best_move_so_far: Move,
     completed_depth: u8,
 ) {
-    let conspiracy_unstable = search_state.params.conspiracy_enabled
-        && search_state.multipv_lines.len() >= 2
-        && conspiracy::needs_resolution(
-            &conspiracy::rank_by_stability(
-                &search_state
-                    .multipv_lines
-                    .iter()
-                    .map(|l| l.mv)
-                    .collect::<Vec<_>>(),
-                &search_state
-                    .multipv_lines
-                    .iter()
-                    .map(|l| l.score)
-                    .collect::<Vec<_>>(),
-            ),
-            search_state.params.conspiracy_tolerance,
-            1,
-        );
-    if search_state.params.conspiracy_enabled
-        && completed_depth >= 1
-        && best_move_so_far != Move::NO_MOVE
-        && (conspiracy_unstable || search_state.multipv_lines.len() < 2)
-        && !cancellation_token.load(Ordering::Relaxed)
-        && let Some((verified_score, _)) = search_single_root(
-            board_state,
-            completed_depth,
-            best_move_so_far,
-            cancellation_token,
-            search_state,
-        )
-    {
-        let tolerance = search_state.params.conspiracy_tolerance as i32;
-        let stable = (verified_score as i32 - last_score as i32).abs() <= tolerance;
-        if debug_mode {
-            println!(
-                "info string conspiracy depth {} {} (iter {} vs verify {})",
-                completed_depth,
-                if stable {
-                    "verified=yes"
-                } else {
-                    "verified=no"
-                },
-                last_score,
-                verified_score
-            );
-            let _ = std::io::Write::flush(&mut std::io::stdout());
-        }
-        if stable {
-            search_state.score = verified_score;
-        }
-    }
     search_state.best_previous_score = Some(search_state.score);
     if completed_depth >= 1 {
         let white_pov = if board_state.side_to_move == Side::White {

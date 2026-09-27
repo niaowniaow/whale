@@ -5,7 +5,7 @@ use super::early::{
 };
 use super::history::beta_cutoff;
 use super::moves::{
-    MoveOut, alp_gate, extension_depth, finish_node, futility_gate, history_gate, lmp_gate,
+    MoveOut, extension_depth, finish_node, futility_gate, history_gate, lmp_gate,
     losing_history_gate, move_scores, psm_gate, root_filter, search_move, see_gate,
 };
 use super::*;
@@ -479,26 +479,6 @@ pub(super) fn search_internal(
             number_of_legal_moves,
             history_score,
             gives_check,
-        ) {
-            board_state.unmake_move(move_obj);
-            continue;
-        }
-
-        if alp_gate(
-            ctx.search_state.params.alp_enabled,
-            ctx.search_state.params.alp_threshold,
-            is_pv_node,
-            excluded_here,
-            in_check,
-            found_pv,
-            cap_or_promo,
-            depth,
-            number_of_legal_moves,
-            gives_check,
-            static_eval,
-            alpha,
-            history_score,
-            momentum,
         ) {
             board_state.unmake_move(move_obj);
             continue;

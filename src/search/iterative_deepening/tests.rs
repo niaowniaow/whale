@@ -65,12 +65,9 @@ fn all_experimentals_off_still_finds_legal_move() {
         &mut state.params.ras_enabled,
         &mut state.params.bmo_enabled,
         &mut state.params.tce_enabled,
-        &mut state.params.lqt_enabled,
         &mut state.params.sps_enabled,
         &mut state.params.dad_enabled,
-        &mut state.params.alp_enabled,
         &mut state.params.psm_enabled,
-        &mut state.params.gtp_enabled,
     ] {
         *flag = false;
     }

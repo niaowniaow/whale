@@ -9,7 +9,6 @@ use crate::common::moves::Move;
 use crate::common::side::Side;
 use crate::search::attack;
 use crate::search::concession;
-use crate::search::conspiracy;
 use crate::search::conversion;
 use crate::search::counterplay;
 use crate::search::multipv::MultipvLine;

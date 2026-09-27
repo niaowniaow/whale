@@ -12,39 +12,6 @@ use crate::search::search_state::SearchState;
 use crate::{board::state::BoardState, common::constants::MAX_CENTIPAWN_EVAL};
 use std::sync::atomic::{AtomicBool, Ordering};
 
-pub fn checking_quiets(
-    board_state: &mut BoardState,
-    checkers: u64,
-    pinned: u64,
-    cap: usize,
-) -> Vec<Move> {
-    let mut quiets = MoveList::new();
-    board_state.generate_quiets(&mut quiets);
-    let mut out = Vec::new();
-    for i in 0..quiets.len() {
-        if out.len() >= cap {
-            break;
-        }
-        let m = quiets[i].mv;
-        if m.is_promotion() || m.is_capture() {
-            continue;
-        }
-        if !board_state.is_legal_with(m, checkers, pinned) {
-            continue;
-        }
-        if !board_state.see_ge(m, 0) {
-            continue;
-        }
-        board_state.make_move(m);
-        let gives_check = board_state.is_in_check(board_state.side_to_move);
-        board_state.unmake_move(m);
-        if gives_check {
-            out.push(m);
-        }
-    }
-    out
-}
-
 fn has_legal_move(board_state: &BoardState) -> bool {
     let stm = board_state.side_to_move;
     let checkers = board_state.checkers(stm).0;
@@ -337,47 +304,6 @@ pub fn search(
                 alpha = score;
             }
         }
-
-        let checks_allowed = search_state.params.qs_checks_enabled
-            && !cancellation_token.load(Ordering::Relaxed)
-            && ((search_state.params.lqt_enabled
-                && ply == 0
-                && (best_value as i32) + 100 >= beta as i32)
-                || (search_state.params.attack_enabled
-                    && (search_state.verification_budget > 0 || search_state.last_musttry)
-                    && ply <= 1
-                    && (best_value as i32) + 200 >= beta as i32));
-
-        if checks_allowed {
-            let cap = if search_state.last_musttry || search_state.verification_budget > 0 {
-                3
-            } else {
-                2
-            };
-            for move_obj in checking_quiets(board_state, nt.checkers, nt.pinned, cap) {
-                board_state.make_move(move_obj);
-                let score = -search(
-                    board_state,
-                    -beta,
-                    -alpha,
-                    ply + 1,
-                    cancellation_token,
-                    search_state,
-                );
-                board_state.unmake_move(move_obj);
-
-                if cancellation_token.load(Ordering::Relaxed) {
-                    return 0;
-                }
-
-                if score >= beta {
-                    return beta;
-                }
-                if score > alpha {
-                    alpha = score;
-                }
-            }
-        }
     }
 
     if in_check && !has_legal_moves {
@@ -413,41 +339,6 @@ mod tests {
     const STALEMATE: &str = "7k/5K2/6Q1/8/8/8/8/8 b - - 0 1";
     const QUIET_ONLY: &str = "7k/8/5K2/8/8/8/Q7/8 b - - 0 1";
     const CHECKMATE: &str = "7k/6Q1/5K2/8/8/8/8/8 b - - 0 1";
-
-    const QUIET_CHECK: &str = "6k1/5ppp/8/8/8/8/8/4R1K1 w - - 0 1";
-
-    #[test]
-    fn checking_quiets_finds_quiet_check() {
-        let mut board = BoardState::parse_fen(QUIET_CHECK);
-        let nt = crate::board::node_threats::NodeThreats::compute(&board);
-        let checks = checking_quiets(&mut board, nt.checkers, nt.pinned, 4);
-        assert!(
-            checks.iter().any(|m| {
-                let promo = m
-                    .promotion_char()
-                    .map(|c| c.to_string())
-                    .unwrap_or_default();
-                format!("{}{}{}", m.source, m.target, promo) == "e1e8"
-            }),
-            "Re1-e8+ must be listed, got {:?}",
-            checks
-                .iter()
-                .map(|m| format!("{}{}", m.source, m.target))
-                .collect::<Vec<_>>()
-        );
-    }
-
-    #[test]
-    fn checking_quiets_empty_without_checks_and_capped() {
-        let mut board = BoardState::parse_fen(crate::common::helpers::STARTING_FEN);
-        let nt = crate::board::node_threats::NodeThreats::compute(&board);
-        let checks = checking_quiets(&mut board, nt.checkers, nt.pinned, 2);
-        assert!(checks.is_empty(), "startpos has no quiet checks");
-
-        let mut b2 = BoardState::parse_fen(QUIET_CHECK);
-        let nt2 = crate::board::node_threats::NodeThreats::compute(&b2);
-        assert!(checking_quiets(&mut b2, nt2.checkers, nt2.pinned, 0).is_empty());
-    }
 
     #[test]
     fn stalemate_precedes_stand_pat_and_window_bounds() {

@@ -600,8 +600,6 @@ fn quiet_history_negative_prunes_late_quiets() {
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.alp_threshold = 101;
-    state.params.gtp_threshold = 0;
     for row in state.move_ordering.history_moves.iter_mut() {
         for s in row.iter_mut() {
             *s = -1000;
@@ -642,7 +640,6 @@ fn psm_sibling_prune_triggers() {
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.alp_threshold = 101;
     state.psm_stack.stack[0].consecutive_fail_lows = 5;
     state.psm_stack.stack[0].hidden = [-256; 128];
     let score = search(
@@ -666,8 +663,6 @@ fn gtp_subtree_prune_triggers() {
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.alp_threshold = 101;
-    state.params.gtp_threshold = 100;
     let score = search(
         &mut board,
         4,
@@ -689,7 +684,6 @@ fn late_history_prune_triggers_on_startpos() {
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.alp_threshold = 101;
     for row in state.move_ordering.history_moves.iter_mut() {
         for s in row.iter_mut() {
             *s = -10000;

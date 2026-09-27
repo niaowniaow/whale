@@ -8,22 +8,24 @@ use whale::search::search_state::SearchState;
 
 type Setup = Box<dyn Fn(&mut SearchState)>;
 
-fn run_case(depth: u8, setup: &dyn Fn(&mut SearchState)) -> (u128, u64) {
+fn run_case(depth: u8, setup: &dyn Fn(&mut SearchState)) -> (u128, u64, Vec<String>) {
     let cancel = AtomicBool::new(false);
     let mut debug = false;
     let mut total_ms = 0u128;
     let mut total_nodes = 0u64;
-    for fen in BENCH_FENS.iter().take(3) {
+    let mut bestmoves = Vec::new();
+    for fen in BENCH_FENS.iter() {
         let mut state = SearchState::new();
         state.tt = Arc::new(TranspositionTable::new_mb(16));
         setup(&mut state);
         let mut board = BoardState::parse_fen(fen);
         let start = Instant::now();
-        board.find_best_move(depth, &cancel, &mut debug, &mut state, 1);
+        let best = board.find_best_move(depth, &cancel, &mut debug, &mut state, 1);
         total_ms += start.elapsed().as_millis();
         total_nodes += state.nodes;
+        bestmoves.push(format!("{best:?}"));
     }
-    (total_ms, total_nodes)
+    (total_ms, total_nodes, bestmoves)
 }
 
 fn main() {
@@ -34,6 +36,50 @@ fn main() {
     };
     let cases: Vec<(&str, Setup)> = vec![
         ("base", Box::new(|_: &mut SearchState| {})),
+        (
+            "no-psm",
+            Box::new(|s: &mut SearchState| s.params.psm_enabled = false),
+        ),
+        (
+            "no-cfss",
+            Box::new(|s: &mut SearchState| s.params.cfss_enabled = false),
+        ),
+        (
+            "no-ras",
+            Box::new(|s: &mut SearchState| s.params.ras_enabled = false),
+        ),
+        (
+            "no-bmo",
+            Box::new(|s: &mut SearchState| s.params.bmo_enabled = false),
+        ),
+        (
+            "no-tce",
+            Box::new(|s: &mut SearchState| s.params.tce_enabled = false),
+        ),
+        (
+            "no-sps",
+            Box::new(|s: &mut SearchState| s.params.sps_enabled = false),
+        ),
+        (
+            "no-dad",
+            Box::new(|s: &mut SearchState| s.params.dad_enabled = false),
+        ),
+        (
+            "no-extcap",
+            Box::new(|s: &mut SearchState| s.params.extension_cap_enabled = false),
+        ),
+        (
+            "no-razor",
+            Box::new(|s: &mut SearchState| s.params.razor_enabled = false),
+        ),
+        (
+            "no-iir",
+            Box::new(|s: &mut SearchState| s.params.iir_enabled = false),
+        ),
+        (
+            "no-splitroot",
+            Box::new(|s: &mut SearchState| s.params.split_root_enabled = false),
+        ),
         (
             "no-cpi",
             Box::new(|s: &mut SearchState| s.params.cpi_enabled = false),
@@ -89,11 +135,13 @@ fn main() {
         }
         let mut best_ms = u128::MAX;
         let mut best_nodes = 0u64;
+        let mut best_moves: Vec<String> = Vec::new();
         for _ in 0..2 {
-            let (ms, nodes) = run_case(depth, &**setup);
+            let (ms, nodes, moves) = run_case(depth, &**setup);
             if ms < best_ms {
                 best_ms = ms;
                 best_nodes = nodes;
+                best_moves = moves;
             }
         }
         let nps = if best_ms > 0 {
@@ -101,6 +149,9 @@ fn main() {
         } else {
             0
         };
-        println!("{name}: {best_ms} ms {best_nodes} nodes {nps} nps");
+        println!(
+            "{name}: {best_ms} ms {best_nodes} nodes {nps} nps {}",
+            best_moves.join(",")
+        );
     }
 }

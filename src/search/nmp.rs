@@ -1,6 +1,5 @@
 use crate::board::state::BoardState;
 use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
-use crate::search::alp::{AlpFeatures, AlpModel};
 use std::cell::{Cell, RefCell};
 
 thread_local! {
@@ -95,19 +94,7 @@ pub fn can_prune(
         return false;
     }
 
-    let alp_features = AlpFeatures {
-        eval_margin: (static_eval as i32 - beta as i32).clamp(-32768, 32767),
-        depth: depth as i32,
-        move_index: 0,
-        is_null_move: true,
-        is_capture: false,
-        is_pv: is_pv_node,
-        in_check,
-        history_score: 0,
-        momentum: momentum as i32,
-    };
-
-    AlpModel::should_prune(&alp_features, 30)
+    true
 }
 
 #[inline(always)]
@@ -210,7 +197,7 @@ mod tests {
     }
 
     #[test]
-    fn matches_alp_verdict_on_sweep() {
+    fn static_gate_matches_threshold_sweep() {
         clear_nmp_state();
         let board = BoardState::parse_fen(STARTING_FEN);
         let mut saw_false = false;
@@ -231,23 +218,8 @@ mod tests {
                     0,
                     true,
                 );
-                let alp = AlpModel::should_prune(
-                    &AlpFeatures {
-                        eval_margin: (static_eval as i32 - beta as i32).clamp(-32768, 32767),
-                        depth: depth as i32,
-                        move_index: 0,
-                        is_null_move: true,
-                        is_capture: false,
-                        is_pv: false,
-                        in_check: false,
-                        history_score: 0,
-                        momentum: 0,
-                    },
-                    30,
-                ) && static_eval >= beta;
                 let threshold = beta as i32 - 13 * depth as i32 - 47 + 365;
-                let sf_gate = static_eval as i32 >= threshold;
-                let expect = alp && sf_gate;
+                let expect = static_eval as i32 >= threshold && static_eval >= beta;
                 assert_eq!(got, expect);
                 if !got {
                     saw_false = true;

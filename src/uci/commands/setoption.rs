@@ -129,29 +129,8 @@ impl UciClient {
             {
                 state.params.history_weight_mult = v.clamp(1, 4);
             }
-            if name.eq_ignore_ascii_case("ALP_Enabled") {
-                state.params.alp_enabled = value.eq_ignore_ascii_case("true");
-            }
-            if name.eq_ignore_ascii_case("ALP_Threshold")
-                && let Ok(v) = value.parse::<u8>()
-            {
-                state.params.alp_threshold = v.clamp(50, 95);
-            }
-            if name.eq_ignore_ascii_case("LQT_Threshold")
-                && let Ok(v) = value.parse::<i16>()
-            {
-                state.params.lqt_threshold = v.clamp(300, 900);
-            }
             if name.eq_ignore_ascii_case("PSM_Enabled") {
                 state.params.psm_enabled = value.eq_ignore_ascii_case("true");
-            }
-            if name.eq_ignore_ascii_case("GTP_Enabled") {
-                state.params.gtp_enabled = value.eq_ignore_ascii_case("true");
-            }
-            if name.eq_ignore_ascii_case("GTP_Threshold")
-                && let Ok(v) = value.parse::<u8>()
-            {
-                state.params.gtp_threshold = v.clamp(5, 50);
             }
 
             let flag_on = value.eq_ignore_ascii_case("true") || value == "1";
@@ -166,9 +145,6 @@ impl UciClient {
             }
             if name.eq_ignore_ascii_case("TCE_Enabled") {
                 state.params.tce_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("LQT_Enabled") {
-                state.params.lqt_enabled = flag_on;
             }
             if name.eq_ignore_ascii_case("SPS_Enabled") {
                 state.params.sps_enabled = flag_on;
@@ -199,11 +175,6 @@ impl UciClient {
             if name.eq_ignore_ascii_case("Conversion_Enabled") {
                 state.params.conversion_enabled = flag_on;
             }
-            if name.eq_ignore_ascii_case("QS_Checks_Enabled")
-                || name.eq_ignore_ascii_case("QS_Checks")
-            {
-                state.params.qs_checks_enabled = flag_on;
-            }
             if name.eq_ignore_ascii_case("LearnedHeads_Enabled")
                 || name.eq_ignore_ascii_case("Learned_Enabled")
             {
@@ -221,24 +192,6 @@ impl UciClient {
             }
             if name.eq_ignore_ascii_case("IIR_Enabled") {
                 state.params.iir_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("NMP_Verify")
-                || name.eq_ignore_ascii_case("NMP_Verify_Enabled")
-            {
-                state.params.nmp_verify_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("NMP_Verify_Margin")
-                && let Ok(v) = value.parse::<i16>()
-            {
-                state.params.nmp_verify_margin = v.clamp(0, 500);
-            }
-            if name.eq_ignore_ascii_case("Conspiracy_Enabled") {
-                state.params.conspiracy_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("Conspiracy_Tolerance")
-                && let Ok(v) = value.parse::<i16>()
-            {
-                state.params.conspiracy_tolerance = v.clamp(5, 200);
             }
             if name.eq_ignore_ascii_case("SplitRoot_Enabled")
                 || name.eq_ignore_ascii_case("Split_At_Root")
@@ -525,7 +478,6 @@ mod tests {
             "RAS_Enabled",
             "BMO_Enabled",
             "TCE_Enabled",
-            "LQT_Enabled",
             "SPS_Enabled",
             "DAD_Enabled",
             "Extension_Cap_Enabled",
@@ -545,7 +497,6 @@ mod tests {
             assert!(!state.params.ras_enabled);
             assert!(!state.params.bmo_enabled);
             assert!(!state.params.tce_enabled);
-            assert!(!state.params.lqt_enabled);
             assert!(!state.params.sps_enabled);
             assert!(!state.params.dad_enabled);
             assert!(!state.params.extension_cap_enabled);
@@ -582,23 +533,11 @@ mod tests {
     #[test]
     fn should_toggle_feature_flags_and_thresholds() {
         let mut client = UciClient::new();
-        for name in ["ALP_Enabled", "PSM_Enabled", "GTP_Enabled"] {
-            client.run_setoption(&["name", name, "value", "true"]);
-        }
-        client.run_setoption(&["name", "ALP_Threshold", "value", "1"]);
-        client.run_setoption(&["name", "LQT_Threshold", "value", "500"]);
-        client.run_setoption(&["name", "GTP_Threshold", "value", "99"]);
+        client.run_setoption(&["name", "PSM_Enabled", "value", "true"]);
         {
             let state = client.search_state.lock().unwrap();
-            assert!(state.params.alp_enabled);
             assert!(state.params.psm_enabled);
-            assert!(state.params.gtp_enabled);
-            assert_eq!(state.params.alp_threshold, 50);
-            assert_eq!(state.params.lqt_threshold, 500);
-            assert_eq!(state.params.gtp_threshold, 50);
         }
-        client.run_setoption(&["name", "ALP_Enabled", "value", "false"]);
-        assert!(!client.search_state.lock().unwrap().params.alp_enabled);
     }
 
     #[test]

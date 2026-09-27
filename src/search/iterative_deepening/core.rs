@@ -193,13 +193,5 @@ pub(super) fn search_primary(
             );
         }
     }
-    conclude_search(
-        board_state,
-        cancellation_token,
-        search_state,
-        *debug_mode,
-        last_score,
-        best_move_so_far,
-        completed_depth,
-    );
+    conclude_search(board_state, search_state, completed_depth);
 }
