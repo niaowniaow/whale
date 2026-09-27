@@ -26,10 +26,22 @@
   <a href="LICENSE">
     <img src="https://img.shields.io/badge/license-GPLv3-purple?style=flat-square" alt="License">
   </a>
+  <a href="https://github.com/niaowniaow/whale/pulls">
+    <img src="https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square" alt="PRs welcome">
+  </a>
   <a href="https://github.com/niaowniaow/whale/stargazers">
     <img src="https://img.shields.io/github/stars/niaowniaow/whale?style=flat-square" alt="Stars">
   </a>
 </p>
+
+|  |  |
+|---|---|
+| ♟️ Protocol | UCI — works with Cute Chess, Arena and other GUIs |
+| 🦀 Language | Rust 1.95+, search threads on 16 MB stacks |
+| 🧠 Evaluation | Embedded small NNUE + optional large Stockfish-style net |
+| 🔎 Search | Iterative deepening, PVS/NegaScout, LMR, Lazy SMP |
+| 🧪 Laboratory | 14 individually toggleable heuristics + SPRT workflow |
+| 📜 License | GPL-3.0 |
 
 <p align="center">
   <a href="#-what-is-whale">About</a>
@@ -373,6 +385,18 @@ BookDepth
 
 ---
 
+# 🧰 Under the Hood
+
+<p align="center">
+  <img src="https://skillicons.dev/icons?i=rust,python,bash,githubactions,linux&theme=dark" alt="Tech stack" />
+</p>
+
+<p align="center">
+  <a href="https://github.com/niaowniaow/whale">
+    <img src="https://github-readme-stats.vercel.app/api/pin/?username=niaowniaow&repo=whale&theme=tokyonight" alt="Whale repo card" />
+  </a>
+</p>
+
 # 🚀 Getting Started
 
 ## Prerequisites
@@ -450,6 +474,30 @@ Whale can communicate with UCI-compatible interfaces such as:
 ```bash
 cargo run --release -- bench
 ```
+
+Example output (Intel i3-N305, release build, 12 positions at depth 12):
+
+```text
+Total: 1635021 nodes 4648 ms 351766 nps
+```
+
+<details>
+<summary><strong>▶️ See a real UCI session</strong></summary>
+
+```text
+> uci
+id name Whale 0.1.0
+id author Vishnu B
+uciok
+> position startpos
+> go depth 10
+info depth 8 seldepth 24 score cp 80 ...
+info depth 9 seldepth 24 score cp 70 ...
+info depth 10 seldepth 24 score cp 70 ... nodes 56067 time 374 nps 149911 pv e2e4 ...
+bestmove e2e4 ponder e7e5
+```
+
+</details>
 
 ### Profiling
 
@@ -614,31 +662,20 @@ Available tooling includes:
 * SPSA tuning
 * Texel tuning
 * SPRT runner
-* Match scripts (`tools/sprt_match.py`: A/B self-play with adjudication)
+* A/B self-play match harness (`tools/sprt_match.py`) with adjudication
 
 The intended workflow is:
 
-```text
-Idea
-  │
-  ▼
-Implementation
-  │
-  ▼
-Unit / integration tests
-  │
-  ▼
-Bench & correctness checks
-  │
-  ▼
-Self-play / match testing
-  │
-  ▼
-SPRT
-  │
-  ├── Reject → remove / rethink
-  │
-  └── Accept → keep experimenting
+```mermaid
+flowchart LR
+    A[Idea] --> B[Implementation]
+    B --> C[Unit + Integration Tests]
+    C --> D[Bench + Correctness]
+    D --> E[Self-play Matches]
+    E --> F{SPRT}
+    F -->|Reject| G[Remove / Rethink]
+    F -->|Accept| H[Keep Experimenting]
+    style F fill:#6366f1,color:#fff
 ```
 
 This keeps the project focused on **measurable improvements rather than feature-count inflation**.
