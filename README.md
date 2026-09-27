@@ -1,26 +1,48 @@
-# 🐋 Whale
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0ea5e9,100:6366f1&height=190&section=header&text=🐋%20Whale&fontSize=64&fontColor=ffffff&animation=fadeIn" alt="Whale header"/>
 
 <p align="center">
   <strong>A readable, hackable Rust chess engine built to explore how a modern NNUE engine comes together.</strong>
 </p>
 
 <p align="center">
-  <a href="https://www.rust-lang.org/">
-    <img src="https://img.shields.io/badge/Rust-1.88%2B-orange?style=for-the-badge&logo=rust" alt="Rust">
-  </a>
-  <a href="https://github.com/official-stockfish/Stockfish">
-    <img src="https://img.shields.io/badge/NNUE-Stockfish%20style-blue?style=for-the-badge&logo=chess.com" alt="NNUE">
-  </a>
-  <a href="https://en.wikipedia.org/wiki/Universal_Chess_Interface">
-    <img src="https://img.shields.io/badge/UCI-supported-success?style=for-the-badge" alt="UCI">
-  </a>
-  <a href="LICENSE">
-    <img src="https://img.shields.io/badge/license-GPLv3-purple?style=for-the-badge" alt="License">
+  <a href="https://github.com/niaowniaow/whale">
+    <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&size=16&duration=2800&pause=800&color=0EA5E9&center=true&vCenter=true&width=560&lines=Board+%E2%86%92+Search+%E2%86%92+Evaluation+%E2%86%92+Learning;One+engine.+One+codebase.+Measurable+everything." alt="Typing animation" />
   </a>
 </p>
 
 <p align="center">
-  <em>One engine. One codebase. Board → Search → Evaluation → Learning → Results.</em>
+  <a href="https://github.com/niaowniaow/whale/actions/workflows/pipeline.yml">
+    <img src="https://github.com/niaowniaow/whale/actions/workflows/pipeline.yml/badge.svg" alt="CI">
+  </a>
+  <a href="https://www.rust-lang.org/">
+    <img src="https://img.shields.io/badge/Rust-1.95%2B-orange?style=flat-square&logo=rust" alt="Rust">
+  </a>
+  <a href="https://github.com/official-stockfish/Stockfish">
+    <img src="https://img.shields.io/badge/NNUE-Stockfish%20style-blue?style=flat-square&logo=chess.com" alt="NNUE">
+  </a>
+  <a href="https://en.wikipedia.org/wiki/Universal_Chess_Interface">
+    <img src="https://img.shields.io/badge/UCI-supported-success?style=flat-square" alt="UCI">
+  </a>
+  <a href="LICENSE">
+    <img src="https://img.shields.io/badge/license-GPLv3-purple?style=flat-square" alt="License">
+  </a>
+  <a href="https://github.com/niaowniaow/whale/stargazers">
+    <img src="https://img.shields.io/github/stars/niaowniaow/whale?style=flat-square" alt="Stars">
+  </a>
+</p>
+
+<p align="center">
+  <a href="#-what-is-whale">About</a>
+  &nbsp;·&nbsp;
+  <a href="#-feature-tour">Features</a>
+  &nbsp;·&nbsp;
+  <a href="#-getting-started">Quickstart</a>
+  &nbsp;·&nbsp;
+  <a href="#-uci-options">UCI Options</a>
+  &nbsp;·&nbsp;
+  <a href="#-project-layout">Layout</a>
+  &nbsp;·&nbsp;
+  <a href="#-acknowledgements">Thanks</a>
 </p>
 
 ---
@@ -105,7 +127,7 @@ The board layer aims to keep one rule in mind:
 
 # 🔎 Search
 
-Located in `src/search/`.
+Located in `src/search/` (`negamax/`, `iterative_deepening/`, …).
 
 Whale uses an iterative, heavily heuristic alpha-beta search architecture designed for experimentation.
 
@@ -257,13 +279,7 @@ Whale experiments with several additional score-shaping systems.
 The engine contains additional modules under:
 
 ```text
-src/world/
-src/risk/
-src/opportunity/
-src/opponent/
-src/perception/
-src/endgame/
-src/root/
+src/lab/
 ```
 
 These modules can influence:
@@ -341,10 +357,9 @@ setoption name SyzygyPath value <path>
 
 Whale can probe an EPD opening book at the root.
 
-Default resources include:
+The bundled book lives at:
 
 ```text
-data/book.epd
 resources/openings.epd
 ```
 
@@ -367,7 +382,7 @@ Install a recent stable Rust toolchain.
 **Minimum supported Rust version:**
 
 ```text
-1.88+
+1.95+
 ```
 
 Install Rust through [rustup](https://rustup.rs/).
@@ -478,6 +493,9 @@ This provides a foundation for experimenting with generated training data and te
 
 # 🎛️ UCI Options
 
+<details>
+<summary><strong>Click to expand the full option table</strong></summary>
+
 | Option                  |  Type  |    Default   | Description                              |
 | ----------------------- | :----: | :----------: | ---------------------------------------- |
 | `Hash`                  |  spin  |     `16`     | Transposition table size in MB, `1–2048` |
@@ -523,11 +541,15 @@ This provides a foundation for experimenting with generated training data and te
 | `CrushScore`            |  spin  |     `600`    | Crushing-position threshold              |
 | `DefendCPI`             |  spin  |     `120`    | Defensive CPI threshold                  |
 
+</details>
+
 ---
 
 # 🧪 Testing & Quality
 
 Whale treats engine strength and correctness as separate things that must both be measured.
+
+[![CI](https://github.com/niaowniaow/whale/actions/workflows/pipeline.yml/badge.svg)](https://github.com/niaowniaow/whale/actions/workflows/pipeline.yml)
 
 ## Full quality gate
 
@@ -592,7 +614,7 @@ Available tooling includes:
 * SPSA tuning
 * Texel tuning
 * SPRT runner
-* Match scripts
+* Match scripts (`tools/sprt_match.py`: A/B self-play with adjudication)
 
 The intended workflow is:
 
@@ -630,30 +652,30 @@ whale/
 │
 ├── src/
 │   ├── bitboard/        # Bitboards, magics, attack tables
-│   ├── board/           # State, movegen, make/unmake, SEE, FEN, history
-│   ├── search/          # Negamax, PVS, QS, pruning, LMR, TT
-│   ├── eval/            # NNUE, loaders, optimism, histories
+│   ├── board/           # State (+ state/tables, core, attacks, cache, legality),
+│   │                    # movegen, make/unmake, SEE, FEN, history, NNUE glue
+│   ├── search/          # Negamax (+ core, early, moves, history, pvs, context),
+│   │                    # iterative deepening (+ core, aspiration, diagnostics,
+│   │                    # timing, reporting, workers, roots), quiescence,
+│   │                    # LMR, TT, move ordering, heuristics
+│   ├── eval/            # NNUE (+ nnue/v16: arch, position, threats, pairs,
+│   │                    # loader, inference, eval), optimism, WDL, histories
 │   ├── uci/             # UCI loop, position, go, setoption, time management
-│   │
-│   ├── world/           # Game-state modelling
-│   ├── risk/            # Risk-aware shaping
-│   ├── opportunity/     # Opportunity modelling
-│   ├── opponent/        # Opponent-aware components
-│   ├── perception/      # Position-state interpretation
-│   ├── endgame/         # Endgame-specific logic
-│   └── root/            # Root-search logic and diagnostics
+│   ├── lab/             # world, risk, opportunity, opponent, perception,
+│   │                    # endgame, root — game-state shaping
+│   └── syzygy.rs        # Tablebase probing
 │
-├── datagen.rs           # Self-play data generation
-├── teacher.rs           # Teacher-guided data generation
-├── train.rs             # Training plumbing
-├── syzygy.rs            # Tablebase probing
+├── src/datagen.rs       # Self-play data generation (feature `train`)
+├── src/teacher.rs       # Teacher-guided data generation
+├── src/train.rs         # Training plumbing
 │
 ├── tests/               # Perft, search, APRM, EPD, eval equivalence
 ├── tools/               # SPSA, Texel, SPRT, match tooling
+├── examples/            # Perf probe harness
 ├── models/              # Large NNUE networks
-├── tables/              # Syzygy test material
-├── data/                # Opening data
-├── resources/           # Additional engine resources
+├── tables/              # Syzygy K*vK smoke files
+├── data/                # Benchmarks & opening data
+├── resources/           # openings.epd and engine resources
 │
 ├── build.rs
 ├── Cargo.toml
@@ -664,45 +686,21 @@ whale/
 
 # 🧭 Architecture at a Glance
 
-```text
-                    ┌───────────────────┐
-                    │       UCI         │
-                    └─────────┬─────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │  Time Management  │
-                    └─────────┬─────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │ Iterative Deepen  │
-                    └─────────┬─────────┘
-                              │
-             ┌────────────────┼────────────────┐
-             ▼                ▼                ▼
-        Move Ordering      Search             TT
-             │                │                │
-             └────────────────┼────────────────┘
-                              │
-                              ▼
-                    ┌───────────────────┐
-                    │      Board        │
-                    │ Bitboards / SEE   │
-                    └─────────┬─────────┘
-                              │
-                    ┌─────────┴─────────┐
-                    ▼                   ▼
-             ┌──────────────┐   ┌──────────────┐
-             │   Small Net  │   │   Large Net  │
-             │    NNUE      │   │  NNUE + T/P  │
-             └──────┬───────┘   └──────┬───────┘
-                    └─────────┬─────────┘
-                              ▼
-                    ┌───────────────────┐
-                    │ WDL / Score Shape │
-                    │ Optimism / Draw    │
-                    └───────────────────┘
+```mermaid
+flowchart TD
+    UCI([UCI GUI / CLI]) --> TM[Time Management]
+    TM --> ID[Iterative Deepening]
+    ID --> MO[Move Ordering]
+    ID --> NEG[Negamax + PVS]
+    ID --> TT[(Transposition Table)]
+    NEG --> BRD[(Board State)]
+    BRD --> EVQ{Eval Gate}
+    EVQ -->|cheap bounds hold| SMALL[Small NNUE]
+    EVQ -->|needs accuracy| LARGE[Large NNUE + Threat/Pair]
+    SMALL --> WDL[WDL / Score Shaping]
+    LARGE --> WDL
+    WDL --> OPT[Optimism / Contempt / Draw]
+    BRD --> SYZ[(Syzygy / Book)]
 ```
 
 ---
@@ -858,3 +856,5 @@ See [`LICENSE`](LICENSE).
   &nbsp;·&nbsp;
   🐋 <strong>Swim deeper.</strong>
 </p>
+
+<img src="https://capsule-render.vercel.app/api?type=waving&color=0:0ea5e9,100:6366f1&height=120&section=footer" alt="Whale footer"/>
