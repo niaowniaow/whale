@@ -15,6 +15,7 @@ pub const INPUT_SIZE: usize = 768;
 
 pub const SCALE: i32 = 400;
 
+#[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
 pub(crate) static HAS_AVX2: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| is_x86_feature_detected!("avx2"));

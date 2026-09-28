@@ -73,6 +73,7 @@ static PENDING_PATH: RwLock<Option<String>> = RwLock::new(None);
 #[cfg(test)]
 pub(crate) static EVAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
 static HAS_AVX2: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| is_x86_feature_detected!("avx2"));

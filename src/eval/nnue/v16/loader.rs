@@ -420,7 +420,6 @@ pub(super) fn read_rudi_i8(
     Ok(out)
 }
 
-#[allow(clippy::chunks_exact_to_as_chunks)]
 pub(super) fn read_rudi_i16(
     data: &[u8],
     offset: &mut usize,
@@ -438,7 +437,6 @@ pub(super) fn read_rudi_i16(
     Ok(out)
 }
 
-#[allow(clippy::chunks_exact_to_as_chunks)]
 pub(super) fn read_rudi_i32(
     data: &[u8],
     offset: &mut usize,

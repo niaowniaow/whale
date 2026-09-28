@@ -61,19 +61,21 @@ impl Accumulator {
             unsafe {
                 Self::add_feature_avx2(&mut self.state, weights);
             }
-            return;
         }
-        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::add_feature_avx2(&mut self.state, weights);
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::add_feature_avx2(&mut self.state, weights);
+                    }
+                    return;
                 }
-                return;
             }
-        }
-        for (state, weight) in self.state.iter_mut().zip(weights) {
-            *state += *weight;
+            for (state, weight) in self.state.iter_mut().zip(weights) {
+                *state += *weight;
+            }
         }
     }
 
@@ -86,19 +88,21 @@ impl Accumulator {
             unsafe {
                 Self::remove_feature_avx2(&mut self.state, weights);
             }
-            return;
         }
-        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::remove_feature_avx2(&mut self.state, weights);
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::remove_feature_avx2(&mut self.state, weights);
+                    }
+                    return;
                 }
-                return;
             }
-        }
-        for (state, weight) in self.state.iter_mut().zip(weights) {
-            *state -= *weight;
+            for (state, weight) in self.state.iter_mut().zip(weights) {
+                *state -= *weight;
+            }
         }
     }
 
@@ -113,19 +117,21 @@ impl Accumulator {
             unsafe {
                 Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
             }
-            return;
         }
-        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
+                    }
+                    return;
                 }
-                return;
             }
-        }
-        for i in 0..ACC_SIZE {
-            self.state[i] += add_weights[i] - remove_weights[i];
+            for i in 0..ACC_SIZE {
+                self.state[i] += add_weights[i] - remove_weights[i];
+            }
         }
     }
 
@@ -153,24 +159,26 @@ impl Accumulator {
                     remove2_weights,
                 );
             }
-            return;
         }
-        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::add_1_sub_2_avx2(
-                        &mut self.state,
-                        add_weights,
-                        remove1_weights,
-                        remove2_weights,
-                    );
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::add_1_sub_2_avx2(
+                            &mut self.state,
+                            add_weights,
+                            remove1_weights,
+                            remove2_weights,
+                        );
+                    }
+                    return;
                 }
-                return;
             }
-        }
-        for i in 0..ACC_SIZE {
-            self.state[i] += add_weights[i] - remove1_weights[i] - remove2_weights[i];
+            for i in 0..ACC_SIZE {
+                self.state[i] += add_weights[i] - remove1_weights[i] - remove2_weights[i];
+            }
         }
     }
 
@@ -196,19 +204,21 @@ impl Accumulator {
             unsafe {
                 Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
             }
-            return;
         }
-        #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
+                    }
+                    return;
                 }
-                return;
             }
-        }
-        for i in 0..ACC_SIZE {
-            self.state[i] += a1[i] + a2[i] - r1[i] - r2[i];
+            for i in 0..ACC_SIZE {
+                self.state[i] += a1[i] + a2[i] - r1[i] - r2[i];
+            }
         }
     }
 

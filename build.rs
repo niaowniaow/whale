@@ -127,7 +127,11 @@ fn main() {
         let bits = bishop_mask_bits[sq];
         let index_count = 1usize << bits;
 
-        for index in 0..index_count {
+        for (index, slot) in bishop_pext_attacks[sq]
+            .iter_mut()
+            .enumerate()
+            .take(index_count)
+        {
             let occupancy = get_occupancy_mapping(index, bits as i32, mask);
             let magic_index = get_magic_index(Bitboard(occupancy.0), BISHOP_MAGICS[sq], bits);
             let atk = get_bishop_attacks(Square::from(sq), Bitboard(occupancy.0)).0;
@@ -136,7 +140,7 @@ fn main() {
                 "bishop magic collision at square {sq} index {magic_index}"
             );
             bishop_attacks[sq][magic_index] = atk;
-            bishop_pext_attacks[sq][index] = atk;
+            *slot = atk;
         }
     }
 
@@ -147,7 +151,11 @@ fn main() {
         let bits = rook_mask_bits[sq];
         let index_count = 1usize << bits;
 
-        for index in 0..index_count {
+        for (index, slot) in rook_pext_attacks[sq]
+            .iter_mut()
+            .enumerate()
+            .take(index_count)
+        {
             let occupancy = get_occupancy_mapping(index, bits as i32, mask);
             let magic_index = get_magic_index(Bitboard(occupancy.0), ROOK_MAGICS[sq], bits);
             let atk = get_rook_attacks(Square::from(sq), Bitboard(occupancy.0)).0;
@@ -156,7 +164,7 @@ fn main() {
                 "rook magic collision at square {sq} index {magic_index}"
             );
             rook_attacks[sq][magic_index] = atk;
-            rook_pext_attacks[sq][index] = atk;
+            *slot = atk;
         }
     }
 

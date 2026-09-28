@@ -216,6 +216,10 @@ impl BoardState {
     #[inline(always)]
     pub fn is_legal_pseudo_with(&self, m: Move, checkers: u64, pinned: u64) -> bool {
         let us = self.side_to_move;
+        let king_bb = self.pieces[Piece::King].0 & self.occupancies[us].0;
+        if king_bb == 0 {
+            return false;
+        }
         let from = m.source;
         let to = m.target;
         let from_piece = self.piece_mapping[from as usize];
@@ -225,10 +229,6 @@ impl BoardState {
                 if (pinned & (1u64 << (from as usize))) == 0 {
                     return true;
                 }
-                let king_bb = self.pieces[Piece::King].0 & self.occupancies[us].0;
-                if king_bb == 0 {
-                    return false;
-                }
                 let ksq = king_bb.trailing_zeros() as usize;
                 return (LINE_BB[ksq][from as usize] & (1u64 << (to as usize))) != 0;
             }
@@ -237,10 +237,6 @@ impl BoardState {
                 return false;
             }
 
-            let king_bb = self.pieces[Piece::King].0 & self.occupancies[us].0;
-            if king_bb == 0 {
-                return false;
-            }
             let ksq = king_bb.trailing_zeros() as usize;
 
             if (pinned & (1u64 << (from as usize))) != 0
@@ -258,10 +254,6 @@ impl BoardState {
         }
 
         let them = us.other();
-        let king_bb = self.pieces[Piece::King].0 & self.occupancies[us].0;
-        if king_bb == 0 {
-            return false;
-        }
         let ksq = Square::from(king_bb.trailing_zeros() as usize);
 
         if from_piece == Piece::King {

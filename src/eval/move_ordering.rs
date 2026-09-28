@@ -160,8 +160,8 @@ impl MoveOrdering {
     pub fn sort_next_best_move(moves: &mut [ScoredMove], starting_index: usize) {
         let mut best_index = starting_index;
         let mut best_score = moves[starting_index].score;
-        for index in (starting_index + 1)..moves.len() {
-            let score = moves[index].score;
+        for (index, item) in moves.iter().enumerate().skip(starting_index + 1) {
+            let score = item.score;
             if score > best_score {
                 best_score = score;
                 best_index = index;
@@ -210,7 +210,7 @@ impl MoveOrdering {
             .unwrap_or(0) as i32;
         let pawn_key = crate::common::zobrist::get_pawn_hash(board_state);
         let bucket = Self::pawn_bucket(pawn_key);
-        let pawn_score = self.pawn_history[bucket][piece as usize][target] as i32;
+        let pawn_score = self.pawn_history[bucket][piece][target] as i32;
         history_score + i32::from(from_to_score) + continuation_score + pawn_score
     }
     pub fn populate_quiet_scores(
