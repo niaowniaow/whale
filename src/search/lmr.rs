@@ -130,6 +130,9 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
     if query.cut_node {
         reduction += 1;
     }
+    if !query.is_improving {
+        reduction += 1;
+    }
     if query.gives_check {
         reduction = reduction.saturating_sub(1);
     }
@@ -139,6 +142,9 @@ pub fn compute_reduction(query: &LmrQuery, table: &LmrTable, history_divisors: &
 
     if query.is_tactical {
         reduction = 1;
+        if query.history_score < -2000 {
+            reduction += 1;
+        }
     } else {
         let d_idx = (query.depth as usize).min(16).saturating_sub(1);
         let divisor = history_divisors[d_idx].max(1);
