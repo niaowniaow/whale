@@ -182,8 +182,18 @@ impl BoardState {
         let s = (sq as usize) & 63;
 
         let pawn_atks = unsafe {
-            (white_pawns & Bitboard(*pawn_attacks().get_unchecked(Side::Black as usize).get_unchecked(s)))
-                | (black_pawns & Bitboard(*pawn_attacks().get_unchecked(Side::White as usize).get_unchecked(s)))
+            (white_pawns
+                & Bitboard(
+                    *pawn_attacks()
+                        .get_unchecked(Side::Black as usize)
+                        .get_unchecked(s),
+                ))
+                | (black_pawns
+                    & Bitboard(
+                        *pawn_attacks()
+                            .get_unchecked(Side::White as usize)
+                            .get_unchecked(s),
+                    ))
         };
         let knight_atks = unsafe { knights & Bitboard(*knight_attacks().get_unchecked(s)) };
         let diag_pieces = bishops | queens;
@@ -210,7 +220,8 @@ impl BoardState {
 
         let diag_pieces = bishops | queens;
         if diag_pieces.0 != 0 {
-            *attackers |= get_bishop_attacks_from_table(target, occupancy) & diag_pieces & occupancy;
+            *attackers |=
+                get_bishop_attacks_from_table(target, occupancy) & diag_pieces & occupancy;
         }
 
         let orth_pieces = rooks | queens;

@@ -441,7 +441,8 @@ impl TranspositionTable {
                             && existing.entry_type != TranspositionEntryType::Exact);
 
                     if should_replace {
-                        let packed = pack_entry(score, raw_eval, depth, entry_type, cur_gen, best_move);
+                        let packed =
+                            pack_entry(score, raw_eval, depth, entry_type, cur_gen, best_move);
                         entry.data.store(packed, Ordering::Relaxed);
                         entry.key.store(hash, Ordering::Relaxed);
                     } else if existing.best_move == Move::NO_MOVE && best_move != Move::NO_MOVE {

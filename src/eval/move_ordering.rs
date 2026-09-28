@@ -186,7 +186,11 @@ impl MoveOrdering {
         if pt == Piece::None || pt as usize >= PIECES {
             return 0;
         }
-        let color_offset = if board_state.side_to_move == Side::White { 0 } else { 6 };
+        let color_offset = if board_state.side_to_move == Side::White {
+            0
+        } else {
+            6
+        };
         let piece = color_offset + pt as usize;
         let history_score = self.history_moves[piece][target];
         let from_to_score = self.quiet_history[board_state.side_to_move as usize][source][target];
@@ -267,14 +271,17 @@ impl MoveOrdering {
                 }
                 let pt = unsafe { *board_state.piece_mapping.get_unchecked(source) as usize };
                 if pt < PIECES {
-                    let color_offset = if board_state.side_to_move == Side::White { 0 } else { 6 };
+                    let color_offset = if board_state.side_to_move == Side::White {
+                        0
+                    } else {
+                        6
+                    };
                     let piece = color_offset + pt;
                     let history_score = self.history_moves[piece][target];
                     let from_to_score =
                         self.quiet_history[board_state.side_to_move as usize][source][target];
-                    let continuation_score = prev_cont_row
-                        .map(|row| row[target] as i32)
-                        .unwrap_or(0);
+                    let continuation_score =
+                        prev_cont_row.map(|row| row[target] as i32).unwrap_or(0);
                     let pawn_score = self.pawn_history[pawn_bucket][piece][target] as i32;
                     let mut low_score = 0;
                     if ply < LOW_PLY_HISTORY_SIZE {
@@ -715,7 +722,11 @@ impl MoveOrdering {
                 }
                 let pt = unsafe { *board_state.piece_mapping.get_unchecked(source) as usize };
                 if pt < PIECES {
-                    let color_offset = if board_state.side_to_move == Side::White { 0 } else { 6 };
+                    let color_offset = if board_state.side_to_move == Side::White {
+                        0
+                    } else {
+                        6
+                    };
                     let piece = color_offset + pt;
                     let history_score = self.history_moves[piece][target];
                     let from_to_score =
@@ -776,7 +787,11 @@ impl MoveOrdering {
         if pt == Piece::None || (pt as usize) >= PIECES {
             return;
         }
-        let color_offset = if board_state.side_to_move == Side::White { 0 } else { 6 };
+        let color_offset = if board_state.side_to_move == Side::White {
+            0
+        } else {
+            6
+        };
         let p = color_offset + pt as usize;
         let side = board_state.side_to_move as usize;
         if side < SIDES {
@@ -864,7 +879,11 @@ pub fn populate_capture_scores(
             unsafe { *board_state.piece_mapping.get_unchecked(target) }
         };
         let mut score = if target_piece != Piece::None && source_piece < 7 {
-            unsafe { *MVV_LVA.get_unchecked(target_piece as usize).get_unchecked(source_piece) }
+            unsafe {
+                *MVV_LVA
+                    .get_unchecked(target_piece as usize)
+                    .get_unchecked(source_piece)
+            }
         } else {
             0
         };
@@ -875,7 +894,11 @@ pub fn populate_capture_scores(
             score -= 20000;
         }
         if source_piece < 6 && target_piece != Piece::None && (target_piece as usize) < PIECES {
-            let color_offset = if board_state.side_to_move == Side::White { 0 } else { 6 };
+            let color_offset = if board_state.side_to_move == Side::White {
+                0
+            } else {
+                6
+            };
             let moved_piece = color_offset + source_piece;
             let hist = unsafe {
                 *move_ordering

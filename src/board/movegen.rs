@@ -262,7 +262,8 @@ impl BoardState {
         let occ = self.occupancy();
         while bitboard.is_not_empty() {
             let source = bitboard.pop_lsb() as usize;
-            let attacks = get_bishop_attacks_from_table(Square::from_u8_unchecked(source as u8), occ);
+            let attacks =
+                get_bishop_attacks_from_table(Square::from_u8_unchecked(source as u8), occ);
             self.add_attacks(source, attacks, move_list, gen_type);
         }
     }
@@ -291,7 +292,8 @@ impl BoardState {
         let occ = self.occupancy();
         while bitboard.is_not_empty() {
             let source = bitboard.pop_lsb() as usize;
-            let attacks = get_queen_attacks_from_table(Square::from_u8_unchecked(source as u8), occ);
+            let attacks =
+                get_queen_attacks_from_table(Square::from_u8_unchecked(source as u8), occ);
             self.add_attacks(source, attacks, move_list, gen_type);
         }
     }

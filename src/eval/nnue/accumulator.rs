@@ -294,17 +294,26 @@ impl Accumulator {
                 let s1 = _mm256_load_si256(s_ptr.add(i + 1));
                 let a1 = _mm256_load_si256(a_ptr.add(i + 1));
                 let r1 = _mm256_load_si256(r_ptr.add(i + 1));
-                _mm256_store_si256(s_ptr.add(i + 1), _mm256_add_epi16(s1, _mm256_sub_epi16(a1, r1)));
+                _mm256_store_si256(
+                    s_ptr.add(i + 1),
+                    _mm256_add_epi16(s1, _mm256_sub_epi16(a1, r1)),
+                );
 
                 let s2 = _mm256_load_si256(s_ptr.add(i + 2));
                 let a2 = _mm256_load_si256(a_ptr.add(i + 2));
                 let r2 = _mm256_load_si256(r_ptr.add(i + 2));
-                _mm256_store_si256(s_ptr.add(i + 2), _mm256_add_epi16(s2, _mm256_sub_epi16(a2, r2)));
+                _mm256_store_si256(
+                    s_ptr.add(i + 2),
+                    _mm256_add_epi16(s2, _mm256_sub_epi16(a2, r2)),
+                );
 
                 let s3 = _mm256_load_si256(s_ptr.add(i + 3));
                 let a3 = _mm256_load_si256(a_ptr.add(i + 3));
                 let r3 = _mm256_load_si256(r_ptr.add(i + 3));
-                _mm256_store_si256(s_ptr.add(i + 3), _mm256_add_epi16(s3, _mm256_sub_epi16(a3, r3)));
+                _mm256_store_si256(
+                    s_ptr.add(i + 3),
+                    _mm256_add_epi16(s3, _mm256_sub_epi16(a3, r3)),
+                );
 
                 i += 4;
             }
@@ -383,7 +392,8 @@ impl Accumulator {
                 let a2_0 = _mm256_load_si256(a2_ptr.add(i));
                 let r1_0 = _mm256_load_si256(r1_ptr.add(i));
                 let r2_0 = _mm256_load_si256(r2_ptr.add(i));
-                let diff0 = _mm256_sub_epi16(_mm256_add_epi16(a1_0, a2_0), _mm256_add_epi16(r1_0, r2_0));
+                let diff0 =
+                    _mm256_sub_epi16(_mm256_add_epi16(a1_0, a2_0), _mm256_add_epi16(r1_0, r2_0));
                 _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s0, diff0));
 
                 let s1 = _mm256_load_si256(s_ptr.add(i + 1));
@@ -391,7 +401,8 @@ impl Accumulator {
                 let a2_1 = _mm256_load_si256(a2_ptr.add(i + 1));
                 let r1_1 = _mm256_load_si256(r1_ptr.add(i + 1));
                 let r2_1 = _mm256_load_si256(r2_ptr.add(i + 1));
-                let diff1 = _mm256_sub_epi16(_mm256_add_epi16(a1_1, a2_1), _mm256_add_epi16(r1_1, r2_1));
+                let diff1 =
+                    _mm256_sub_epi16(_mm256_add_epi16(a1_1, a2_1), _mm256_add_epi16(r1_1, r2_1));
                 _mm256_store_si256(s_ptr.add(i + 1), _mm256_add_epi16(s1, diff1));
 
                 let s2 = _mm256_load_si256(s_ptr.add(i + 2));
@@ -399,7 +410,8 @@ impl Accumulator {
                 let a2_2 = _mm256_load_si256(a2_ptr.add(i + 2));
                 let r1_2 = _mm256_load_si256(r1_ptr.add(i + 2));
                 let r2_2 = _mm256_load_si256(r2_ptr.add(i + 2));
-                let diff2 = _mm256_sub_epi16(_mm256_add_epi16(a1_2, a2_2), _mm256_add_epi16(r1_2, r2_2));
+                let diff2 =
+                    _mm256_sub_epi16(_mm256_add_epi16(a1_2, a2_2), _mm256_add_epi16(r1_2, r2_2));
                 _mm256_store_si256(s_ptr.add(i + 2), _mm256_add_epi16(s2, diff2));
 
                 let s3 = _mm256_load_si256(s_ptr.add(i + 3));
@@ -407,7 +419,8 @@ impl Accumulator {
                 let a2_3 = _mm256_load_si256(a2_ptr.add(i + 3));
                 let r1_3 = _mm256_load_si256(r1_ptr.add(i + 3));
                 let r2_3 = _mm256_load_si256(r2_ptr.add(i + 3));
-                let diff3 = _mm256_sub_epi16(_mm256_add_epi16(a1_3, a2_3), _mm256_add_epi16(r1_3, r2_3));
+                let diff3 =
+                    _mm256_sub_epi16(_mm256_add_epi16(a1_3, a2_3), _mm256_add_epi16(r1_3, r2_3));
                 _mm256_store_si256(s_ptr.add(i + 3), _mm256_add_epi16(s3, diff3));
 
                 i += 4;

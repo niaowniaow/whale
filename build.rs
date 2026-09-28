@@ -181,7 +181,11 @@ fn main() {
     write_table!("KING_ATTACKS", "[u64; 64]", king_attacks);
     write_table!("BISHOP_ATTACKS", "[[u64; 512]; 64]", bishop_attacks);
     write_table!("ROOK_ATTACKS", "[[u64; 4096]; 64]", rook_attacks);
-    write_table!("BISHOP_PEXT_ATTACKS", "[[u64; 512]; 64]", bishop_pext_attacks);
+    write_table!(
+        "BISHOP_PEXT_ATTACKS",
+        "[[u64; 512]; 64]",
+        bishop_pext_attacks
+    );
     write_table!("ROOK_PEXT_ATTACKS", "[[u64; 4096]; 64]", rook_pext_attacks);
     download_nnue_if_needed();
 }

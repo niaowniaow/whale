@@ -59,8 +59,7 @@ impl BoardState {
         self.add_piece(m.target, self.side_to_move, final_moved_piece, true);
         let target_piece_idx = (self.side_to_move as usize) * 6 + final_moved_piece as usize;
         if (m.target as usize) < 64 {
-            self.board_hash ^=
-                zobrist::zobrist_table()[target_piece_idx][m.target as usize];
+            self.board_hash ^= zobrist::zobrist_table()[target_piece_idx][m.target as usize];
         }
 
         self.record_pending_updates(next_idx);

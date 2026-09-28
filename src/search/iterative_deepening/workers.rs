@@ -1,5 +1,5 @@
-use super::*;
 use super::aspiration::run_aspiration;
+use super::*;
 
 pub(super) fn worker_search(
     mut board: BoardState,
