@@ -122,7 +122,7 @@ impl UciClient {
         cli::write_line("option name Ponder type check default false");
         cli::write_line("option name Clear Hash type button");
         cli::write_line(
-            "option name Model type combo default whale_big var whale_big var whale_big_1 var whale_medium var whale_small var embedded",
+            "option name Model type combo default whale_big_1 var whale_big_1 var whale_big var whale_medium var whale_small var embedded",
         );
         cli::write_line("option name EvalFile type string default <empty>");
         cli::write_line("option name EvalFileSmall type string default <empty>");
