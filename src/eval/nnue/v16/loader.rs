@@ -430,8 +430,8 @@ pub(super) fn read_rudi_i16(
         return Err("truncated whale payload");
     }
     let mut out = Vec::with_capacity(count);
-    for chunk in data[*offset..*offset + bytes].chunks_exact(2) {
-        out.push(i16::from_le_bytes([chunk[0], chunk[1]]));
+    for chunk in data[*offset..*offset + bytes].as_chunks::<2>().0 {
+        out.push(i16::from_le_bytes(*chunk));
     }
     *offset += bytes;
     Ok(out)
@@ -447,8 +447,8 @@ pub(super) fn read_rudi_i32(
         return Err("truncated whale payload");
     }
     let mut out = Vec::with_capacity(count);
-    for chunk in data[*offset..*offset + bytes].chunks_exact(4) {
-        out.push(i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]));
+    for chunk in data[*offset..*offset + bytes].as_chunks::<4>().0 {
+        out.push(i32::from_le_bytes(*chunk));
     }
     *offset += bytes;
     Ok(out)
