@@ -63,6 +63,10 @@ pub(super) fn search_internal(
         ctx.pv_table.clear(ply as usize);
     }
 
+    if is_cancelled(ctx) {
+        return 0;
+    }
+
     ctx.search_state.nodes += 1;
     if ctx.search_state.nodes & 1023 == 0
         && ctx.search_state.max_nodes > 0
@@ -399,12 +403,11 @@ pub(super) fn search_internal(
             continue;
         }
 
-        if !board_state.is_legal_with(move_obj, nt.checkers, nt.pinned) {
+        if !board_state.is_legal_pseudo_with(move_obj, nt.checkers, nt.pinned) {
             continue;
         }
 
         board_state.make_move(move_obj);
-        ctx.search_state.tt.prefetch(board_state.board_hash);
 
         has_legal_moves = true;
 
@@ -517,6 +520,7 @@ pub(super) fn search_internal(
             continue;
         }
 
+        ctx.search_state.tt.prefetch(board_state.board_hash);
         let move_nodes_start = ctx.search_state.nodes;
         let score = match search_move(
             board_state,
@@ -621,6 +625,10 @@ pub(super) fn search_internal(
         } else if move_obj.is_capture() && tried_captures_count < tried_captures.len() {
             tried_captures[tried_captures_count] = move_obj;
             tried_captures_count += 1;
+        }
+
+        if is_cancelled(ctx) {
+            break;
         }
     }
 

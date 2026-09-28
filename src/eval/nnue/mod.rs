@@ -281,7 +281,15 @@ pub fn evaluate_internal(board: &BoardState, network: &Network) -> i16 {
 
     let mut output: i64 = 0;
 
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    unsafe {
+        output += evaluate_side_avx2(&acc_active.state, &network.output_weights[0..ACC_SIZE]);
+        output += evaluate_side_avx2(
+            &acc_passive.state,
+            &network.output_weights[ACC_SIZE..2 * ACC_SIZE],
+        );
+    }
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     {
         if *HAS_AVX2 {
             unsafe {
@@ -359,7 +367,6 @@ unsafe fn evaluate_side_avx2(state: &[i16; ACC_SIZE], weights: &[i16]) -> i64 {
         use std::arch::x86_64::*;
         let zero = _mm256_setzero_si256();
         let max_val = _mm256_set1_epi16(255);
-        let mut total: i64 = 0;
 
         let s_ptr = state.as_ptr() as *const __m256i;
         let w_ptr = weights.as_ptr() as *const __m256i;
@@ -367,27 +374,41 @@ unsafe fn evaluate_side_avx2(state: &[i16; ACC_SIZE], weights: &[i16]) -> i64 {
         let mut sum_lo = _mm256_setzero_si256();
         let mut sum_hi = _mm256_setzero_si256();
 
-        for i in 0..16 {
-            let s = _mm256_load_si256(s_ptr.add(i));
-            let w = _mm256_loadu_si256(w_ptr.add(i));
-            let clamped = _mm256_min_epi16(_mm256_max_epi16(s, zero), max_val);
-            let screlu = _mm256_mullo_epi16(clamped, clamped);
+        let mut i = 0;
+        while i < 16 {
+            let s0 = _mm256_load_si256(s_ptr.add(i));
+            let w0 = _mm256_load_si256(w_ptr.add(i));
+            let clamped0 = _mm256_min_epi16(_mm256_max_epi16(s0, zero), max_val);
+            let screlu0 = _mm256_mullo_epi16(clamped0, clamped0);
+            let w_lo0 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w0));
+            let w_hi0 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w0, 1));
+            let sc_lo0 = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(screlu0));
+            let sc_hi0 = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(screlu0, 1));
+            sum_lo = _mm256_add_epi32(sum_lo, _mm256_mullo_epi32(w_lo0, sc_lo0));
+            sum_hi = _mm256_add_epi32(sum_hi, _mm256_mullo_epi32(w_hi0, sc_hi0));
 
-            let w_lo = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w));
-            let w_hi = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w, 1));
-            let sc_lo = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(screlu));
-            let sc_hi = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(screlu, 1));
+            let s1 = _mm256_load_si256(s_ptr.add(i + 1));
+            let w1 = _mm256_load_si256(w_ptr.add(i + 1));
+            let clamped1 = _mm256_min_epi16(_mm256_max_epi16(s1, zero), max_val);
+            let screlu1 = _mm256_mullo_epi16(clamped1, clamped1);
+            let w_lo1 = _mm256_cvtepi16_epi32(_mm256_castsi256_si128(w1));
+            let w_hi1 = _mm256_cvtepi16_epi32(_mm256_extracti128_si256(w1, 1));
+            let sc_lo1 = _mm256_cvtepu16_epi32(_mm256_castsi256_si128(screlu1));
+            let sc_hi1 = _mm256_cvtepu16_epi32(_mm256_extracti128_si256(screlu1, 1));
+            sum_lo = _mm256_add_epi32(sum_lo, _mm256_mullo_epi32(w_lo1, sc_lo1));
+            sum_hi = _mm256_add_epi32(sum_hi, _mm256_mullo_epi32(w_hi1, sc_hi1));
 
-            sum_lo = _mm256_add_epi32(sum_lo, _mm256_mullo_epi32(w_lo, sc_lo));
-            sum_hi = _mm256_add_epi32(sum_hi, _mm256_mullo_epi32(w_hi, sc_hi));
+            i += 2;
         }
         let sum = _mm256_add_epi32(sum_lo, sum_hi);
-        let mut tmp = [0i32; 8];
-        _mm256_storeu_si256(tmp.as_mut_ptr() as *mut __m256i, sum);
-        for v in tmp {
-            total += v as i64;
-        }
-        total
+        let hi128 = _mm256_extracti128_si256(sum, 1);
+        let lo128 = _mm256_castsi256_si128(sum);
+        let sum128 = _mm_add_epi32(lo128, hi128);
+        let shuf = _mm_shuffle_epi32(sum128, 0x4E);
+        let sum64 = _mm_add_epi32(sum128, shuf);
+        let shuf2 = _mm_shuffle_epi32(sum64, 0x05);
+        let res = _mm_cvtsi128_si32(_mm_add_epi32(sum64, shuf2));
+        res as i64
     }
 }
 

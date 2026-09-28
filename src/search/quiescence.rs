@@ -174,7 +174,7 @@ pub fn search(
             break;
         }
 
-        if !board_state.is_legal_with(move_obj, nt.checkers, nt.pinned) {
+        if !board_state.is_legal_pseudo_with(move_obj, nt.checkers, nt.pinned) {
             continue;
         }
 
@@ -276,7 +276,7 @@ pub fn search(
             }
         }
         for &move_obj in promos.iter().take(promo_count) {
-            if !board_state.is_legal_with(move_obj, nt.checkers, nt.pinned) {
+            if !board_state.is_legal_pseudo_with(move_obj, nt.checkers, nt.pinned) {
                 continue;
             }
             board_state.make_move(move_obj);

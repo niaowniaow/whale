@@ -1,19 +1,21 @@
 pub mod bitboard;
 pub mod board;
 pub mod common;
-pub mod endgame;
 pub mod eval;
+pub mod lab;
 pub mod opening;
-pub mod opponent;
-pub mod opportunity;
-pub mod perception;
-pub mod risk;
-pub mod root;
 pub mod search;
 pub mod syzygy;
 pub mod teacher;
 pub mod uci;
-pub mod world;
+
+pub use lab::endgame;
+pub use lab::opponent;
+pub use lab::opportunity;
+pub use lab::perception;
+pub use lab::risk;
+pub use lab::root;
+pub use lab::world;
 
 #[cfg(feature = "train")]
 pub mod datagen;

@@ -23,12 +23,14 @@ pub enum MoveGenType {
 
 impl MoveList {
     pub fn push_setwise(&mut self, from: usize, mut targets: Bitboard, mt: MoveType) {
+        let src = Square::from_u8_unchecked(from as u8);
         while targets.is_not_empty() {
-            let to = targets.get_lsb() as usize;
-            targets.clear_lsb();
-            if from < 64 && to < 64 {
-                self.push(ScoredMove::new(Square::from(from), Square::from(to), mt));
-            }
+            let to = targets.pop_lsb();
+            self.push(ScoredMove::new(
+                src,
+                Square::from_u8_unchecked(to as u8),
+                mt,
+            ));
         }
     }
     pub fn push_pawns_setwise(&mut self, dir: i32, mut targets: u64, mt: MoveType) {
@@ -36,9 +38,11 @@ impl MoveList {
             let to = targets.trailing_zeros() as usize;
             targets &= targets - 1;
             let from = (to as i32 - dir) as usize;
-            if from < 64 && to < 64 {
-                self.push(ScoredMove::new(Square::from(from), Square::from(to), mt));
-            }
+            self.push(ScoredMove::new(
+                Square::from_u8_unchecked(from as u8),
+                Square::from_u8_unchecked(to as u8),
+                mt,
+            ));
         }
     }
     pub fn push_promotion_capture_setwise(&mut self, dir: i32, mut targets: u64) {
@@ -46,14 +50,12 @@ impl MoveList {
             let to = targets.trailing_zeros() as usize;
             targets &= targets - 1;
             let from = (to as i32 - dir) as usize;
-            if from < 64 && to < 64 {
-                let src = Square::from(from);
-                let tgt = Square::from(to);
-                self.push(ScoredMove::new(src, tgt, MoveType::KnightPromotionCapture));
-                self.push(ScoredMove::new(src, tgt, MoveType::BishopPromotionCapture));
-                self.push(ScoredMove::new(src, tgt, MoveType::RookPromotionCapture));
-                self.push(ScoredMove::new(src, tgt, MoveType::QueenPromotionCapture));
-            }
+            let src = Square::from_u8_unchecked(from as u8);
+            let tgt = Square::from_u8_unchecked(to as u8);
+            self.push(ScoredMove::new(src, tgt, MoveType::KnightPromotionCapture));
+            self.push(ScoredMove::new(src, tgt, MoveType::BishopPromotionCapture));
+            self.push(ScoredMove::new(src, tgt, MoveType::RookPromotionCapture));
+            self.push(ScoredMove::new(src, tgt, MoveType::QueenPromotionCapture));
         }
     }
 }
@@ -173,7 +175,7 @@ impl BoardState {
     fn generate_pawn_moves(&self, move_list: &mut MoveList, gen_type: MoveGenType) {
         let mut bitboard = self.get_pieces(self.side_to_move, Piece::Pawn);
         while bitboard.is_not_empty() {
-            let source = bitboard.get_lsb() as usize;
+            let source = bitboard.pop_lsb() as usize;
             match gen_type {
                 MoveGenType::Quiets => {
                     self.generate_pawn_pushes(source, move_list, gen_type);
@@ -185,7 +187,6 @@ impl BoardState {
                     self.generate_pawn_pushes(source, move_list, gen_type);
                 }
             }
-            bitboard.clear_lsb();
         }
     }
 
@@ -251,49 +252,47 @@ impl BoardState {
         let mut attacks = enemy_occ & pawn_attacks()[self.side_to_move as usize][source];
 
         while attacks.is_not_empty() {
-            let target = attacks.get_lsb() as usize;
+            let target = attacks.pop_lsb() as usize;
             self.add_pawn_move(source, target, false, false, move_list, gen_type);
-            attacks.clear_lsb();
         }
     }
 
     fn generate_bishop_moves(&self, move_list: &mut MoveList, gen_type: MoveGenType) {
         let mut bitboard = self.get_pieces(self.side_to_move, Piece::Bishop);
+        let occ = self.occupancy();
         while bitboard.is_not_empty() {
-            let source = bitboard.get_lsb() as usize;
-            let attacks = get_bishop_attacks_from_table(Square::from(source), self.occupancy());
+            let source = bitboard.pop_lsb() as usize;
+            let attacks = get_bishop_attacks_from_table(Square::from_u8_unchecked(source as u8), occ);
             self.add_attacks(source, attacks, move_list, gen_type);
-            bitboard.clear_lsb();
         }
     }
 
     fn generate_knight_moves(&self, move_list: &mut MoveList, gen_type: MoveGenType) {
         let mut bitboard = self.get_pieces(self.side_to_move, Piece::Knight);
         while bitboard.is_not_empty() {
-            let source = bitboard.get_lsb() as usize;
+            let source = bitboard.pop_lsb() as usize;
             let attacks = Bitboard(knight_attacks()[source]);
             self.add_attacks(source, attacks, move_list, gen_type);
-            bitboard.clear_lsb();
         }
     }
 
     fn generate_rook_moves(&self, move_list: &mut MoveList, gen_type: MoveGenType) {
         let mut bitboard = self.get_pieces(self.side_to_move, Piece::Rook);
+        let occ = self.occupancy();
         while bitboard.is_not_empty() {
-            let source = bitboard.get_lsb() as usize;
-            let attacks = get_rook_attacks_from_table(Square::from(source), self.occupancy());
+            let source = bitboard.pop_lsb() as usize;
+            let attacks = get_rook_attacks_from_table(Square::from_u8_unchecked(source as u8), occ);
             self.add_attacks(source, attacks, move_list, gen_type);
-            bitboard.clear_lsb();
         }
     }
 
     fn generate_queen_moves(&self, move_list: &mut MoveList, gen_type: MoveGenType) {
         let mut bitboard = self.get_pieces(self.side_to_move, Piece::Queen);
+        let occ = self.occupancy();
         while bitboard.is_not_empty() {
-            let source = bitboard.get_lsb() as usize;
-            let attacks = get_queen_attacks_from_table(Square::from(source), self.occupancy());
+            let source = bitboard.pop_lsb() as usize;
+            let attacks = get_queen_attacks_from_table(Square::from_u8_unchecked(source as u8), occ);
             self.add_attacks(source, attacks, move_list, gen_type);
-            bitboard.clear_lsb();
         }
     }
 
@@ -432,8 +431,8 @@ impl BoardState {
             MoveType::Quiet
         };
         move_list.push(ScoredMove::new(
-            Square::from(source),
-            Square::from(target),
+            Square::from_u8_unchecked(source as u8),
+            Square::from_u8_unchecked(target as u8),
             move_type,
         ));
     }

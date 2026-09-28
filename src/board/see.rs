@@ -49,6 +49,9 @@ impl BoardState {
         } else {
             target_rank == 7
         };
+        if initial < threshold as i32 {
+            return false;
+        }
         if !enemy_promo_rank && initial - attacker_val >= threshold as i32 {
             return true;
         }
@@ -176,15 +179,28 @@ impl BoardState {
         let rooks = self.pieces[Piece::Rook];
         let queens = self.pieces[Piece::Queen];
         let kings = self.pieces[Piece::King];
+        let s = (sq as usize) & 63;
 
-        let pawn_attacks = (white_pawns & pawn_attacks()[Side::Black as usize][sq as usize])
-            | (black_pawns & pawn_attacks()[Side::White as usize][sq as usize]);
-        let knight_attacks = knights & knight_attacks()[sq as usize];
-        let bishop_attacks = get_bishop_attacks_from_table(sq, occupancy) & (bishops | queens);
-        let rook_attacks = get_rook_attacks_from_table(sq, occupancy) & (rooks | queens);
-        let king_attacks = kings & king_attacks()[sq as usize];
+        let pawn_atks = unsafe {
+            (white_pawns & Bitboard(*pawn_attacks().get_unchecked(Side::Black as usize).get_unchecked(s)))
+                | (black_pawns & Bitboard(*pawn_attacks().get_unchecked(Side::White as usize).get_unchecked(s)))
+        };
+        let knight_atks = unsafe { knights & Bitboard(*knight_attacks().get_unchecked(s)) };
+        let diag_pieces = bishops | queens;
+        let bishop_atks = if diag_pieces.0 != 0 {
+            get_bishop_attacks_from_table(sq, occupancy) & diag_pieces
+        } else {
+            Bitboard(0)
+        };
+        let orth_pieces = rooks | queens;
+        let rook_atks = if orth_pieces.0 != 0 {
+            get_rook_attacks_from_table(sq, occupancy) & orth_pieces
+        } else {
+            Bitboard(0)
+        };
+        let king_atks = unsafe { kings & Bitboard(*king_attacks().get_unchecked(s)) };
 
-        pawn_attacks | knight_attacks | bishop_attacks | rook_attacks | king_attacks
+        pawn_atks | knight_atks | bishop_atks | rook_atks | king_atks
     }
 
     fn update_xrays(&self, attackers: &mut Bitboard, target: Square, occupancy: Bitboard) {
@@ -192,21 +208,24 @@ impl BoardState {
         let rooks = self.pieces[Piece::Rook];
         let queens = self.pieces[Piece::Queen];
 
-        let diagonal_attackers =
-            get_bishop_attacks_from_table(target, occupancy) & (bishops | queens) & occupancy;
-        *attackers |= diagonal_attackers;
+        let diag_pieces = bishops | queens;
+        if diag_pieces.0 != 0 {
+            *attackers |= get_bishop_attacks_from_table(target, occupancy) & diag_pieces & occupancy;
+        }
 
-        let orthogonal_attackers =
-            get_rook_attacks_from_table(target, occupancy) & (rooks | queens) & occupancy;
-        *attackers |= orthogonal_attackers;
+        let orth_pieces = rooks | queens;
+        if orth_pieces.0 != 0 {
+            *attackers |= get_rook_attacks_from_table(target, occupancy) & orth_pieces & occupancy;
+        }
     }
 
+    #[inline(always)]
     fn get_least_valuable_attacker(&self, side_attackers: Bitboard, side: Side) -> (Square, Piece) {
         for piece in Piece::ALL {
             let pieces_bb = self.get_pieces(side, piece);
             let intersection = side_attackers & pieces_bb;
-            if intersection.is_not_empty() {
-                let sq = Square::from(intersection.get_lsb() as usize);
+            if intersection.0 != 0 {
+                let sq = Square::from_u8_unchecked(intersection.0.trailing_zeros() as u8);
                 return (sq, piece);
             }
         }

@@ -23,8 +23,7 @@ impl BoardState {
     }
 
     pub fn is_square_attacked(&self, square: Square, attacking_side: Side) -> bool {
-        let sq = square as usize;
-        let occupancy = self.occupancy();
+        let sq = (square as usize) & 63;
         let defending_side = attacking_side.other();
 
         if (self.get_pieces(attacking_side, Piece::Pawn)
@@ -40,17 +39,21 @@ impl BoardState {
             return true;
         }
 
-        if (get_bishop_attacks_from_table(square, occupancy)
-            & (self.get_pieces(attacking_side, Piece::Bishop)
-                | self.get_pieces(attacking_side, Piece::Queen)))
-        .is_not_empty()
+        let enemy_queens = self.get_pieces(attacking_side, Piece::Queen);
+        let enemy_bq = self.get_pieces(attacking_side, Piece::Bishop) | enemy_queens;
+        let enemy_rq = self.get_pieces(attacking_side, Piece::Rook) | enemy_queens;
+        if enemy_bq.is_empty() && enemy_rq.is_empty() {
+            return false;
+        }
+
+        let occupancy = self.occupancy();
+        if enemy_bq.is_not_empty()
+            && (get_bishop_attacks_from_table(square, occupancy) & enemy_bq).is_not_empty()
         {
             return true;
         }
-        if (get_rook_attacks_from_table(square, occupancy)
-            & (self.get_pieces(attacking_side, Piece::Rook)
-                | self.get_pieces(attacking_side, Piece::Queen)))
-        .is_not_empty()
+        if enemy_rq.is_not_empty()
+            && (get_rook_attacks_from_table(square, occupancy) & enemy_rq).is_not_empty()
         {
             return true;
         }
@@ -65,7 +68,7 @@ impl BoardState {
         attacking_side: Side,
         occupancy: Bitboard,
     ) -> bool {
-        let sq = square as usize;
+        let sq = (square as usize) & 63;
         let defending_side = attacking_side.other();
 
         if (self.get_pieces(attacking_side, Piece::Pawn)
@@ -81,17 +84,16 @@ impl BoardState {
             return true;
         }
 
-        if (get_bishop_attacks_from_table(square, occupancy)
-            & (self.get_pieces(attacking_side, Piece::Bishop)
-                | self.get_pieces(attacking_side, Piece::Queen)))
-        .is_not_empty()
+        let enemy_queens = self.get_pieces(attacking_side, Piece::Queen);
+        let enemy_bq = self.get_pieces(attacking_side, Piece::Bishop) | enemy_queens;
+        if enemy_bq.is_not_empty()
+            && (get_bishop_attacks_from_table(square, occupancy) & enemy_bq).is_not_empty()
         {
             return true;
         }
-        if (get_rook_attacks_from_table(square, occupancy)
-            & (self.get_pieces(attacking_side, Piece::Rook)
-                | self.get_pieces(attacking_side, Piece::Queen)))
-        .is_not_empty()
+        let enemy_rq = self.get_pieces(attacking_side, Piece::Rook) | enemy_queens;
+        if enemy_rq.is_not_empty()
+            && (get_rook_attacks_from_table(square, occupancy) & enemy_rq).is_not_empty()
         {
             return true;
         }
@@ -113,17 +115,29 @@ impl BoardState {
         if king_bb.is_empty() {
             return Bitboard(0);
         }
-        let ksq = Square::from(king_bb.get_lsb() as usize);
+        let ksq = Square::from_u8_unchecked(king_bb.get_lsb() as u8);
         let them = side.other();
+
+        let enemy_queens = self.get_pieces(them, Piece::Queen).0;
+        let enemy_bq = self.get_pieces(them, Piece::Bishop).0 | enemy_queens;
+        let enemy_rq = self.get_pieces(them, Piece::Rook).0 | enemy_queens;
+        if (enemy_bq | enemy_rq) == 0 {
+            return Bitboard(0);
+        }
+
         let occ = self.occupancy();
         let our_occ = self.occupancies[side].0;
 
-        let enemy_bq =
-            self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
-        let enemy_rq = self.get_pieces(them, Piece::Rook).0 | self.get_pieces(them, Piece::Queen).0;
-
-        let diag_pinners = get_bishop_attacks_from_table(ksq, Bitboard(0)).0 & enemy_bq;
-        let orth_pinners = get_rook_attacks_from_table(ksq, Bitboard(0)).0 & enemy_rq;
+        let diag_pinners = if enemy_bq != 0 {
+            get_bishop_attacks_from_table(ksq, Bitboard(0)).0 & enemy_bq
+        } else {
+            0
+        };
+        let orth_pinners = if enemy_rq != 0 {
+            get_rook_attacks_from_table(ksq, Bitboard(0)).0 & enemy_rq
+        } else {
+            0
+        };
 
         let mut pinned = 0u64;
         let mut pinners = diag_pinners | orth_pinners;
@@ -143,19 +157,25 @@ impl BoardState {
         if king_bb.is_empty() {
             return Bitboard(0);
         }
-        let ksq = Square::from(king_bb.get_lsb() as usize);
+        let ksq = Square::from_u8_unchecked(king_bb.get_lsb() as u8);
         let them = side.other();
-        let occ = self.occupancy();
 
         let mut checkers = 0u64;
         checkers |=
             self.get_pieces(them, Piece::Pawn).0 & pawn_attacks()[side as usize][ksq as usize];
         checkers |= self.get_pieces(them, Piece::Knight).0 & knight_attacks()[ksq as usize];
-        let enemy_bq =
-            self.get_pieces(them, Piece::Bishop).0 | self.get_pieces(them, Piece::Queen).0;
-        checkers |= get_bishop_attacks_from_table(ksq, occ).0 & enemy_bq;
-        let enemy_rq = self.get_pieces(them, Piece::Rook).0 | self.get_pieces(them, Piece::Queen).0;
-        checkers |= get_rook_attacks_from_table(ksq, occ).0 & enemy_rq;
+        let enemy_queens = self.get_pieces(them, Piece::Queen).0;
+        let enemy_bq = self.get_pieces(them, Piece::Bishop).0 | enemy_queens;
+        let enemy_rq = self.get_pieces(them, Piece::Rook).0 | enemy_queens;
+        if (enemy_bq | enemy_rq) != 0 {
+            let occ = self.occupancy();
+            if enemy_bq != 0 {
+                checkers |= get_bishop_attacks_from_table(ksq, occ).0 & enemy_bq;
+            }
+            if enemy_rq != 0 {
+                checkers |= get_rook_attacks_from_table(ksq, occ).0 & enemy_rq;
+            }
+        }
 
         Bitboard(checkers)
     }

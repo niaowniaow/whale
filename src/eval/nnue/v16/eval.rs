@@ -79,7 +79,11 @@ static HAS_AVX2: std::sync::LazyLock<bool> =
 
 #[inline(always)]
 pub fn has_avx2() -> bool {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        true
+    }
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     {
         *HAS_AVX2
     }

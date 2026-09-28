@@ -186,6 +186,7 @@ impl MovePicker {
                     self.phase = SearchPhase::TtMove;
                     if let Some(mv) = self.pv_move
                         && mv != Move::NO_MOVE
+                        && board_state.is_pseudo_legal(mv)
                     {
                         return Some(mv);
                     }
@@ -198,6 +199,7 @@ impl MovePicker {
                     if let Some(mv) = self.tt_best
                         && mv != Move::NO_MOVE
                         && Some(mv) != self.pv_move
+                        && board_state.is_pseudo_legal(mv)
                     {
                         return Some(mv);
                     }

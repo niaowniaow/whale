@@ -119,6 +119,7 @@ fn real_main() {
                 "Total: {total_nodes} nodes {total_ms} ms {nps} nps hashfull {}",
                 shared_tt.hashfull()
             );
+            println!("Nodes searched  : {total_nodes}");
             exit(0);
         }
         Some("datagen") | Some("--datagen") | Some("datagen-teacher") => {
