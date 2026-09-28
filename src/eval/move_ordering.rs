@@ -112,7 +112,34 @@ impl MoveOrdering {
         }
         self.tt_move_history = 0;
     }
-    pub fn decay_history(&mut self) {}
+    pub fn decay_history(&mut self) {
+        for row in self.history_moves.iter_mut() {
+            for s in row.iter_mut() {
+                *s /= 2;
+            }
+        }
+        for side in self.quiet_history.iter_mut() {
+            for row in side.iter_mut() {
+                for s in row.iter_mut() {
+                    *s /= 2;
+                }
+            }
+        }
+        for piece in self.continuation_history.iter_mut() {
+            for row in piece.iter_mut() {
+                for s in row.iter_mut() {
+                    *s /= 2;
+                }
+            }
+        }
+        for moved in self.capture_history.iter_mut() {
+            for target in moved.iter_mut() {
+                for s in target.iter_mut() {
+                    *s /= 2;
+                }
+            }
+        }
+    }
     pub fn is_move_heuristic_empty(&self) -> bool {
         self.killer_moves
             .iter()
@@ -212,6 +239,43 @@ impl MoveOrdering {
         let bucket = Self::pawn_bucket(pawn_key);
         let pawn_score = self.pawn_history[bucket][piece][target] as i32;
         history_score + i32::from(from_to_score) + continuation_score + pawn_score
+    }
+    pub fn score_priority_quiets(
+        &self,
+        moves: &mut [ScoredMove],
+        ply: usize,
+        counter_move: Move,
+    ) -> usize {
+        let mut count = 0;
+        let killer0 = if ply < MAX_PLY {
+            self.killer_moves[0][ply]
+        } else {
+            Move::NO_MOVE
+        };
+        let killer1 = if ply < MAX_PLY {
+            self.killer_moves[1][ply]
+        } else {
+            Move::NO_MOVE
+        };
+        for i in 0..moves.len() {
+            let m = moves[i].mv;
+            let prom_piece = m.move_type.promotion_piece();
+            let score = if prom_piece == Piece::Queen {
+                25000
+            } else if killer0 != Move::NO_MOVE && m == killer0 {
+                22000
+            } else if killer1 != Move::NO_MOVE && m == killer1 {
+                21000
+            } else if counter_move != Move::NO_MOVE && m == counter_move {
+                20000
+            } else {
+                continue;
+            };
+            moves[i].score = score;
+            moves.swap(count, i);
+            count += 1;
+        }
+        count
     }
     pub fn populate_quiet_scores(
         &self,
@@ -1200,7 +1264,7 @@ mod tests {
         assert!(!ordering.is_move_heuristic_empty());
         let before = ordering.history_moves[0][Square::E4 as usize];
         ordering.decay_history();
-        assert_eq!(ordering.history_moves[0][Square::E4 as usize], before);
+        assert_eq!(ordering.history_moves[0][Square::E4 as usize], before / 2);
         ordering.reset();
         assert!(ordering.is_move_heuristic_empty());
     }
