@@ -30,7 +30,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 180
     env:
-      RUSTFLAGS: "-C target-cpu=generic"
+      RUSTFLAGS: "-C target-cpu=x86-64-v3"
     permissions:
       contents: read
 

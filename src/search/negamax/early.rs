@@ -101,6 +101,7 @@ pub(super) fn static_info(
     board_state: &mut BoardState,
     depth: u8,
     ply: u8,
+    alpha: i16,
     beta: i16,
     tt_entry: Option<tt::TranspositionTableEntry>,
     halfmove: u8,
@@ -123,8 +124,14 @@ pub(super) fn static_info(
         }
     } else {
         let optimism = ctx.search_state.optimism[board_state.side_to_move as usize];
-        let raw_static_eval =
-            crate::eval::evaluate_with_depth_cached(&mut *board_state, optimism, depth, &nt);
+        let raw_static_eval = crate::eval::evaluate_with_depth_cached_gated(
+            &mut *board_state,
+            optimism,
+            depth,
+            alpha,
+            beta,
+            &nt,
+        );
         let correction = ctx
             .search_state
             .correction_history

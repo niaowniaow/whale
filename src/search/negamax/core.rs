@@ -177,6 +177,7 @@ pub(super) fn search_internal(
         board_state,
         depth,
         ply,
+        alpha,
         beta,
         tt_entry,
         halfmove,

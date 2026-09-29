@@ -78,6 +78,15 @@ pub(super) fn should_stop(
 
     let nodes_exceeded = search_state.max_nodes > 0 && total_nodes_now >= search_state.max_nodes;
 
+    if search_state.max_time > 0 && search_state.opt_time == search_state.max_time {
+        let fixed_stop = (search_state.max_time as f64) * 0.85;
+        if elapsed >= fixed_stop || is_mate || nodes_exceeded {
+            cancellation_token.store(true, Ordering::Relaxed);
+            return true;
+        }
+        return false;
+    }
+
     if elapsed > stop_time || is_mate || elapsed > total_time * 0.60 || nodes_exceeded {
         cancellation_token.store(true, Ordering::Relaxed);
         return true;

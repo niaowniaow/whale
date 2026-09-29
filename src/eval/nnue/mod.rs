@@ -93,7 +93,12 @@ pub fn is_dual_net_enabled() -> bool {
 }
 
 #[inline(always)]
-pub fn evaluate_qsearch(board: &mut BoardState, optimism: i32, alpha: i16, beta: i16) -> i16 {
+pub fn evaluate_with_optimism_gated(
+    board: &mut BoardState,
+    optimism: i32,
+    alpha: i16,
+    beta: i16,
+) -> i16 {
     let board_hash = board.board_hash;
     let halfmove = board.half_move_clock;
     if let Some(hit) = probe_eval_cache(board_hash, optimism, halfmove) {
@@ -103,19 +108,16 @@ pub fn evaluate_qsearch(board: &mut BoardState, optimism: i32, alpha: i16, beta:
         return evaluate_with_optimism(board, optimism);
     }
     let fast = evaluate_fast(board, optimism);
-    if fast >= beta + 120 {
-        store_eval_cache(board_hash, optimism, halfmove, fast);
-        return fast;
-    }
-    if fast <= alpha - 426 {
-        store_eval_cache(board_hash, optimism, halfmove, fast);
-        return fast;
-    }
-    if fast.abs() >= 380 {
+    if fast >= beta + 120 || fast <= alpha - 426 || fast.abs() >= 380 {
         store_eval_cache(board_hash, optimism, halfmove, fast);
         return fast;
     }
     evaluate_with_optimism(board, optimism)
+}
+
+#[inline(always)]
+pub fn evaluate_qsearch(board: &mut BoardState, optimism: i32, alpha: i16, beta: i16) -> i16 {
+    evaluate_with_optimism_gated(board, optimism, alpha, beta)
 }
 
 #[inline(always)]
@@ -137,6 +139,27 @@ pub fn evaluate_with_depth_cached(
     nt: &crate::board::node_threats::NodeThreats,
 ) -> i16 {
     let base_score = evaluate_with_optimism(board, optimism);
+    dcn::DcnModel::condition_evaluation_cached(
+        base_score,
+        depth,
+        board,
+        nt.checks(),
+        nt.queen_threat_us(board),
+        nt.queen_threat_them(board),
+        dcn::DcnConfig::default(),
+    )
+}
+
+#[inline(always)]
+pub fn evaluate_with_depth_cached_gated(
+    board: &mut BoardState,
+    optimism: i32,
+    depth: u8,
+    alpha: i16,
+    beta: i16,
+    nt: &crate::board::node_threats::NodeThreats,
+) -> i16 {
+    let base_score = evaluate_with_optimism_gated(board, optimism, alpha, beta);
     dcn::DcnModel::condition_evaluation_cached(
         base_score,
         depth,
