@@ -107,7 +107,7 @@ pub fn evaluate_qsearch(board: &mut BoardState, optimism: i32, alpha: i16, beta:
         store_eval_cache(board_hash, optimism, halfmove, fast);
         return fast;
     }
-    if fast <= alpha - 300 {
+    if fast <= alpha - 426 {
         store_eval_cache(board_hash, optimism, halfmove, fast);
         return fast;
     }
@@ -115,7 +115,7 @@ pub fn evaluate_qsearch(board: &mut BoardState, optimism: i32, alpha: i16, beta:
         store_eval_cache(board_hash, optimism, halfmove, fast);
         return fast;
     }
-    evaluate_with_optimism_internal(board, optimism, Some(fast))
+    evaluate_with_optimism(board, optimism)
 }
 
 #[inline(always)]
@@ -150,15 +150,6 @@ pub fn evaluate_with_depth_cached(
 
 #[inline(always)]
 pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
-    evaluate_with_optimism_internal(board, optimism, None)
-}
-
-#[inline(always)]
-pub fn evaluate_with_optimism_internal(
-    board: &mut BoardState,
-    optimism: i32,
-    precomputed_fast: Option<i16>,
-) -> i16 {
     let board_hash = board.board_hash;
     let halfmove = board.half_move_clock;
     let score = if let Some(hit) = probe_eval_cache(board_hash, optimism, halfmove) {
@@ -166,7 +157,7 @@ pub fn evaluate_with_optimism_internal(
     } else {
         let raw = if v16::maintenance_active() {
             let fast = if is_dual_net_enabled() {
-                precomputed_fast.unwrap_or_else(|| evaluate_fast(board, optimism))
+                evaluate_fast(board, optimism)
             } else {
                 0
             };

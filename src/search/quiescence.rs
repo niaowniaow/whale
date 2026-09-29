@@ -185,7 +185,7 @@ pub fn search(
 
             if !move_obj.is_promotion() {
                 move_count += 1;
-                if move_count > 2 && !board_state.see_ge(move_obj, 0) {
+                if move_count > 2 {
                     continue;
                 }
 
