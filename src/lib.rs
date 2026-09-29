@@ -62,6 +62,7 @@ pub mod train {
 
 pub fn init() {
     let _ = crate::eval::nnue::v16::try_load_default();
+    crate::eval::nnue::clear_eval_cache();
 }
 
 #[cfg(test)]

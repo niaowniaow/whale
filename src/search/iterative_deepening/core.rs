@@ -33,6 +33,10 @@ pub(super) fn search_primary(
 
     let timer = Instant::now();
 
+    if cancellation_token.load(Ordering::Relaxed) {
+        return;
+    }
+
     let mut root_moves = MoveList::new();
     board_state.generate_moves(&mut root_moves);
     let root_threats = NodeThreats::compute(board_state);

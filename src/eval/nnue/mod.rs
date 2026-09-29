@@ -109,7 +109,6 @@ pub fn evaluate_with_optimism_gated(
     }
     let fast = evaluate_fast(board, optimism);
     if fast >= beta + 120 || fast <= alpha - 426 || fast.abs() >= 380 {
-        store_eval_cache(board_hash, optimism, halfmove, fast);
         return fast;
     }
     evaluate_with_optimism(board, optimism)
