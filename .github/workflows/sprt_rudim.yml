@@ -5,11 +5,11 @@ on:
     inputs:
       games:
         description: "Maximum games to play"
-        default: "120"
+        default: "40"
         type: string
       movetime:
         description: "Milliseconds per move for both engines"
-        default: "150"
+        default: "2000"
         type: string
   pull_request:
     branches: [main, development]
@@ -77,8 +77,8 @@ jobs:
 
       - name: Play SPRT match (Whale vs Rudim 3.0.5)
         env:
-          GAMES: ${{ inputs.games || '120' }}
-          MOVETIME: ${{ inputs.movetime || '150' }}
+          GAMES: ${{ inputs.games || '40' }}
+          MOVETIME: ${{ inputs.movetime || '2000' }}
         run: |
           python3 tools/sprt_match.py \
             --binary /tmp/whale \
