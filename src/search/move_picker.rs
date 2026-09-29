@@ -34,7 +34,6 @@ pub struct MovePicker {
     cont_stack: [(Piece, Square); 6],
     cont_stack_len: usize,
     tt_history: i16,
-    num_priority_quiets: usize,
 }
 impl MovePicker {
     pub fn new(
@@ -60,7 +59,6 @@ impl MovePicker {
             cont_stack: [(Piece::None, Square::NoSquare); 6],
             cont_stack_len: 0,
             tt_history: 0,
-            num_priority_quiets: 0,
         }
     }
     pub fn new_qsearch(ply: usize) -> Self {
@@ -79,7 +77,6 @@ impl MovePicker {
             cont_stack: [(Piece::None, Square::NoSquare); 6],
             cont_stack_len: 0,
             tt_history: 0,
-            num_priority_quiets: 0,
         }
     }
     pub fn set_continuation_stack(&mut self, stack: &[(Piece, Square)]) {
@@ -271,91 +268,30 @@ impl MovePicker {
                     quiets.clear();
                     self.current_index = 0;
                     board_state.generate_quiets(quiets);
-                    let counter_move = if self.cont_stack_len > 0 {
-                        let prev_target = self.cont_stack[0].1 as usize;
-                        if prev_target < crate::common::constants::SQUARES {
-                            let prev_side = board_state.side_to_move.other();
-                            let prev_piece = self.cont_stack[0].0;
-                            if (prev_piece as usize) < crate::common::constants::PIECES {
-                                move_ordering.counter_moves[prev_side as usize][prev_piece as usize]
-                                    [prev_target]
-                            } else {
-                                Move::NO_MOVE
-                            }
-                        } else {
-                            Move::NO_MOVE
-                        }
-                    } else if let Some(prev_mv) = self.previous_move {
-                        let prev_target = prev_mv.target as usize;
-                        if prev_target < crate::common::constants::SQUARES {
-                            let prev_side = board_state.side_to_move.other();
-                            let prev_piece = board_state.piece_mapping[prev_target];
-                            if (prev_piece as usize) < crate::common::constants::PIECES {
-                                move_ordering.counter_moves[prev_side as usize][prev_piece as usize]
-                                    [prev_target]
-                            } else {
-                                Move::NO_MOVE
-                            }
-                        } else {
-                            Move::NO_MOVE
-                        }
+                    if self.cont_stack_len > 0 {
+                        let pawn_key = crate::common::zobrist::get_pawn_hash(board_state);
+                        move_ordering.populate_quiet_scores_with_stack(
+                            quiets,
+                            board_state,
+                            self.ply,
+                            &self.cont_stack[..self.cont_stack_len],
+                            pawn_key,
+                            &nt.threats_us,
+                            &nt.check_squares,
+                        );
                     } else {
-                        Move::NO_MOVE
-                    };
-                    self.num_priority_quiets =
-                        move_ordering.score_priority_quiets(quiets, self.ply, counter_move);
-                    if self.num_priority_quiets == 0 {
-                        if self.cont_stack_len > 0 {
-                            let pawn_key = crate::common::zobrist::get_pawn_hash(board_state);
-                            move_ordering.populate_quiet_scores_with_stack(
-                                quiets,
-                                board_state,
-                                self.ply,
-                                &self.cont_stack[..self.cont_stack_len],
-                                pawn_key,
-                                &nt.threats_us,
-                                &nt.check_squares,
-                            );
-                        } else {
-                            move_ordering.populate_quiet_scores(
-                                quiets,
-                                board_state,
-                                self.ply,
-                                self.previous_move,
-                                &nt.threats_us,
-                                &nt.check_squares,
-                            );
-                        }
+                        move_ordering.populate_quiet_scores(
+                            quiets,
+                            board_state,
+                            self.ply,
+                            self.previous_move,
+                            &nt.threats_us,
+                            &nt.check_squares,
+                        );
                     }
                     self.phase = SearchPhase::GoodQuiets;
                 }
                 SearchPhase::GoodQuiets => {
-                    if self.num_priority_quiets > 0
-                        && self.current_index == self.num_priority_quiets
-                    {
-                        self.num_priority_quiets = 0;
-                        if self.cont_stack_len > 0 {
-                            let pawn_key = crate::common::zobrist::get_pawn_hash(board_state);
-                            move_ordering.populate_quiet_scores_with_stack(
-                                &mut quiets[self.current_index..],
-                                board_state,
-                                self.ply,
-                                &self.cont_stack[..self.cont_stack_len],
-                                pawn_key,
-                                &nt.threats_us,
-                                &nt.check_squares,
-                            );
-                        } else {
-                            move_ordering.populate_quiet_scores(
-                                &mut quiets[self.current_index..],
-                                board_state,
-                                self.ply,
-                                self.previous_move,
-                                &nt.threats_us,
-                                &nt.check_squares,
-                            );
-                        }
-                    }
                     if let Some(mv) = get_next_valid_quiet_move(
                         quiets,
                         &mut self.current_index,

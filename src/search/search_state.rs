@@ -381,7 +381,6 @@ impl SearchState {
         *self.extension_streak = [0u8; MAX_PLY];
         self.bmo.reset();
         self.psm_stack.reset();
-        self.move_ordering.decay_history();
     }
 
     pub fn tt_store_allowed(&self, ply: u8) -> bool {

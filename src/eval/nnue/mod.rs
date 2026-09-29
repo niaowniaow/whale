@@ -111,7 +111,7 @@ pub fn evaluate_qsearch(board: &mut BoardState, optimism: i32, alpha: i16, beta:
         store_eval_cache(board_hash, optimism, halfmove, fast);
         return fast;
     }
-    if fast.abs() >= 300 {
+    if fast.abs() >= 380 {
         store_eval_cache(board_hash, optimism, halfmove, fast);
         return fast;
     }
@@ -170,7 +170,7 @@ pub fn evaluate_with_optimism_internal(
             } else {
                 0
             };
-            if is_dual_net_enabled() && fast.abs() >= 300 {
+            if is_dual_net_enabled() && fast.abs() >= 380 {
                 fast
             } else if let Some(ev) = v16::evaluate_board_detailed(board) {
                 let psqt = ev.psqt as i64;
