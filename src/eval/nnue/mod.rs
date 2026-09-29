@@ -108,7 +108,7 @@ pub fn evaluate_with_optimism_gated(
         return evaluate_with_optimism(board, optimism);
     }
     let fast = evaluate_fast(board, optimism);
-    if fast >= beta + 120 || fast <= alpha - 426 || fast.abs() >= 380 {
+    if fast >= beta + 50 || fast <= alpha - 140 || fast.abs() >= 200 {
         return fast;
     }
     evaluate_with_optimism(board, optimism)
@@ -116,7 +116,11 @@ pub fn evaluate_with_optimism_gated(
 
 #[inline(always)]
 pub fn evaluate_qsearch(board: &mut BoardState, optimism: i32, alpha: i16, beta: i16) -> i16 {
-    evaluate_with_optimism_gated(board, optimism, alpha, beta)
+    if is_dual_net_enabled() {
+        evaluate_fast(board, optimism)
+    } else {
+        evaluate_with_optimism_gated(board, optimism, alpha, beta)
+    }
 }
 
 #[inline(always)]
@@ -183,7 +187,7 @@ pub fn evaluate_with_optimism(board: &mut BoardState, optimism: i32) -> i16 {
             } else {
                 0
             };
-            if is_dual_net_enabled() && fast.abs() >= 380 {
+            if is_dual_net_enabled() && fast.abs() >= 200 {
                 fast
             } else if let Some(ev) = v16::evaluate_board_detailed(board) {
                 let psqt = ev.psqt as i64;
