@@ -37,34 +37,6 @@ fn main() {
     let cases: Vec<(&str, Setup)> = vec![
         ("base", Box::new(|_: &mut SearchState| {})),
         (
-            "no-psm",
-            Box::new(|s: &mut SearchState| s.params.psm_enabled = false),
-        ),
-        (
-            "no-cfss",
-            Box::new(|s: &mut SearchState| s.params.cfss_enabled = false),
-        ),
-        (
-            "no-ras",
-            Box::new(|s: &mut SearchState| s.params.ras_enabled = false),
-        ),
-        (
-            "no-bmo",
-            Box::new(|s: &mut SearchState| s.params.bmo_enabled = false),
-        ),
-        (
-            "no-tce",
-            Box::new(|s: &mut SearchState| s.params.tce_enabled = false),
-        ),
-        (
-            "no-sps",
-            Box::new(|s: &mut SearchState| s.params.sps_enabled = false),
-        ),
-        (
-            "no-dad",
-            Box::new(|s: &mut SearchState| s.params.dad_enabled = false),
-        ),
-        (
             "no-extcap",
             Box::new(|s: &mut SearchState| s.params.extension_cap_enabled = false),
         ),
