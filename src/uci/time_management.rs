@@ -16,7 +16,8 @@ pub fn calculate_optimum_with_ply(
     ponder: bool,
 ) -> (i32, i32) {
     if clock <= move_overhead {
-        return (10, 10);
+        let c = clock.max(1).min(10);
+        return (c, c);
     }
 
     let available_clock = (clock - move_overhead).max(10);

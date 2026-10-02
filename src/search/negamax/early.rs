@@ -240,8 +240,6 @@ pub(super) fn singular_search(
                     previous_pv: ctx.previous_pv,
                     excluded_move: tt_best,
                     cut_node,
-                    gtp_graph: ctx.gtp_graph,
-                    gtp_parent: ctx.gtp_parent,
                     pv_table: se_pv,
                     search_state: se_state,
                     cancellation_token: ctx.cancellation_token,
@@ -494,10 +492,6 @@ pub(super) fn rfp_gate(
     if ctx.search_state.last_intent == crate::search::intent::SearchIntent::Conversion {
         margin = margin.max(0);
     }
-    margin += ctx
-        .search_state
-        .ras
-        .rfp_margin_adjustment(ply as usize, depth);
     if !beta_is_mate && static_eval.saturating_sub(margin) >= beta {
         return Some(((661 * beta as i32 + 363 * static_eval as i32) / 1024) as i16);
     }
@@ -525,7 +519,7 @@ pub(super) fn probcut_search(
     static_eval: i16,
     is_improving: bool,
     beta_is_mate: bool,
-    in_check: bool,
+    _in_check: bool,
     halfmove: u8,
     mate_bound: i16,
     nt: &NodeThreats,
@@ -579,15 +573,6 @@ pub(super) fn probcut_search(
                     return Some(0);
                 }
                 let score = if q_score >= prob_beta && prob_depth > 1 {
-                    let mut prob_graph = ctx.gtp_graph;
-                    let prob_parent = prob_graph.add_node(gtp::GtpNode {
-                        depth: prob_depth,
-                        eval_margin: static_eval.saturating_sub(prob_beta),
-                        is_capture: true,
-                        in_check,
-                        history_score: 0,
-                        parent_idx: ctx.gtp_parent,
-                    });
                     let mut prob_pv_table = PvTable::new();
                     let (prob_pv, prob_state) = (&mut prob_pv_table, &mut *ctx.search_state);
                     -search_internal(
@@ -603,8 +588,6 @@ pub(super) fn probcut_search(
                             previous_pv: ctx.previous_pv,
                             excluded_move: None,
                             cut_node: false,
-                            gtp_graph: prob_graph,
-                            gtp_parent: Some(prob_parent),
                             pv_table: prob_pv,
                             cancellation_token: ctx.cancellation_token,
                             search_state: prob_state,
@@ -679,15 +662,6 @@ pub(super) fn null_move_search(
             nmp::get_reduction_with_margin(depth, &ctx.search_state.params, momentum, eval_margin);
         let reduced_depth = depth.saturating_sub(reduction).max(1);
 
-        let mut nmp_graph = ctx.gtp_graph;
-        let nmp_parent = nmp_graph.add_node(gtp::GtpNode {
-            depth: reduced_depth,
-            eval_margin,
-            is_capture: false,
-            in_check,
-            history_score: 0,
-            parent_idx: ctx.gtp_parent,
-        });
         let mut nmp_pv_table = PvTable::new();
         let (nmp_pv, nmp_state) = (&mut nmp_pv_table, &mut *ctx.search_state);
 
@@ -708,8 +682,6 @@ pub(super) fn null_move_search(
                 previous_pv: ctx.previous_pv,
                 excluded_move: None,
                 cut_node: false,
-                gtp_graph: nmp_graph,
-                gtp_parent: Some(nmp_parent),
                 pv_table: nmp_pv,
                 cancellation_token: ctx.cancellation_token,
                 search_state: nmp_state,
@@ -756,8 +728,6 @@ pub(super) fn null_move_search(
                     previous_pv: ctx.previous_pv,
                     excluded_move: None,
                     cut_node: false,
-                    gtp_graph: ctx.gtp_graph,
-                    gtp_parent: ctx.gtp_parent,
                     pv_table: &mut *ctx.pv_table,
                     cancellation_token: ctx.cancellation_token,
                     search_state: ctx.search_state,
@@ -812,83 +782,4 @@ pub(super) fn apply_iir(
             has_excluded,
         ))
         .max(1)
-}
-
-pub(super) struct CoarseOut {
-    pub cancelled: bool,
-    pub depth: u8,
-    pub tt_best: Option<Move>,
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(super) fn coarse_pass(
-    board_state: &mut BoardState,
-    current_depth: u8,
-    ply: u8,
-    alpha: i16,
-    beta: i16,
-    is_pv_node: bool,
-    in_check: bool,
-    tt_best: Option<Move>,
-    previous_move: Option<Move>,
-    ctx: &mut SearchContext,
-) -> CoarseOut {
-    let mut out = CoarseOut {
-        cancelled: false,
-        depth: current_depth,
-        tt_best,
-    };
-    if ctx.search_state.params.cfss_enabled
-        && cfss::should_run_coarse_pass(
-            current_depth,
-            is_pv_node,
-            in_check,
-            tt_best,
-            ctx.excluded_move,
-        )
-    {
-        let coarse_depth = cfss::get_coarse_depth(current_depth);
-
-        let mut coarse_pv_table = PvTable::new();
-        let (coarse_pv, coarse_state) = (&mut coarse_pv_table, &mut *ctx.search_state);
-        let coarse_score = search_internal(
-            board_state,
-            coarse_depth,
-            ply,
-            alpha,
-            beta,
-            previous_move,
-            &mut SearchContext {
-                allow_null_move: false,
-                on_pv_path: false,
-                previous_pv: ctx.previous_pv,
-                excluded_move: None,
-                cut_node: false,
-                gtp_graph: ctx.gtp_graph,
-                gtp_parent: ctx.gtp_parent,
-                pv_table: coarse_pv,
-                cancellation_token: ctx.cancellation_token,
-                search_state: coarse_state,
-            },
-        );
-
-        if is_cancelled(ctx) {
-            return CoarseOut {
-                cancelled: true,
-                depth: out.depth,
-                tt_best: out.tt_best,
-            };
-        }
-
-        if let Some(entry) = ctx.search_state.tt.probe(board_state.board_hash)
-            && entry.best_move != Move::NO_MOVE
-        {
-            out.tt_best = Some(entry.best_move);
-        }
-
-        if coarse_score <= alpha.saturating_sub(250) {
-            out.depth = current_depth.saturating_sub(1).max(1);
-        }
-    }
-    out
 }

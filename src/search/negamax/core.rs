@@ -1,12 +1,12 @@
 use super::context::{SearchContext, is_cancelled};
 use super::early::{
-    apply_iir, coarse_pass, hindsight_adjust, mate_window, null_move_search, probcut_search,
-    razor_gate, rfp_gate, singular_search, static_info, tablebase_probe, tt_cutoff,
+    apply_iir, hindsight_adjust, mate_window, null_move_search, probcut_search, razor_gate,
+    rfp_gate, singular_search, static_info, tablebase_probe, tt_cutoff,
 };
 use super::history::beta_cutoff;
 use super::moves::{
     MoveOut, extension_depth, finish_node, futility_gate, history_gate, lmp_gate,
-    losing_history_gate, move_scores, psm_gate, root_filter, search_move, see_gate,
+    losing_history_gate, move_scores, root_filter, search_move, see_gate,
 };
 use super::*;
 
@@ -29,8 +29,6 @@ pub fn search(
         previous_pv,
         excluded_move: None,
         cut_node: false,
-        gtp_graph: gtp::GtpTreeGraph::new(),
-        gtp_parent: None,
         pv_table,
         cancellation_token,
         search_state,
@@ -324,37 +322,12 @@ pub(super) fn search_internal(
         ctx.search_state.params.iir_enabled,
     );
 
-    let coarse = coarse_pass(
-        board_state,
-        current_depth,
-        ply,
-        alpha,
-        beta,
-        is_pv_node,
-        in_check,
-        tt_best,
-        previous_move,
-        ctx,
-    );
-    if coarse.cancelled {
-        return 0;
-    }
-    current_depth = coarse.depth;
-    tt_best = coarse.tt_best;
-
-    let bandit_arm = if !is_pv_node && ctx.search_state.params.bmo_enabled {
-        ctx.search_state.bmo.select_arm(current_depth)
-    } else {
-        crate::search::bmo::BanditArm::CapturesFirst
-    };
-
     let mut move_picker = MovePicker::new(
         pv_move,
         tt_best,
         previous_move,
         ply as usize,
         ctx.excluded_move,
-        bandit_arm,
     );
     let mut number_of_legal_moves = 0;
     let mut has_legal_moves = false;
@@ -363,7 +336,6 @@ pub(super) fn search_internal(
     let mut tried_captures = [Move::NO_MOVE; 32];
     let mut tried_captures_count = 0;
     let has_non_pawn_material = board_state.has_non_pawn_material(board_state.side_to_move);
-    let mut consecutive_fail_lows: u8 = 0;
 
     while let Some(move_obj) = move_picker.next(
         board_state,
@@ -419,7 +391,6 @@ pub(super) fn search_internal(
         let gives_check = board_state.is_in_check(board_state.side_to_move);
 
         let (depth, extension) = extension_depth(
-            board_state,
             ctx.search_state,
             move_obj,
             tt_best,
@@ -427,9 +398,7 @@ pub(super) fn search_internal(
             current_depth,
             cap_or_promo,
             gives_check,
-            in_check,
             ply,
-            previous_move,
         );
         let excluded_here = ctx.excluded_move.is_some();
 
@@ -488,24 +457,6 @@ pub(super) fn search_internal(
             continue;
         }
 
-        if psm_gate(
-            ctx.search_state.params.psm_enabled,
-            is_pv_node,
-            excluded_here,
-            in_check,
-            cap_or_promo,
-            found_pv,
-            ply,
-            gives_check,
-            &ctx.search_state.psm_stack.stack[ply as usize],
-            number_of_legal_moves,
-            depth,
-            consecutive_fail_lows,
-        ) {
-            board_state.unmake_move(move_obj);
-            continue;
-        }
-
         if losing_history_gate(
             depth,
             number_of_legal_moves,
@@ -546,10 +497,7 @@ pub(super) fn search_internal(
             cut_node,
             pv_move,
             ctx.on_pv_path,
-            ctx.gtp_graph,
-            0,
             number_of_legal_moves,
-            consecutive_fail_lows,
             &nt,
             ctx,
         ) {
@@ -561,12 +509,6 @@ pub(super) fn search_internal(
 
         if is_cancelled(ctx) {
             return 0;
-        }
-
-        if score <= alpha {
-            consecutive_fail_lows = consecutive_fail_lows.saturating_add(1);
-        } else {
-            consecutive_fail_lows = 0;
         }
 
         if score > best_score {
@@ -592,12 +534,6 @@ pub(super) fn search_internal(
         }
 
         if score >= beta {
-            if !is_pv_node && ctx.excluded_move.is_none() && ctx.search_state.params.bmo_enabled {
-                let early_cutoff = number_of_legal_moves <= 2;
-                ctx.search_state
-                    .bmo
-                    .update(current_depth, bandit_arm, early_cutoff);
-            }
             if extension < 2 || is_pv_node {
                 lmr::record_cutoff(ply);
             }
@@ -650,7 +586,6 @@ pub(super) fn search_internal(
         &tried_quiets[..tried_quiets_count],
         number_of_legal_moves,
         has_legal_moves,
-        bandit_arm,
         ctx,
     )
 }

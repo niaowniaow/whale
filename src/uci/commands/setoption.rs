@@ -129,29 +129,7 @@ impl UciClient {
             {
                 state.params.history_weight_mult = v.clamp(1, 4);
             }
-            if name.eq_ignore_ascii_case("PSM_Enabled") {
-                state.params.psm_enabled = value.eq_ignore_ascii_case("true");
-            }
-
             let flag_on = value.eq_ignore_ascii_case("true") || value == "1";
-            if name.eq_ignore_ascii_case("CFSS_Enabled") {
-                state.params.cfss_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("RAS_Enabled") {
-                state.params.ras_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("BMO_Enabled") {
-                state.params.bmo_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("TCE_Enabled") {
-                state.params.tce_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("SPS_Enabled") {
-                state.params.sps_enabled = flag_on;
-            }
-            if name.eq_ignore_ascii_case("DAD_Enabled") {
-                state.params.dad_enabled = flag_on;
-            }
             if name.eq_ignore_ascii_case("MultiPV")
                 && let Ok(v) = value.parse::<usize>()
             {
@@ -474,12 +452,6 @@ mod tests {
     fn should_toggle_experimental_heuristics() {
         let mut client = UciClient::new();
         for name in [
-            "CFSS_Enabled",
-            "RAS_Enabled",
-            "BMO_Enabled",
-            "TCE_Enabled",
-            "SPS_Enabled",
-            "DAD_Enabled",
             "Extension_Cap_Enabled",
             "CPI_Enabled",
             "State_Enabled",
@@ -493,12 +465,6 @@ mod tests {
         }
         {
             let state = client.search_state.lock().unwrap();
-            assert!(!state.params.cfss_enabled);
-            assert!(!state.params.ras_enabled);
-            assert!(!state.params.bmo_enabled);
-            assert!(!state.params.tce_enabled);
-            assert!(!state.params.sps_enabled);
-            assert!(!state.params.dad_enabled);
             assert!(!state.params.extension_cap_enabled);
             assert!(!state.params.cpi_enabled);
             assert!(!state.params.state_enabled);
@@ -508,8 +474,6 @@ mod tests {
             assert!(!state.params.conversion_enabled);
             assert!(!state.params.learned_enabled);
         }
-        client.run_setoption(&["name", "CFSS_Enabled", "value", "1"]);
-        assert!(client.search_state.lock().unwrap().params.cfss_enabled);
         client.run_setoption(&["name", "Extension_Cap", "value", "1"]);
         assert!(
             client
@@ -528,16 +492,6 @@ mod tests {
                 .params
                 .extension_cap_enabled
         );
-    }
-
-    #[test]
-    fn should_toggle_feature_flags_and_thresholds() {
-        let mut client = UciClient::new();
-        client.run_setoption(&["name", "PSM_Enabled", "value", "true"]);
-        {
-            let state = client.search_state.lock().unwrap();
-            assert!(state.params.psm_enabled);
-        }
     }
 
     #[test]

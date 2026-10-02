@@ -3,6 +3,10 @@ name = "whale"
 version = "0.1.0"
 edition = "2024"
 
+[lib]
+name = "whale"
+crate-type = ["rlib", "cdylib", "staticlib"]
+
 [dependencies]
 bulletformat = "1.8.0"
 bullet_lib = { git = "https://github.com/jw1912/bullet", rev = "d372d487aedfeb8bdc256b9f694dbcd41016bf82", package = "bullet_lib", optional = true }

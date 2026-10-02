@@ -1,4 +1,4 @@
-.PHONY: all clean coverage coverage-open coverage-release coverage-release-open mutants quality install-deps setup-hooks
+.PHONY: all clean coverage coverage-open coverage-release coverage-release-open mutants quality install-deps setup-hooks ffi go-match cpp-check c-check
 
 # Detect operating system to handle executable suffixes correctly (.exe on Windows)
 ifeq ($(OS),Windows_NT)
@@ -56,3 +56,18 @@ quality:
 	RUST_MIN_STACK=16777216 cargo test --lib
 	RUST_MIN_STACK=16777216 cargo test --tests --release
 	RUST_MIN_STACK=16777216 cargo llvm-cov --lib --html --fail-under-lines 90
+
+ffi:
+	cargo build --release
+	test -f target/release/libwhale.so
+	test -f target/release/libwhale.a
+
+c-check:
+	gcc -fsyntax-only -Wall -Wextra csrc/whale_tb.c
+	gcc -fsyntax-only -Wall -Wextra csrc/abi_smoke.c
+
+cpp-check:
+	g++ -fsyntax-only -std=c++17 -Wall cpp/uci_probe.cpp
+
+go-match:
+	cd go/whale-match && go vet ./... && go build -o whale-match .

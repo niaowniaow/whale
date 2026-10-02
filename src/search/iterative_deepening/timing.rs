@@ -42,25 +42,11 @@ pub(super) fn should_stop(
     search_state.best_move_changes = 0;
     let best_move_instability = (1.0 + 0.35 * (tot_best_move_changes as f64)).min(1.6);
 
-    let disagreement = (prev_score as i32 - current_score as i32).abs();
-    let dad_time_factor = if current_depth >= 6 && search_state.params.dad_enabled {
-        if disagreement > 60 {
-            1.25
-        } else if disagreement < 15 {
-            0.85
-        } else {
-            1.0
-        }
-    } else {
-        1.0
-    };
-
     let mut total_time = (search_state.opt_time as f64)
         * falling_eval
         * reduction
         * best_move_instability
         * high_best_move_effort
-        * dad_time_factor
         * aprm_boost;
 
     if legal_root_moves <= 1 {

@@ -10,7 +10,7 @@ use crate::search::move_picker::MovePicker;
 use crate::search::pv_table::PvTable;
 use crate::search::search_state::SearchState;
 use crate::search::{
-    cfss, counterplay, draw, ghi, gtp, iir, lmr, nmp, psm, quiescence, razoring, tce,
+    counterplay, draw, ghi, iir, lmr, nmp, quiescence, razoring,
 };
 use std::sync::atomic::{AtomicBool, Ordering};
 

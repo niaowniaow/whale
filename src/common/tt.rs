@@ -402,11 +402,7 @@ impl TranspositionTable {
         best_move: Move,
         entry_type: TranspositionEntryType,
     ) {
-        let raw_eval = match self.probe(hash) {
-            Some(e) => e.eval,
-            None => score,
-        };
-        self.submit_entry_with_eval(hash, score, raw_eval, depth, best_move, entry_type);
+        self.submit_inner(hash, score, None, depth, best_move, entry_type);
     }
 
     pub fn submit_entry_with_eval(
@@ -414,6 +410,19 @@ impl TranspositionTable {
         hash: u64,
         score: i16,
         raw_eval: i16,
+        depth: u8,
+        best_move: Move,
+        entry_type: TranspositionEntryType,
+    ) {
+        self.submit_inner(hash, score, Some(raw_eval), depth, best_move, entry_type);
+    }
+
+    #[inline(always)]
+    fn submit_inner(
+        &self,
+        hash: u64,
+        score: i16,
+        raw_eval_opt: Option<i16>,
         depth: u8,
         mut best_move: Move,
         entry_type: TranspositionEntryType,
@@ -441,8 +450,9 @@ impl TranspositionTable {
                             && existing.entry_type != TranspositionEntryType::Exact);
 
                     if should_replace {
+                        let eff_eval = raw_eval_opt.unwrap_or(existing.eval);
                         let packed =
-                            pack_entry(score, raw_eval, depth, entry_type, cur_gen, best_move);
+                            pack_entry(score, eff_eval, depth, entry_type, cur_gen, best_move);
                         entry.data.store(packed, Ordering::Relaxed);
                         entry.key.store(hash, Ordering::Relaxed);
                     } else if existing.best_move == Move::NO_MOVE && best_move != Move::NO_MOVE {
@@ -482,7 +492,8 @@ impl TranspositionTable {
             }
         }
 
-        let packed = pack_entry(score, raw_eval, depth, entry_type, cur_gen, best_move);
+        let eff_new_eval = raw_eval_opt.unwrap_or(score);
+        let packed = pack_entry(score, eff_new_eval, depth, entry_type, cur_gen, best_move);
         let target = &cluster.entries[replace_idx];
         target.key.store(0, Ordering::Relaxed);
         target.data.store(packed, Ordering::Release);

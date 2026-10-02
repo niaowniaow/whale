@@ -18,14 +18,6 @@ pub struct SearchParameters {
     pub lmr_divisor: [i32; 16],
     pub history_weight_mult: i32,
     pub history_weight_max: i32,
-    pub psm_enabled: bool,
-
-    pub cfss_enabled: bool,
-    pub ras_enabled: bool,
-    pub bmo_enabled: bool,
-    pub tce_enabled: bool,
-    pub sps_enabled: bool,
-    pub dad_enabled: bool,
     pub extension_cap_enabled: bool,
 
     pub razor_enabled: bool,
@@ -65,13 +57,6 @@ impl Default for SearchParameters {
             ],
             history_weight_mult: 2,
             history_weight_max: 16,
-            psm_enabled: true,
-            cfss_enabled: true,
-            ras_enabled: true,
-            bmo_enabled: true,
-            tce_enabled: true,
-            sps_enabled: true,
-            dad_enabled: true,
             extension_cap_enabled: true,
             razor_enabled: true,
             razor_margin: 350,
@@ -131,11 +116,6 @@ pub struct SearchState {
 
     pub lmr_table: crate::search::lmr::LmrTable,
     pub correction_history: crate::search::correction_history::CorrectionHistory,
-    pub bmo: crate::search::bmo::BanditMoveOrdering,
-    pub ras: crate::search::ras::RuntimeAnnealer,
-    pub persona: crate::search::sps::SearchPersona,
-    pub psm_stack: Box<crate::search::psm::PsmStack>,
-
     pub multipv: usize,
 
     pub multipv_lines: Vec<crate::search::multipv::MultipvLine>,
@@ -230,10 +210,6 @@ impl SearchState {
             extension_streak: Box::new([0u8; MAX_PLY]),
             lmr_table,
             correction_history: crate::search::correction_history::CorrectionHistory::new(),
-            bmo: crate::search::bmo::BanditMoveOrdering::new(),
-            ras: crate::search::ras::RuntimeAnnealer::new(),
-            persona: crate::search::sps::SearchPersona::Standard,
-            psm_stack: Box::new(crate::search::psm::PsmStack::new()),
             multipv: 1,
             multipv_lines: Vec::new(),
             pressure_state: crate::search::pressure::PressureState::default(),
@@ -271,15 +247,9 @@ impl SearchState {
         }
     }
 
-    pub fn clone_for_worker(&self, thread_id: usize) -> Self {
-        let persona = if self.params.sps_enabled {
-            crate::search::sps::persona_for_thread(thread_id)
-        } else {
-            crate::search::sps::SearchPersona::Standard
-        };
-        let mut params = self.params.clone();
-        let mut lmr_table = self.lmr_table.clone();
-        crate::search::sps::apply_persona(persona, &mut params, &mut lmr_table);
+    pub fn clone_for_worker(&self, _thread_id: usize) -> Self {
+        let params = self.params.clone();
+        let lmr_table = self.lmr_table.clone();
         Self {
             params,
             opt_time: self.opt_time,
@@ -312,11 +282,6 @@ impl SearchState {
             extension_streak: Box::new([0u8; MAX_PLY]),
             lmr_table,
             correction_history: crate::search::correction_history::CorrectionHistory::new(),
-            bmo: self.bmo.clone(),
-            ras: crate::search::ras::RuntimeAnnealer::new(),
-            persona,
-            psm_stack: Box::new(crate::search::psm::PsmStack::new()),
-
             multipv: 1,
             multipv_lines: Vec::new(),
             pressure_state: crate::search::pressure::PressureState::default(),
@@ -379,8 +344,6 @@ impl SearchState {
         *self.eval_stack = [i16::MIN; MAX_PLY];
         *self.reduction_stack = [0u8; MAX_PLY];
         *self.extension_streak = [0u8; MAX_PLY];
-        self.bmo.reset();
-        self.psm_stack.reset();
     }
 
     pub fn tt_store_allowed(&self, ply: u8) -> bool {
@@ -416,33 +379,20 @@ impl Default for SearchState {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::search::sps::SearchPersona;
 
     #[test]
-    fn clone_for_worker_assigns_personas_per_thread() {
+    fn clone_for_worker_keeps_params_uniform() {
         let primary = SearchState::new();
 
-        let w0 = primary.clone_for_worker(0);
-        assert_eq!(w0.persona, SearchPersona::Standard);
-        assert_eq!(
-            w0.params.futility_margin_mult,
-            primary.params.futility_margin_mult
-        );
-
-        let w1 = primary.clone_for_worker(1);
-        assert_eq!(w1.persona, SearchPersona::Tactical);
-        assert_eq!(w1.params.futility_margin_mult, 160);
-        assert_eq!(w1.params.probcut_margin, 140);
-
-        let w2 = primary.clone_for_worker(2);
-        assert_eq!(w2.persona, SearchPersona::Solid);
-        assert_eq!(w2.params.nmp_depth_div, 2);
-
-        let w3 = primary.clone_for_worker(3);
-        assert_eq!(w3.persona, SearchPersona::Aggressive);
-        assert_eq!(w3.params.futility_margin_mult, 140);
-
-        assert_eq!(primary.clone_for_worker(4).persona, SearchPersona::Standard);
+        for thread_id in 0..4 {
+            let w = primary.clone_for_worker(thread_id);
+            assert_eq!(
+                w.params.futility_margin_mult,
+                primary.params.futility_margin_mult
+            );
+            assert_eq!(w.params.probcut_margin, primary.params.probcut_margin);
+            assert_eq!(w.params.nmp_depth_div, primary.params.nmp_depth_div);
+        }
     }
 
     #[test]
@@ -475,9 +425,7 @@ mod tests {
             assert!(Arc::ptr_eq(&worker.tt, &primary.tt));
 
             assert_eq!(worker.optimism, [12, -12]);
-            if worker.persona == SearchPersona::Standard {
-                assert_eq!(worker.params.futility_margin_mult, 111);
-            }
+            assert_eq!(worker.params.futility_margin_mult, 111);
             assert_eq!(
                 worker.params.extension_cap_enabled,
                 primary.params.extension_cap_enabled

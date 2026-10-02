@@ -380,12 +380,13 @@ pub fn refresh_perspective(
     accs: &mut Sfnn16Accs,
 ) {
     let p = perspective as usize;
-    let mut feats = Vec::new();
-    append_halfka(pos, perspective, &mut feats);
+    let mut buf = [0usize; 32];
+    let len = super::position::append_halfka_stack(pos, perspective, &mut buf);
+    let feats = &buf[..len];
     let slot = &mut accs.halfka[p];
     slot.copy_from_slice(&nets.net.transformer.bias);
     let mut ps = [0i32; N_BUCKETS];
-    scatter_halfka(&nets.net.transformer, L1, &feats, slot, &mut ps, 1);
+    scatter_halfka(&nets.net.transformer, L1, feats, slot, &mut ps, 1);
     accs.psqt[p] = ps;
 }
 

@@ -12,8 +12,6 @@ pub struct SearchContext<'a> {
     pub excluded_move: Option<Move>,
 
     pub cut_node: bool,
-    pub(super) gtp_graph: gtp::GtpTreeGraph,
-    pub(super) gtp_parent: Option<usize>,
     pub pv_table: &'a mut PvTable,
     pub cancellation_token: &'a AtomicBool,
     pub search_state: &'a mut SearchState,

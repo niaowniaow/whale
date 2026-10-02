@@ -5,7 +5,6 @@ use crate::common::moves::Move;
 use crate::common::piece::Piece;
 use crate::common::tt::{self, TranspositionEntryType};
 use crate::eval::{evaluate_qsearch, evaluate_with_optimism};
-use crate::search::bmo::BanditArm;
 use crate::search::draw;
 use crate::search::move_picker::MovePicker;
 use crate::search::search_state::SearchState;
@@ -150,14 +149,7 @@ pub fn search(
     let mut move_picker = if !in_check {
         MovePicker::new_qsearch(ply as usize)
     } else {
-        MovePicker::new(
-            None,
-            None,
-            None,
-            ply as usize,
-            None,
-            BanditArm::CapturesFirst,
-        )
+        MovePicker::new(None, None, None, ply as usize, None)
     };
 
     let mut has_legal_moves = false;

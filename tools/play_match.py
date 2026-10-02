@@ -1,11 +1,24 @@
+import os
 import subprocess
 import time
 import sys
 import chess
 
+def resolve_whale():
+    override = os.environ.get("WHALE_ENGINE")
+    if override:
+        return override
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    unix = os.path.join(root, "target", "release", "whale")
+    if os.path.exists(unix):
+        return unix
+    return os.path.join(root, "target", "release", "whale.exe")
+
+WHALE_BIN = resolve_whale()
+
 def start_engine(eval_file):
     proc = subprocess.Popen(
-        [r".\target\release\whale.exe"],
+        [WHALE_BIN],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.DEVNULL,

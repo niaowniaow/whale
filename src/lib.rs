@@ -2,6 +2,7 @@ pub mod bitboard;
 pub mod board;
 pub mod common;
 pub mod eval;
+pub mod ffi;
 pub mod lab;
 pub mod opening;
 pub mod search;

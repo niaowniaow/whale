@@ -116,6 +116,44 @@ pub fn append_halfka(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>
         }
     }
 }
+
+#[inline(always)]
+pub fn append_halfka_stack(
+    pos: &SfnnPosition,
+    perspective: Side,
+    out: &mut [usize; 32],
+) -> usize {
+    let own_king = pos.pieces[Piece::King as usize]
+        & if perspective == Side::White {
+            pos.white
+        } else {
+            pos.black
+        };
+    if own_king == 0 {
+        return 0;
+    }
+    let ksq = pos.king_square(perspective);
+    let mut bb = pos.occupied();
+    let mut len = 0usize;
+    while bb != 0 {
+        let s = bb.trailing_zeros() as usize;
+        bb &= bb - 1;
+        let is_white = (pos.white >> s) & 1 == 1;
+        let side = if is_white { Side::White } else { Side::Black };
+        let pt = pos.mapping[s] as usize;
+        if pt > 5 {
+            continue;
+        }
+        let piece = Piece::ALL[pt];
+        if let Some(idx) = halfka_index(perspective, side, piece, s, ksq) {
+            if len < 32 {
+                out[len] = idx;
+                len += 1;
+            }
+        }
+    }
+    len
+}
 pub(super) fn kings_present(pos: &SfnnPosition) -> bool {
     (pos.pieces[Piece::King as usize] & pos.white) != 0
         && (pos.pieces[Piece::King as usize] & pos.black) != 0

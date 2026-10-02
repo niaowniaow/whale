@@ -142,13 +142,6 @@ impl UciClient {
         cli::write_line("option name LMR_Base type spin default 65 min 10 max 150");
         cli::write_line("option name LMR_Div type spin default 215 min 100 max 350");
         cli::write_line("option name History_Weight type spin default 2 min 1 max 4");
-        cli::write_line("option name PSM_Enabled type check default true");
-        cli::write_line("option name CFSS_Enabled type check default true");
-        cli::write_line("option name RAS_Enabled type check default true");
-        cli::write_line("option name BMO_Enabled type check default true");
-        cli::write_line("option name TCE_Enabled type check default true");
-        cli::write_line("option name SPS_Enabled type check default true");
-        cli::write_line("option name DAD_Enabled type check default true");
         cli::write_line("option name Extension_Cap_Enabled type check default true");
         cli::write_line("option name MultiPV type spin default 1 min 1 max 8");
         cli::write_line("option name CPI_Enabled type check default true");
