@@ -41,17 +41,17 @@ fn resolve_move(board: &mut BoardState, uci: &str) -> Option<Move> {
     let mut list = MoveList::new();
     board.generate_moves(&mut list);
     for m in list.iter() {
-        if m.mv.source == parsed.source && m.mv.target == parsed.target {
-            if parsed.move_type == MoveType::Quiet
-                || (m.mv.move_type.value() & !8) == parsed.move_type.value()
-            {
-                let cand = m.mv;
-                board.make_move(cand);
-                let bad = board.is_in_check(board.side_to_move.other());
-                board.unmake_move(cand);
-                if !bad {
-                    return Some(cand);
-                }
+        if m.mv.source == parsed.source
+            && m.mv.target == parsed.target
+            && (parsed.move_type == MoveType::Quiet
+                || (m.mv.move_type.value() & !8) == parsed.move_type.value())
+        {
+            let cand = m.mv;
+            board.make_move(cand);
+            let bad = board.is_in_check(board.side_to_move.other());
+            board.unmake_move(cand);
+            if !bad {
+                return Some(cand);
             }
         }
     }
@@ -83,6 +83,7 @@ pub extern "C" fn whale_create() -> *mut WhaleHandle {
 }
 
 #[unsafe(no_mangle)]
+#[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn whale_destroy(h: *mut WhaleHandle) {
     if h.is_null() {
         return;
@@ -132,6 +133,7 @@ pub extern "C" fn whale_push_uci(h: *mut WhaleHandle, uci: *const c_char) -> c_i
 }
 
 #[unsafe(no_mangle)]
+#[allow(clippy::missing_safety_doc)]
 pub unsafe extern "C" fn whale_go_depth(
     h: *mut WhaleHandle,
     depth: c_uchar,
