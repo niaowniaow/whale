@@ -1,6 +1,6 @@
-pub use crate::root::attack;
 pub use crate::endgame::conversion;
 pub use crate::opportunity::concession;
+pub use crate::root::attack;
 pub mod correction_history;
 pub use crate::world::counterplay;
 pub mod draw;

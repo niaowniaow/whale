@@ -967,31 +967,8 @@ fn cancelled_helpers_bail_out_deterministically() {
     let nt = NodeThreats::compute(&board);
     board.make_move(e2e4);
     let sm = search_move(
-        &mut board,
-        8,
-        0,
-        -50,
-        50,
-        false,
-        e2e4,
-        false,
-        false,
-        false,
-        false,
-        true,
-        true,
-        0,
-        10,
-        0,
-        0,
-        -1000,
-        None,
-        false,
-        None,
-        true,
-        5,
-        &nt,
-        &mut ctx,
+        &mut board, 8, 0, -50, 50, false, e2e4, false, false, false, false, true, true, 0, 10, 0,
+        0, -1000, None, false, None, true, 5, &nt, &mut ctx,
     );
     assert!(matches!(sm, MoveOut::Cancelled));
     assert_eq!(board, before);
@@ -1052,31 +1029,8 @@ fn lmr_adjust_arms_covered() {
         let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
         board.make_move(e2e4);
         search_move(
-            &mut board,
-            8,
-            0,
-            -50,
-            50,
-            false,
-            e2e4,
-            false,
-            false,
-            false,
-            false,
-            true,
-            true,
-            0,
-            10,
-            0,
-            0,
-            -1000,
-            None,
-            false,
-            None,
-            true,
-            5,
-            &nt,
-            &mut ctx,
+            &mut board, 8, 0, -50, 50, false, e2e4, false, false, false, false, true, true, 0, 10,
+            0, 0, -1000, None, false, None, true, 5, &nt, &mut ctx,
         )
     };
     assert!(matches!(out, MoveOut::Cancelled));

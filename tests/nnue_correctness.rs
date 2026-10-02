@@ -1,7 +1,9 @@
 use whale::board::state::BoardState;
 use whale::common::helpers::{ADVANCED_MOVE_FEN, ENDGAME_FEN, KIWI_PETE_FEN, STARTING_FEN};
 use whale::common::move_list::MoveList;
-use whale::eval::nnue::v16::{SfnnPosition, ensure_sfnn16_fresh, evaluate_board, evaluate_board_detailed};
+use whale::eval::nnue::v16::{
+    SfnnPosition, ensure_sfnn16_fresh, evaluate_board, evaluate_board_detailed,
+};
 
 fn check_fen(fen: &str) {
     let mut board = BoardState::parse_fen(fen);

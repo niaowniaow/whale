@@ -4,7 +4,7 @@ use whale::common::move_list::MoveList;
 use whale::common::move_type::MoveType;
 use whale::common::moves::Move;
 use whale::common::square::Square;
-use whale::common::tt::{TranspositionTable, TranspositionEntryType};
+use whale::common::tt::{TranspositionEntryType, TranspositionTable};
 
 fn is_legal(board: &mut BoardState, m: Move) -> bool {
     let mut ml = MoveList::new();

@@ -118,11 +118,7 @@ pub fn append_halfka(pos: &SfnnPosition, perspective: Side, out: &mut Vec<usize>
 }
 
 #[inline(always)]
-pub fn append_halfka_stack(
-    pos: &SfnnPosition,
-    perspective: Side,
-    out: &mut [usize; 32],
-) -> usize {
+pub fn append_halfka_stack(pos: &SfnnPosition, perspective: Side, out: &mut [usize; 32]) -> usize {
     let own_king = pos.pieces[Piece::King as usize]
         & if perspective == Side::White {
             pos.white

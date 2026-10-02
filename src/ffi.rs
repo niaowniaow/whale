@@ -1,7 +1,7 @@
 use std::ffi::CStr;
 use std::os::raw::{c_char, c_int, c_uchar};
-use std::sync::atomic::AtomicBool;
 use std::sync::OnceLock;
+use std::sync::atomic::AtomicBool;
 
 use crate::board::state::BoardState;
 use crate::common::move_list::MoveList;
@@ -154,7 +154,9 @@ pub extern "C" fn whale_go_depth(
     let cancel = AtomicBool::new(false);
     let mut debug = false;
     let d = depth.clamp(1, 64);
-    let best = x.board.find_best_move(d, &cancel, &mut debug, &mut x.state, 1);
+    let best = x
+        .board
+        .find_best_move(d, &cancel, &mut debug, &mut x.state, 1);
     if best == Move::NO_MOVE {
         return -2;
     }
