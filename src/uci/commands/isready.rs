@@ -2,6 +2,9 @@ use crate::uci::{UciClient, cli};
 
 impl UciClient {
     pub(crate) fn run_isready(&mut self, _parameters: &[&str]) {
+        if !crate::eval::nnue::v16::maintenance_active() {
+            let _ = crate::eval::nnue::v16::try_load_default();
+        }
         if !self.is_ready {
             self.is_ready = true;
         }

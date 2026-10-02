@@ -1,8 +1,8 @@
 use super::context::SearchContext;
 use super::core::{search, search_internal};
 use super::early::{
-    apply_iir, coarse_pass, hindsight_adjust, null_move_search, probcut_search, rfp_gate,
-    singular_search, tablebase_probe, tt_cutoff,
+    apply_iir, hindsight_adjust, null_move_search, probcut_search, rfp_gate, singular_search,
+    tablebase_probe, tt_cutoff,
 };
 use super::history::beta_cutoff;
 use super::moves::{MoveOut, extension_depth, finish_node, move_scores, search_move};
@@ -407,7 +407,7 @@ fn mate_against_returns_mated_score() {
 }
 
 #[test]
-fn coarse_pass_runs_on_deep_stalemate_both_arms() {
+fn deep_stalemate_search_stable() {
     let (lo_score, lo_nodes) = run_search(STALEMATE, 7, 0, 1);
     assert!(lo_score.abs() <= 2, "coarse lo {lo_score}");
     assert!(lo_nodes > 0);
@@ -435,8 +435,6 @@ fn run_search_at_ply(fen: &str, depth: u8, ply: u8, alpha: i16, beta: i16) -> (i
             previous_pv: &[],
             excluded_move: None,
             cut_node: false,
-            gtp_graph: gtp::GtpTreeGraph::new(),
-            gtp_parent: None,
             pv_table: &mut pv_table,
             cancellation_token: &cancel,
             search_state: &mut state,
@@ -460,12 +458,11 @@ fn max_ply_delegates_to_quiescence() {
 }
 
 #[test]
-fn psm_disabled_takes_zero_delta() {
+fn depth_one_search_stable() {
     let mut board = BoardState::parse_fen(STARTING_FEN);
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.psm_enabled = false;
     let score = search(
         &mut board,
         1,
@@ -538,7 +535,7 @@ fn probcut_improving_and_capture_sort_hit() {
 }
 
 #[test]
-fn probcut_verify_with_depth_six_hits_tce() {
+fn probcut_verify_with_depth_six() {
     let _eval_guard = crate::eval::nnue::v16::EVAL_TEST_LOCK.lock().unwrap();
     crate::eval::nnue::v16::unload_nets();
     let (alpha, beta) = probcut_window(PROBCUT_FEN, 6, 300);
@@ -565,7 +562,7 @@ fn probcut_verify_with_depth_six_hits_tce() {
 }
 
 #[test]
-fn coarse_pass_updates_tt_best() {
+fn deep_search_updates_tt() {
     let (score, nodes) = run_search_at_ply("7k/8/8/8/3p4/8/3R4/K7 w - - 0 1", 7, 60, 0, 1);
     assert!(score.abs() < constants::MAX_CENTIPAWN_EVAL);
     assert!(nodes > 0);
@@ -600,8 +597,6 @@ fn quiet_history_negative_prunes_late_quiets() {
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.alp_threshold = 101;
-    state.params.gtp_threshold = 0;
     for row in state.move_ordering.history_moves.iter_mut() {
         for s in row.iter_mut() {
             *s = -1000;
@@ -636,15 +631,12 @@ fn quiet_history_negative_prunes_late_quiets() {
 }
 
 #[test]
-fn psm_sibling_prune_triggers() {
+fn fail_low_search_stable() {
     let (alpha, beta) = fail_low_window(PAWN_KING_FEN, 4, 200);
     let mut board = BoardState::parse_fen(PAWN_KING_FEN);
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.alp_threshold = 101;
-    state.psm_stack.stack[0].consecutive_fail_lows = 5;
-    state.psm_stack.stack[0].hidden = [-256; 128];
     let score = search(
         &mut board,
         4,
@@ -660,14 +652,12 @@ fn psm_sibling_prune_triggers() {
 }
 
 #[test]
-fn gtp_subtree_prune_triggers() {
+fn fail_low_subtree_search_stable() {
     let (alpha, beta) = fail_low_window(PAWN_KING_FEN, 4, 200);
     let mut board = BoardState::parse_fen(PAWN_KING_FEN);
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.alp_threshold = 101;
-    state.params.gtp_threshold = 100;
     let score = search(
         &mut board,
         4,
@@ -689,7 +679,6 @@ fn late_history_prune_triggers_on_startpos() {
     let cancel = AtomicBool::new(false);
     let mut pv_table = PvTable::new();
     let mut state = SearchState::new();
-    state.params.alp_threshold = 101;
     for row in state.move_ordering.history_moves.iter_mut() {
         for s in row.iter_mut() {
             *s = -10000;
@@ -806,8 +795,6 @@ fn test_context<'a>(
         previous_pv: &[],
         excluded_move: None,
         cut_node: false,
-        gtp_graph: gtp::GtpTreeGraph::new(),
-        gtp_parent: None,
         pv_table,
         cancellation_token: cancel,
         search_state: state,
@@ -897,10 +884,6 @@ fn early_exit_guards_cover_all_arms() {
     let tb = tablebase_probe(&mut board, 0, 8, -10, 10, -32000, false, 0, &mut ctx);
     assert!(tb.score.is_none());
     assert_eq!((tb.alpha, tb.best), (-10, -32000));
-    let coarse = coarse_pass(&mut board, 4, 0, -10, 10, true, false, None, None, &mut ctx);
-    assert!(!coarse.cancelled);
-    assert_eq!(coarse.depth, 4);
-    assert!(coarse.tt_best.is_none());
     assert_eq!(apply_iir(10, true, false, true, false, false), 10);
 
     let mut check_board = BoardState::parse_fen(IN_CHECK_ESCAPE);
@@ -980,43 +963,12 @@ fn cancelled_helpers_bail_out_deterministically() {
     assert_eq!(nul, Some(0));
     assert_eq!(null_board, BoardState::parse_fen(material));
 
-    let coarse = coarse_pass(
-        &mut board, 10, 0, -10, 10, false, false, None, None, &mut ctx,
-    );
-    assert!(coarse.cancelled);
-
     let e2e4 = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
     let nt = NodeThreats::compute(&board);
     board.make_move(e2e4);
     let sm = search_move(
-        &mut board,
-        8,
-        0,
-        -50,
-        50,
-        false,
-        e2e4,
-        false,
-        false,
-        false,
-        false,
-        true,
-        true,
-        0,
-        10,
-        0,
-        0,
-        -1000,
-        None,
-        false,
-        None,
-        true,
-        ctx.gtp_graph,
-        0,
-        5,
-        0,
-        &nt,
-        &mut ctx,
+        &mut board, 8, 0, -50, 50, false, e2e4, false, false, false, false, true, true, 0, 10, 0,
+        0, -1000, None, false, None, true, 5, &nt, &mut ctx,
     );
     assert!(matches!(sm, MoveOut::Cancelled));
     assert_eq!(board, before);
@@ -1038,7 +990,6 @@ fn cancelled_helpers_bail_out_deterministically() {
         &[],
         0,
         false,
-        crate::search::bmo::BanditArm::CapturesFirst,
         &mut ctx,
     );
     assert_eq!(fin, 0);
@@ -1078,34 +1029,8 @@ fn lmr_adjust_arms_covered() {
         let mut ctx = test_context(&cancel, &mut pv_table, &mut state);
         board.make_move(e2e4);
         search_move(
-            &mut board,
-            8,
-            0,
-            -50,
-            50,
-            false,
-            e2e4,
-            false,
-            false,
-            false,
-            false,
-            true,
-            true,
-            0,
-            10,
-            0,
-            0,
-            -1000,
-            None,
-            false,
-            None,
-            true,
-            ctx.gtp_graph,
-            0,
-            5,
-            0,
-            &nt,
-            &mut ctx,
+            &mut board, 8, 0, -50, 50, false, e2e4, false, false, false, false, true, true, 0, 10,
+            0, 0, -1000, None, false, None, true, 5, &nt, &mut ctx,
         )
     };
     assert!(matches!(out, MoveOut::Cancelled));
@@ -1139,10 +1064,7 @@ fn lmr_adjust_arms_covered() {
         false,
         None,
         true,
-        ctx.gtp_graph,
-        0,
         5,
-        0,
         &check_nt,
         &mut ctx,
     );
@@ -1153,12 +1075,9 @@ fn lmr_adjust_arms_covered() {
 #[test]
 fn extension_max_ply_streak_capped() {
     let mut state = SearchState::new();
-    let mut board = BoardState::parse_fen(STARTING_FEN);
     let e2e4 = Move::new(Square::E2, Square::E4, MoveType::DoublePush);
     let max_ply = constants::MAX_PLY as u8;
-    let (depth, extension) = extension_depth(
-        &mut board, &mut state, e2e4, None, 0, 8, false, false, false, max_ply, None,
-    );
+    let (depth, extension) = extension_depth(&mut state, e2e4, None, 0, 8, false, false, max_ply);
     assert_eq!((depth, extension), (8, 0));
 }
 

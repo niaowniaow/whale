@@ -2,7 +2,7 @@ use crate::common::constants::{MAX_CENTIPAWN_EVAL, MAX_PLY};
 use crate::common::move_type::MoveType;
 use crate::common::moves::Move;
 use crate::common::square::Square;
-use std::sync::atomic::{AtomicU8, AtomicU16, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 #[repr(u8)]
@@ -48,7 +48,6 @@ pub const CLUSTER_SIZE: usize = 4;
 pub struct AtomicEntry {
     pub key: AtomicU64,
     pub data: AtomicU64,
-    pub eval: AtomicU16,
 }
 
 impl Default for AtomicEntry {
@@ -56,54 +55,32 @@ impl Default for AtomicEntry {
         Self {
             key: AtomicU64::new(0),
             data: AtomicU64::new(0),
-            eval: AtomicU16::new(0),
         }
     }
 }
 
 #[inline(always)]
-fn pack_entry(
-    score: i16,
-    depth: u8,
-    entry_type: TranspositionEntryType,
-    generation: u8,
-    m: Move,
-) -> u64 {
-    let s = (score as u16) as u64;
-    let d = (depth as u64) << 16;
-    let et = (entry_type as u8 as u64) << 24;
-    let generation_bits = (generation as u64) << 32;
-    let src = (m.source as u8 as u64) << 40;
-    let tgt = (m.target as u8 as u64) << 48;
-    let mt = (m.move_type.value() as u64) << 56;
-    s | d | et | generation_bits | src | tgt | mt
+fn encode_move_type(mt: MoveType) -> u8 {
+    match mt {
+        MoveType::Quiet => 0,
+        MoveType::Capture => 1,
+        MoveType::EnPassant => 2,
+        MoveType::DoublePush => 3,
+        MoveType::KnightPromotion => 4,
+        MoveType::BishopPromotion => 5,
+        MoveType::RookPromotion => 6,
+        MoveType::QueenPromotion => 7,
+        MoveType::KnightPromotionCapture => 8,
+        MoveType::BishopPromotionCapture => 9,
+        MoveType::RookPromotionCapture => 10,
+        MoveType::QueenPromotionCapture => 11,
+        MoveType::Castle => 12,
+    }
 }
 
 #[inline(always)]
-fn unpack_entry(hash: u64, data: u64, eval_value: i16) -> TranspositionTableEntry {
-    let score = (data & 0xFFFF) as u16 as i16;
-    let depth = ((data >> 16) & 0xFF) as u8;
-    let entry_type = match ((data >> 24) & 0xFF) as u8 {
-        1 => TranspositionEntryType::Exact,
-        2 => TranspositionEntryType::Alpha,
-        3 => TranspositionEntryType::Beta,
-        _ => TranspositionEntryType::None,
-    };
-    let generation = ((data >> 32) & 0xFF) as u8;
-    let src_byte = ((data >> 40) & 0xFF) as u8;
-    let tgt_byte = ((data >> 48) & 0xFF) as u8;
-    let mt_byte = ((data >> 56) & 0xFF) as u8;
-    let source = if (src_byte as usize) <= 64 {
-        Square::from(src_byte as usize)
-    } else {
-        Square::NoSquare
-    };
-    let target = if (tgt_byte as usize) <= 64 {
-        Square::from(tgt_byte as usize)
-    } else {
-        Square::NoSquare
-    };
-    let move_type = match mt_byte {
+fn decode_move_type(val: u8) -> MoveType {
+    match val {
         0 => MoveType::Quiet,
         1 => MoveType::Capture,
         2 => MoveType::EnPassant,
@@ -112,18 +89,76 @@ fn unpack_entry(hash: u64, data: u64, eval_value: i16) -> TranspositionTableEntr
         5 => MoveType::BishopPromotion,
         6 => MoveType::RookPromotion,
         7 => MoveType::QueenPromotion,
-        12 => MoveType::KnightPromotionCapture,
-        13 => MoveType::BishopPromotionCapture,
-        14 => MoveType::RookPromotionCapture,
-        15 => MoveType::QueenPromotionCapture,
-        16 => MoveType::Castle,
+        8 => MoveType::KnightPromotionCapture,
+        9 => MoveType::BishopPromotionCapture,
+        10 => MoveType::RookPromotionCapture,
+        11 => MoveType::QueenPromotionCapture,
+        12 => MoveType::Castle,
         _ => MoveType::Quiet,
-    };
-    let best_move = if source == Square::NoSquare && target == Square::NoSquare {
+    }
+}
+
+#[inline(always)]
+fn encode_move(m: Move) -> u16 {
+    if m == Move::NO_MOVE || m.source == Square::NoSquare || m.target == Square::NoSquare {
+        0
+    } else {
+        let src = ((m.source as usize) & 63) as u16;
+        let tgt = ((m.target as usize) & 63) as u16;
+        let mt = (encode_move_type(m.move_type) as u16) & 15;
+        (src | (tgt << 6) | (mt << 12)) + 1
+    }
+}
+
+#[inline(always)]
+fn decode_move(val: u16) -> Move {
+    if val == 0 {
         Move::NO_MOVE
     } else {
-        Move::new(source, target, move_type)
+        let raw = val - 1;
+        let src = (raw & 63) as u8;
+        let tgt = ((raw >> 6) & 63) as u8;
+        let mt = decode_move_type(((raw >> 12) & 15) as u8);
+        Move::new(
+            Square::from_u8_unchecked(src),
+            Square::from_u8_unchecked(tgt),
+            mt,
+        )
+    }
+}
+
+#[inline(always)]
+fn pack_entry(
+    score: i16,
+    eval: i16,
+    depth: u8,
+    entry_type: TranspositionEntryType,
+    generation: u8,
+    m: Move,
+) -> u64 {
+    let s = (score as u16) as u64;
+    let ev = (eval as u16 as u64) << 16;
+    let mv = (encode_move(m) as u64) << 32;
+    let d = (depth as u64) << 48;
+    let et = (entry_type as u8 as u64 & 3) << 56;
+    let generation_bits = ((generation & 0x3F) as u64) << 58;
+    s | ev | mv | d | et | generation_bits
+}
+
+#[inline(always)]
+fn unpack_entry(hash: u64, data: u64) -> TranspositionTableEntry {
+    let score = (data & 0xFFFF) as u16 as i16;
+    let eval = ((data >> 16) & 0xFFFF) as u16 as i16;
+    let mv_bits = ((data >> 32) & 0xFFFF) as u16;
+    let best_move = decode_move(mv_bits);
+    let depth = ((data >> 48) & 0xFF) as u8;
+    let entry_type = match ((data >> 56) & 3) as u8 {
+        1 => TranspositionEntryType::Exact,
+        2 => TranspositionEntryType::Alpha,
+        3 => TranspositionEntryType::Beta,
+        _ => TranspositionEntryType::None,
     };
+    let generation = ((data >> 58) & 0x3F) as u8;
     TranspositionTableEntry {
         hash,
         score,
@@ -131,8 +166,8 @@ fn unpack_entry(hash: u64, data: u64, eval_value: i16) -> TranspositionTableEntr
         depth,
         entry_type,
         generation,
-        eval: eval_value,
-        raw_eval: eval_value,
+        eval,
+        raw_eval: eval,
     }
 }
 
@@ -156,7 +191,7 @@ impl TranspositionTable {
     pub const DEFAULT_CAPACITY: usize = 65536 * 32;
 
     pub fn new(capacity: usize) -> Self {
-        let mut cluster_count = (capacity / 2).max(256);
+        let mut cluster_count = (capacity / CLUSTER_SIZE).max(256);
         if !cluster_count.is_power_of_two() {
             cluster_count = 1 << cluster_count.ilog2();
         }
@@ -182,7 +217,7 @@ impl TranspositionTable {
         Self {
             clusters,
             cluster_count,
-            capacity: cluster_count * 2,
+            capacity: cluster_count * CLUSTER_SIZE,
             generation: AtomicU8::new(0),
         }
     }
@@ -203,7 +238,7 @@ impl TranspositionTable {
         };
 
         self.cluster_count = cluster_count;
-        self.capacity = cluster_count * 2;
+        self.capacity = cluster_count * CLUSTER_SIZE;
         self.clusters = (0..cluster_count).map(|_| Cluster::default()).collect();
     }
 
@@ -221,8 +256,7 @@ impl TranspositionTable {
             for entry in &self.clusters[i].entries {
                 let k = entry.key.load(Ordering::Relaxed);
                 let d = entry.data.load(Ordering::Relaxed);
-                let ev = entry.eval.load(Ordering::Relaxed) as i16;
-                if k != 0 && unpack_entry(k, d, ev).entry_type != TranspositionEntryType::None {
+                if k != 0 && unpack_entry(k, d).entry_type != TranspositionEntryType::None {
                     used += 1;
                 }
             }
@@ -240,7 +274,6 @@ impl TranspositionTable {
             for entry in &cluster.entries {
                 entry.key.store(0, Ordering::Relaxed);
                 entry.data.store(0, Ordering::Relaxed);
-                entry.eval.store(0, Ordering::Relaxed);
             }
         }
     }
@@ -266,8 +299,7 @@ impl TranspositionTable {
             let k = entry.key.load(Ordering::Relaxed);
             if k == hash {
                 let d = entry.data.load(Ordering::Relaxed);
-                let ev = entry.eval.load(Ordering::Relaxed) as i16;
-                let unpacked = unpack_entry(k, d, ev);
+                let unpacked = unpack_entry(k, d);
                 if unpacked.entry_type != TranspositionEntryType::None {
                     return Some(unpacked);
                 }
@@ -370,11 +402,7 @@ impl TranspositionTable {
         best_move: Move,
         entry_type: TranspositionEntryType,
     ) {
-        let raw_eval = match self.probe(hash) {
-            Some(e) => e.eval,
-            None => score,
-        };
-        self.submit_entry_with_eval(hash, score, raw_eval, depth, best_move, entry_type);
+        self.submit_inner(hash, score, None, depth, best_move, entry_type);
     }
 
     pub fn submit_entry_with_eval(
@@ -383,13 +411,25 @@ impl TranspositionTable {
         score: i16,
         raw_eval: i16,
         depth: u8,
+        best_move: Move,
+        entry_type: TranspositionEntryType,
+    ) {
+        self.submit_inner(hash, score, Some(raw_eval), depth, best_move, entry_type);
+    }
+
+    #[inline(always)]
+    fn submit_inner(
+        &self,
+        hash: u64,
+        score: i16,
+        raw_eval_opt: Option<i16>,
+        depth: u8,
         mut best_move: Move,
         entry_type: TranspositionEntryType,
     ) {
         let index = (hash as usize) & (self.cluster_count - 1);
         let cluster = &self.clusters[index];
         let cur_gen = self.generation.load(Ordering::Relaxed);
-        let raw_bits = raw_eval as u16;
 
         for entry in &cluster.entries {
             let k = entry.key.load(Ordering::Acquire);
@@ -398,26 +438,27 @@ impl TranspositionTable {
                 if entry.key.load(Ordering::Acquire) != hash {
                     continue;
                 }
-                let ev = entry.eval.load(Ordering::Acquire) as i16;
-                let existing = unpack_entry(k, d, ev);
+                let existing = unpack_entry(k, d);
                 if existing.entry_type != TranspositionEntryType::None {
                     if best_move == Move::NO_MOVE {
                         best_move = existing.best_move;
                     }
-                    let is_old = existing.generation != cur_gen;
+                    let is_old = (cur_gen & 0x3F) != existing.generation;
                     let should_replace = is_old
                         || depth >= existing.depth
                         || (entry_type == TranspositionEntryType::Exact
                             && existing.entry_type != TranspositionEntryType::Exact);
 
                     if should_replace {
-                        let packed = pack_entry(score, depth, entry_type, cur_gen, best_move);
-                        entry.eval.store(raw_bits, Ordering::Relaxed);
+                        let eff_eval = raw_eval_opt.unwrap_or(existing.eval);
+                        let packed =
+                            pack_entry(score, eff_eval, depth, entry_type, cur_gen, best_move);
                         entry.data.store(packed, Ordering::Relaxed);
                         entry.key.store(hash, Ordering::Relaxed);
                     } else if existing.best_move == Move::NO_MOVE && best_move != Move::NO_MOVE {
                         let packed = pack_entry(
                             existing.score,
+                            existing.eval,
                             existing.depth,
                             existing.entry_type,
                             existing.generation,
@@ -438,13 +479,12 @@ impl TranspositionTable {
         for (i, entry) in cluster.entries.iter().enumerate() {
             let k = entry.key.load(Ordering::Acquire);
             let d = entry.data.load(Ordering::Acquire);
-            let ev = entry.eval.load(Ordering::Acquire) as i16;
-            let existing = unpack_entry(k, d, ev);
+            let existing = unpack_entry(k, d);
             if existing.entry_type == TranspositionEntryType::None {
                 replace_idx = i;
                 break;
             }
-            let age = cur_gen.wrapping_sub(existing.generation) as i32;
+            let age = ((cur_gen & 0x3F).wrapping_sub(existing.generation) & 0x3F) as i32;
             let priority = existing.depth as i32 - 8 * age;
             if priority < lowest_priority {
                 lowest_priority = priority;
@@ -452,10 +492,10 @@ impl TranspositionTable {
             }
         }
 
-        let packed = pack_entry(score, depth, entry_type, cur_gen, best_move);
+        let eff_new_eval = raw_eval_opt.unwrap_or(score);
+        let packed = pack_entry(score, eff_new_eval, depth, entry_type, cur_gen, best_move);
         let target = &cluster.entries[replace_idx];
         target.key.store(0, Ordering::Relaxed);
-        target.eval.store(raw_bits, Ordering::Relaxed);
         target.data.store(packed, Ordering::Release);
         target.key.store(hash, Ordering::Release);
     }
@@ -470,8 +510,7 @@ impl TranspositionTable {
                 if entry.key.load(Ordering::Acquire) != hash {
                     continue;
                 }
-                let ev = entry.eval.load(Ordering::Acquire) as i16;
-                let existing = unpack_entry(k, d, ev);
+                let existing = unpack_entry(k, d);
                 if existing.entry_type == TranspositionEntryType::None {
                     return;
                 }
@@ -481,6 +520,7 @@ impl TranspositionTable {
                 }
                 let packed = pack_entry(
                     existing.score,
+                    existing.eval,
                     reduced,
                     existing.entry_type,
                     existing.generation,
@@ -567,7 +607,7 @@ mod tests {
     #[test]
     fn test_cluster_size_and_alignment() {
         assert_eq!(size_of::<TranspositionTableEntry>(), 24);
-        assert_eq!(size_of::<Cluster>(), 128);
+        assert_eq!(size_of::<Cluster>(), 64);
         assert_eq!(align_of::<Cluster>(), 64);
     }
 
@@ -663,13 +703,13 @@ mod tests {
         assert_eq!(tt.capacity, 1024);
 
         tt.resize(1);
-        assert_eq!(tt.capacity, 16384);
+        assert_eq!(tt.capacity, 65536);
 
         tt.resize(64);
-        assert_eq!(tt.capacity, 1048576);
+        assert_eq!(tt.capacity, 4194304);
 
         tt.resize(128);
-        assert_eq!(tt.capacity, 2097152);
+        assert_eq!(tt.capacity, 8388608);
     }
 
     #[test]
@@ -724,8 +764,8 @@ mod tests {
     #[test]
     fn test_tt_new_mb_tiny_clamps_to_minimum() {
         let tt = TranspositionTable::new_mb(0);
-        assert_eq!(tt.capacity(), 512);
-        assert_eq!(tt.capacity, 512);
+        assert_eq!(tt.capacity(), 1024);
+        assert_eq!(tt.capacity, 1024);
     }
 
     #[test]

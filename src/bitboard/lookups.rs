@@ -1,4 +1,5 @@
 use crate::bitboard::Bitboard;
+#[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
 use crate::bitboard::magics::{BISHOP_MAGICS, ROOK_MAGICS, get_magic_index};
 use crate::common::constants::SQUARES;
 use crate::common::square::Square;
@@ -6,10 +7,12 @@ use crate::common::square::Square;
 include!(concat!(env!("OUT_DIR"), "/lookups_gen.rs"));
 
 #[inline(always)]
+#[allow(dead_code)]
 fn bishop_mask_bits() -> &'static [u32; SQUARES] {
     &BISHOP_MASK_BITS
 }
 #[inline(always)]
+#[allow(dead_code)]
 fn rook_mask_bits() -> &'static [u32; SQUARES] {
     &ROOK_MASK_BITS
 }
@@ -34,30 +37,54 @@ pub fn king_attacks() -> &'static [u64; SQUARES] {
     &KING_ATTACKS
 }
 #[inline(always)]
+#[allow(dead_code)]
 fn bishop_attacks() -> &'static [[u64; 512]; SQUARES] {
     &BISHOP_ATTACKS
 }
 #[inline(always)]
+#[allow(dead_code)]
 fn rook_attacks() -> &'static [[u64; 4096]; SQUARES] {
     &ROOK_ATTACKS
 }
 
 #[inline(always)]
 pub fn get_bishop_attacks_from_table(square: Square, occupancy: Bitboard) -> Bitboard {
-    let sq = square as usize;
-    let bits = bishop_mask_bits()[sq];
-    let mask = bishop_masks()[sq];
-    let index = get_magic_index(Bitboard(occupancy.0 & mask), BISHOP_MAGICS[sq], bits);
-    Bitboard(bishop_attacks()[sq][index])
+    let sq = (square as usize) & 63;
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+    unsafe {
+        use core::arch::x86_64::_pext_u64;
+        let mask = *bishop_masks().get_unchecked(sq);
+        let index = _pext_u64(occupancy.0, mask) as usize;
+        Bitboard(*BISHOP_PEXT_ATTACKS.get_unchecked(sq).get_unchecked(index))
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+    unsafe {
+        let bits = *bishop_mask_bits().get_unchecked(sq);
+        let mask = *bishop_masks().get_unchecked(sq);
+        let magic = *BISHOP_MAGICS.get_unchecked(sq);
+        let index = get_magic_index(Bitboard(occupancy.0 & mask), magic, bits) & 511;
+        Bitboard(*bishop_attacks().get_unchecked(sq).get_unchecked(index))
+    }
 }
 
 #[inline(always)]
 pub fn get_rook_attacks_from_table(square: Square, occupancy: Bitboard) -> Bitboard {
-    let sq = square as usize;
-    let bits = rook_mask_bits()[sq];
-    let mask = rook_masks()[sq];
-    let index = get_magic_index(Bitboard(occupancy.0 & mask), ROOK_MAGICS[sq], bits);
-    Bitboard(rook_attacks()[sq][index])
+    let sq = (square as usize) & 63;
+    #[cfg(all(target_arch = "x86_64", target_feature = "bmi2"))]
+    unsafe {
+        use core::arch::x86_64::_pext_u64;
+        let mask = *rook_masks().get_unchecked(sq);
+        let index = _pext_u64(occupancy.0, mask) as usize;
+        Bitboard(*ROOK_PEXT_ATTACKS.get_unchecked(sq).get_unchecked(index))
+    }
+    #[cfg(not(all(target_arch = "x86_64", target_feature = "bmi2")))]
+    unsafe {
+        let bits = *rook_mask_bits().get_unchecked(sq);
+        let mask = *rook_masks().get_unchecked(sq);
+        let magic = *ROOK_MAGICS.get_unchecked(sq);
+        let index = get_magic_index(Bitboard(occupancy.0 & mask), magic, bits) & 4095;
+        Bitboard(*rook_attacks().get_unchecked(sq).get_unchecked(index))
+    }
 }
 
 #[inline(always)]

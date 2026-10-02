@@ -148,7 +148,16 @@ def main():
     args = ap.parse_args()
 
     with open(args.book) as f:
-        book = [line.strip() for line in f if line.strip()]
+        book = []
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("version https://git-lfs"):
+                continue
+            if line.startswith("oid sha256:") or line.startswith("size "):
+                continue
+            book.append(line)
+    if not book:
+        book = [chess.STARTING_FEN]
     print(f"book: {args.book} ({len(book)} positions)", flush=True)
 
     base_opts = [("Threads", "1"), ("Hash", str(args.hash)), ("UseBook", "false")]

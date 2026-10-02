@@ -155,10 +155,11 @@ fn dtz_to_plies(v: MaybeRounded<Dtz>) -> i32 {
 }
 
 pub fn probe_wdl(board: &BoardState) -> Option<i8> {
-    if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
+    let n = board.occupancy().count_ones() as usize;
+    if n > TB_MAX_PIECES {
         return None;
     }
-    if board.occupancy().count_ones() as usize > probe_limit() as usize {
+    if n > probe_limit() as usize {
         return None;
     }
     let pos = to_shakmaty(board)?;
@@ -171,10 +172,11 @@ pub fn probe_wdl(board: &BoardState) -> Option<i8> {
 }
 
 pub fn probe_dtz_plies(board: &BoardState) -> Option<i32> {
-    if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
+    let n = board.occupancy().count_ones() as usize;
+    if n > TB_MAX_PIECES {
         return None;
     }
-    if board.occupancy().count_ones() as usize > probe_limit() as usize {
+    if n > probe_limit() as usize {
         return None;
     }
     let pos = to_shakmaty(board)?;
@@ -187,10 +189,11 @@ pub fn probe_dtz_plies(board: &BoardState) -> Option<i32> {
 }
 
 pub fn probe_bound(board: &BoardState, ply: u8) -> Option<(i16, TranspositionEntryType)> {
-    if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
+    let n = board.occupancy().count_ones() as usize;
+    if n > TB_MAX_PIECES {
         return None;
     }
-    if board.occupancy().count_ones() as usize > probe_limit() as usize {
+    if n > probe_limit() as usize {
         return None;
     }
     let pos = to_shakmaty(board)?;
@@ -238,10 +241,11 @@ fn fallback_best_move(
 }
 
 pub fn root_move(board: &mut BoardState) -> Option<Move> {
-    if board.occupancy().count_ones() as usize > TB_MAX_PIECES {
+    let n = board.occupancy().count_ones() as usize;
+    if n > TB_MAX_PIECES {
         return None;
     }
-    if board.occupancy().count_ones() as usize > probe_limit() as usize {
+    if n > probe_limit() as usize {
         return None;
     }
     let pos = to_shakmaty(board)?;

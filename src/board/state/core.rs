@@ -84,8 +84,9 @@ impl BoardState {
         if sq >= SQUARES {
             return;
         }
-        self.pieces[piece].set_bit(sq);
-        self.occupancies[side].set_bit(sq);
+        let bit = 1u64 << sq;
+        self.pieces[piece].0 |= bit;
+        self.occupancies[side].0 |= bit;
         self.piece_mapping[sq] = piece;
         self.phase = add_phase(self.phase, piece);
         self.history.invalidate_cache();
@@ -106,15 +107,17 @@ impl BoardState {
             return Piece::None;
         }
 
-        let side = if self.occupancies[Side::White].get_bit(sq) == 1 {
+        let mask = !(1u64 << sq);
+        self.pieces[piece].0 &= mask;
+        let is_white = (self.occupancies[Side::White].0 >> sq) & 1;
+        let side = if is_white != 0 {
+            self.occupancies[Side::White].0 &= mask;
             Side::White
         } else {
+            self.occupancies[Side::Black].0 &= mask;
             Side::Black
         };
 
-        self.pieces[piece].clear_bit(sq);
-        self.occupancies[Side::White].clear_bit(sq);
-        self.occupancies[Side::Black].clear_bit(sq);
         self.piece_mapping[sq] = Piece::None;
         self.phase = remove_phase(self.phase, piece);
         self.history.invalidate_cache();
@@ -126,33 +129,32 @@ impl BoardState {
         piece
     }
 
+    #[inline(always)]
     pub fn get_piece_on_side(&self, square: Square, side: Side) -> usize {
         let sq = square as usize;
         if sq >= SQUARES {
             return Piece::None as usize;
         }
-        let piece = self.piece_mapping[sq];
-        if self.occupancies[side].get_bit(sq) == 1 {
-            piece as usize
+        if (self.occupancies[side].0 >> sq) & 1 != 0 {
+            unsafe { *self.piece_mapping.get_unchecked(sq) as usize }
         } else {
             Piece::None as usize
         }
     }
 
+    #[inline(always)]
     pub fn get_piece_on(&self, square: Square) -> i32 {
         let sq = square as usize;
         if sq >= SQUARES {
             return -1;
         }
-        let piece = self.piece_mapping[sq];
+        let piece = unsafe { *self.piece_mapping.get_unchecked(sq) };
         if piece == Piece::None {
             return -1;
         }
-        if self.occupancies[Side::White].get_bit(sq) == 1 {
-            piece as i32
-        } else {
-            6 + piece as i32
-        }
+        let is_white = ((self.occupancies[Side::White].0 >> sq) & 1) as i32;
+        let color_offset = (1 - is_white) * 6;
+        color_offset + piece as i32
     }
 
     pub fn clipped_phase(&self) -> i32 {

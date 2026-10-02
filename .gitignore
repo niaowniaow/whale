@@ -74,3 +74,6 @@ checksum.md5
 !/data/benchmarks/
 !/data/benchmarks/*.epd
 !/resources/openings.epd
+/target_old/
+*:Zone.Identifier
+*_old/

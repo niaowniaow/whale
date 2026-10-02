@@ -73,13 +73,18 @@ static PENDING_PATH: RwLock<Option<String>> = RwLock::new(None);
 #[cfg(test)]
 pub(crate) static EVAL_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
+#[allow(dead_code)]
 #[cfg(target_arch = "x86_64")]
 static HAS_AVX2: std::sync::LazyLock<bool> =
     std::sync::LazyLock::new(|| is_x86_feature_detected!("avx2"));
 
 #[inline(always)]
 pub fn has_avx2() -> bool {
-    #[cfg(target_arch = "x86_64")]
+    #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
+    {
+        true
+    }
+    #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
     {
         *HAS_AVX2
     }
@@ -375,12 +380,13 @@ pub fn refresh_perspective(
     accs: &mut Sfnn16Accs,
 ) {
     let p = perspective as usize;
-    let mut feats = Vec::new();
-    append_halfka(pos, perspective, &mut feats);
+    let mut buf = [0usize; 32];
+    let len = super::position::append_halfka_stack(pos, perspective, &mut buf);
+    let feats = &buf[..len];
     let slot = &mut accs.halfka[p];
     slot.copy_from_slice(&nets.net.transformer.bias);
     let mut ps = [0i32; N_BUCKETS];
-    scatter_halfka(&nets.net.transformer, L1, &feats, slot, &mut ps, 1);
+    scatter_halfka(&nets.net.transformer, L1, feats, slot, &mut ps, 1);
     accs.psqt[p] = ps;
 }
 

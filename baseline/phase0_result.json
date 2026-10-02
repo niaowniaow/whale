@@ -1,0 +1,12 @@
+{
+  "whale": "/home/niaow/Downloads/whale/target/release/whale",
+  "whale_commit": "f5597abfcbe3946fbccf88551e114159b24d7aa8",
+  "rudim": null,
+  "status": "blocked_missing_rudim",
+  "games": 0,
+  "wins": 0,
+  "draws": 0,
+  "losses": 0,
+  "elo_diff": 0.0,
+  "pgn": null
+}

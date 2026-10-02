@@ -50,6 +50,24 @@ impl Bitboard {
     }
 
     #[inline(always)]
+    pub fn get_bit_unchecked(&self, square: usize) -> u8 {
+        debug_assert!(square < 64);
+        ((self.0 >> square) & 1) as u8
+    }
+
+    #[inline(always)]
+    pub fn set_bit_unchecked(&mut self, square: usize) {
+        debug_assert!(square < 64);
+        self.0 |= 1u64 << square;
+    }
+
+    #[inline(always)]
+    pub fn clear_bit_unchecked(&mut self, square: usize) {
+        debug_assert!(square < 64);
+        self.0 &= !(1u64 << square);
+    }
+
+    #[inline(always)]
     pub fn count_ones(&self) -> u32 {
         self.0.count_ones()
     }
@@ -57,6 +75,13 @@ impl Bitboard {
     #[inline(always)]
     pub fn clear_lsb(&mut self) {
         self.0 &= self.0.wrapping_sub(1);
+    }
+
+    #[inline(always)]
+    pub fn pop_lsb(&mut self) -> u32 {
+        let lsb = self.0.trailing_zeros();
+        self.0 &= self.0.wrapping_sub(1);
+        lsb
     }
 }
 

@@ -33,6 +33,21 @@ pub(super) fn search_primary(
 
     let timer = Instant::now();
 
+    if cancellation_token.load(Ordering::Relaxed) {
+        return;
+    }
+
+    let mut root_moves = MoveList::new();
+    board_state.generate_moves(&mut root_moves);
+    let root_threats = NodeThreats::compute(board_state);
+    for entry in root_moves.iter() {
+        if board_state.is_legal_with(entry.mv, root_threats.checkers, root_threats.pinned) {
+            best_move_so_far = entry.mv;
+            search_state.best_move = entry.mv;
+            break;
+        }
+    }
+
     for current_depth in 1..=max_depth {
         let iter_start_nodes = search_state.nodes;
 
@@ -193,13 +208,8 @@ pub(super) fn search_primary(
             );
         }
     }
-    conclude_search(
-        board_state,
-        cancellation_token,
-        search_state,
-        *debug_mode,
-        last_score,
-        best_move_so_far,
-        completed_depth,
-    );
+    if search_state.best_move == Move::NO_MOVE {
+        search_state.best_move = best_move_so_far;
+    }
+    conclude_search(board_state, search_state, completed_depth);
 }

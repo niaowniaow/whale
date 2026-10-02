@@ -60,20 +60,8 @@ fn all_experimentals_off_still_finds_legal_move() {
     let token = AtomicBool::new(false);
     let mut debug = false;
     let mut state = SearchState::new();
-    for flag in [
-        &mut state.params.cfss_enabled,
-        &mut state.params.ras_enabled,
-        &mut state.params.bmo_enabled,
-        &mut state.params.tce_enabled,
-        &mut state.params.lqt_enabled,
-        &mut state.params.sps_enabled,
-        &mut state.params.dad_enabled,
-        &mut state.params.alp_enabled,
-        &mut state.params.psm_enabled,
-        &mut state.params.gtp_enabled,
-    ] {
-        *flag = false;
-    }
+    state.params.extension_cap_enabled = false;
+    state.params.cpi_enabled = false;
     search(&mut board, 3, &token, &mut debug, &mut state, 1);
     assert_ne!(state.best_move, Move::NO_MOVE);
     assert!(board.is_legal(state.best_move));

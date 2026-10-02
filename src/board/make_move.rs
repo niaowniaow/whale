@@ -12,9 +12,9 @@ use crate::common::zobrist;
 
 #[inline(always)]
 fn is_light_square(sq: usize) -> bool {
-    let file = sq % 8;
-    let rank_from_white = 7 - sq / 8;
-    (file + rank_from_white) % 2 == 1
+    let file = sq & 7;
+    let rank_from_white = 7 - (sq >> 3);
+    ((file + rank_from_white) & 1) == 1
 }
 
 impl BoardState {
@@ -57,10 +57,9 @@ impl BoardState {
         }
 
         self.add_piece(m.target, self.side_to_move, final_moved_piece, true);
-        let target_piece_idx = self.get_piece_on(m.target);
-        if target_piece_idx >= 0 && (m.target as usize) < 64 {
-            self.board_hash ^=
-                zobrist::zobrist_table()[target_piece_idx as usize][m.target as usize];
+        let target_piece_idx = (self.side_to_move as usize) * 6 + final_moved_piece as usize;
+        if (m.target as usize) < 64 {
+            self.board_hash ^= zobrist::zobrist_table()[target_piece_idx][m.target as usize];
         }
 
         self.record_pending_updates(next_idx);
@@ -209,12 +208,12 @@ impl BoardState {
     }
 
     fn move_rook_from(&mut self, source: Square, target: Square, side: Side) {
-        let rook_index = self.get_piece_on(source);
+        let rook_index = (side as usize) * 6 + Piece::Rook as usize;
         self.remove_piece(source, true);
         self.add_piece(target, side, Piece::Rook, true);
 
-        self.board_hash ^= zobrist::zobrist_table()[rook_index as usize][source as usize];
-        self.board_hash ^= zobrist::zobrist_table()[rook_index as usize][target as usize];
+        self.board_hash ^= zobrist::zobrist_table()[rook_index][source as usize];
+        self.board_hash ^= zobrist::zobrist_table()[rook_index][target as usize];
     }
 
     pub fn unmake_move(&mut self, m: Move) {

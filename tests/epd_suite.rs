@@ -95,3 +95,33 @@ fn test_epd_must_try_benchmarks() {
         );
     }
 }
+
+#[test]
+fn test_epd_pressure_benchmarks() {
+    let fens = parse_epd_fens("data/benchmarks/pressure.epd");
+    assert!(!fens.is_empty(), "pressure.epd should exist");
+    for fen in fens {
+        let m = search_fen(&fen, 2);
+        assert!(
+            m.score.abs() <= 29000,
+            "Pressure FEN {} score out of range {}",
+            fen,
+            m.score
+        );
+    }
+}
+
+#[test]
+fn test_epd_opportunity_benchmarks() {
+    let fens = parse_epd_fens("data/benchmarks/opportunity.epd");
+    assert!(!fens.is_empty(), "opportunity.epd should exist");
+    for fen in fens {
+        let m = search_fen(&fen, 2);
+        assert!(
+            m.score.abs() <= 29000,
+            "Opportunity FEN {} score out of range {}",
+            fen,
+            m.score
+        );
+    }
+}

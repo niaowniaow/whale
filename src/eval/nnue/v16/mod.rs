@@ -37,5 +37,5 @@ pub use eval::{
 };
 pub use loader::{Sfnn16Net, SfnnArch, SfnnTransformer};
 pub use pairs::{append_pairs, collect_pairs, for_each_pair, pair_index_for, pair_make_index};
-pub use position::{SfnnPosition, append_halfka, halfka_index};
+pub use position::{SfnnPosition, append_halfka, append_halfka_stack, halfka_index};
 pub use threats::{append_threats, collect_threats, for_each_threat, threat_index_for};

@@ -1,8 +1,15 @@
+import os
 import subprocess
 import sys
 
+WHALE_BIN = os.environ.get("WHALE_ENGINE") or (
+    "target/release/whale"
+    if os.path.exists("target/release/whale")
+    else "target/release/whale.exe"
+)
+
 proc = subprocess.Popen(
-    ["target/release/whale.exe"],
+    [WHALE_BIN],
     stdin=subprocess.PIPE,
     stdout=subprocess.PIPE,
     stderr=subprocess.DEVNULL,

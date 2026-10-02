@@ -125,13 +125,20 @@ def play_game(engine_path, white_aprm=True, movetime=300, max_plies=120):
     pgn_game.headers["Result"] = result
     return pgn_game, result
 
+def default_engine():
+    for c in ("./target/release/whale", "./target/release/whale.exe", "./target/debug/whale", "./target/debug/whale.exe"):
+        if os.path.exists(c):
+            return c
+    return "./target/release/whale"
+
+
 def main():
-    engine_bin = sys.argv[1] if len(sys.argv) > 1 else "./target/release/whale.exe"
+    engine_bin = sys.argv[1] if len(sys.argv) > 1 else default_engine()
     num_games = int(sys.argv[2]) if len(sys.argv) > 2 else 2
     movetime = int(sys.argv[3]) if len(sys.argv) > 3 else 250
 
     if not os.path.exists(engine_bin):
-        engine_bin = "./target/debug/whale.exe"
+        engine_bin = default_engine()
 
     print("=" * 65)
     print("      APRM TOURNAMENT HARNESS: APRM-ON vs APRM-OFF (Baseline)")

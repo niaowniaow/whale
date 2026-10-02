@@ -191,71 +191,6 @@ pub(super) fn history_gate(
         && !gives_check
 }
 
-#[inline]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn alp_gate(
-    alp_enabled: bool,
-    alp_threshold: u8,
-    is_pv_node: bool,
-    has_excluded: bool,
-    in_check: bool,
-    found_pv: bool,
-    cap_or_promo: bool,
-    depth: u8,
-    moves: usize,
-    gives_check: bool,
-    static_eval: i16,
-    alpha: i16,
-    history_score: i32,
-    momentum: i16,
-) -> bool {
-    if !alp_enabled || is_pv_node || has_excluded || in_check || found_pv || cap_or_promo {
-        return false;
-    }
-    if depth > 4 || moves < 8 || gives_check {
-        return false;
-    }
-    let features = alp::AlpFeatures {
-        eval_margin: (static_eval as i32 - alpha as i32).clamp(-32768, 32767),
-        depth: depth as i32,
-        move_index: moves,
-        is_null_move: false,
-        is_capture: cap_or_promo,
-        is_pv: is_pv_node,
-        in_check,
-        history_score,
-        momentum: momentum as i32,
-    };
-    alp::AlpModel::should_prune(&features, alp_threshold)
-}
-
-#[inline]
-#[allow(clippy::too_many_arguments)]
-pub(super) fn psm_gate(
-    psm_enabled: bool,
-    is_pv_node: bool,
-    has_excluded: bool,
-    in_check: bool,
-    cap_or_promo: bool,
-    found_pv: bool,
-    ply: u8,
-    gives_check: bool,
-    psm_state: &crate::search::psm::PsmHiddenState,
-    moves: usize,
-    depth: u8,
-    fail_lows: u8,
-) -> bool {
-    psm_enabled
-        && !is_pv_node
-        && !has_excluded
-        && !in_check
-        && !cap_or_promo
-        && !found_pv
-        && (ply as usize) < constants::MAX_PLY
-        && !gives_check
-        && psm::PsmEngine::should_prune_sibling(psm_state, moves, depth, fail_lows)
-}
-
 #[inline(always)]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn losing_history_gate(
@@ -283,7 +218,6 @@ pub(super) fn losing_history_gate(
 #[inline]
 #[allow(clippy::too_many_arguments)]
 pub(super) fn extension_depth(
-    board: &mut BoardState,
     state: &mut SearchState,
     move_obj: Move,
     tt_best: Option<Move>,
@@ -291,9 +225,7 @@ pub(super) fn extension_depth(
     current_depth: u8,
     cap_or_promo: bool,
     gives_check: bool,
-    in_check: bool,
     ply: u8,
-    previous_move: Option<Move>,
 ) -> (u8, i8) {
     let mut extension: i8 = if Some(move_obj) == tt_best {
         singular_extension
@@ -302,22 +234,7 @@ pub(super) fn extension_depth(
     };
 
     let is_tactical_move = cap_or_promo || gives_check;
-    let tce_ext = if current_depth >= 6 && is_tactical_move && state.params.tce_enabled {
-        let nt_child = NodeThreats::compute(board);
-        tce::compute_extension(
-            board,
-            &nt_child,
-            move_obj,
-            current_depth,
-            in_check,
-            ply,
-            previous_move,
-        )
-        .clamp(0, 1)
-    } else {
-        0
-    };
-    extension = extension.max(tce_ext).clamp(-3, 3);
+    extension = extension.clamp(-3, 3);
 
     if state.verification_budget > 0 && is_tactical_move && extension < 3 {
         state.verification_budget = state.verification_budget.saturating_sub(1);
@@ -374,10 +291,7 @@ pub(super) fn search_move(
     cut_node: bool,
     pv_move: Option<Move>,
     on_pv_path: bool,
-    gtp_graph: gtp::GtpTreeGraph,
-    gtp_idx: usize,
     number_of_legal_moves: usize,
-    consecutive_fail_lows: u8,
     nt: &NodeThreats,
     ctx: &mut SearchContext,
 ) -> MoveOut {
@@ -393,21 +307,6 @@ pub(super) fn search_move(
                 history_score,
             ));
     let child_cut = !cut_node;
-
-    if ctx.search_state.params.psm_enabled && (ply as usize + 1) < constants::MAX_PLY {
-        let psm_feat = psm::PsmFeatures {
-            static_eval,
-            depth,
-            alpha,
-            beta,
-            move_history: history_score,
-            is_capture: cap_or_promo,
-            sibling_index: number_of_legal_moves,
-            failed_low: consecutive_fail_lows > 0,
-        };
-        ctx.search_state.psm_stack.stack[ply as usize + 1] =
-            psm::PsmEngine::step(&ctx.search_state.psm_stack.stack[ply as usize], &psm_feat);
-    }
 
     if needs_lmr {
         let all_node_lmr = !is_pv_node && !ctx.cut_node;
@@ -443,15 +342,7 @@ pub(super) fn search_move(
             &ctx.search_state.lmr_table,
             &ctx.search_state.params.lmr_divisor,
         );
-        let ras_perturbation = if ctx.search_state.params.ras_enabled {
-            ctx.search_state
-                .ras
-                .lmr_perturbation(ply as usize, depth, board_state.board_hash)
-        } else {
-            0
-        };
-        let mut reduction =
-            (base_reduction as i8 + ras_perturbation).clamp(0, depth as i8 - 1) as u8;
+        let mut reduction = base_reduction.clamp(0, depth.saturating_sub(1));
 
         let lmr_adj = crate::search::intent::effects(ctx.search_state.last_intent).lmr_adjust;
         if lmr_adj < 0 && (ply <= 4 || is_tactical) {
@@ -479,8 +370,6 @@ pub(super) fn search_move(
                 previous_pv: ctx.previous_pv,
                 excluded_move: None,
                 cut_node: true,
-                gtp_graph,
-                gtp_parent: Some(gtp_idx),
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -507,8 +396,6 @@ pub(super) fn search_move(
                 previous_pv: ctx.previous_pv,
                 excluded_move: None,
                 cut_node: if next_on_pv { false } else { child_cut },
-                gtp_graph,
-                gtp_parent: Some(gtp_idx),
                 pv_table: &mut *ctx.pv_table,
                 cancellation_token: ctx.cancellation_token,
                 search_state: ctx.search_state,
@@ -534,8 +421,6 @@ pub(super) fn search_move(
             previous_pv: ctx.previous_pv,
             excluded_move: None,
             cut_node: if next_on_pv { false } else { child_cut },
-            gtp_graph,
-            gtp_parent: Some(gtp_idx),
             pv_table: &mut *ctx.pv_table,
             cancellation_token: ctx.cancellation_token,
             search_state: ctx.search_state,
@@ -561,7 +446,7 @@ pub(super) fn finish_node(
     ply: u8,
     halfmove: u8,
     mate_bound: i16,
-    is_pv_node: bool,
+    _is_pv_node: bool,
     in_check: bool,
     static_eval: i16,
     has_static_eval: bool,
@@ -571,23 +456,12 @@ pub(super) fn finish_node(
     entry_type: TranspositionEntryType,
     previous_move: Option<Move>,
     tried_quiets: &[Move],
-    number_of_legal_moves: usize,
+    _number_of_legal_moves: usize,
     has_legal_moves: bool,
-    bandit_arm: crate::search::bmo::BanditArm,
     ctx: &mut SearchContext,
 ) -> i16 {
     if is_cancelled(ctx) {
         return 0;
-    }
-
-    if !is_pv_node
-        && ctx.excluded_move.is_none()
-        && number_of_legal_moves >= 3
-        && ctx.search_state.params.bmo_enabled
-    {
-        ctx.search_state
-            .bmo
-            .update(current_depth, bandit_arm, false);
     }
 
     if !has_legal_moves {

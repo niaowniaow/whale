@@ -6,8 +6,27 @@ import os
 import math
 import time
 
-MINE_EXE = os.path.abspath("target/release/whale.exe")
-ORIG_EXE = os.path.abspath("rudim-v305-orig.exe")
+def resolve_engine(env_name, *candidates):
+    override = os.environ.get(env_name)
+    if override:
+        return os.path.abspath(override)
+    for c in candidates:
+        p = os.path.abspath(c)
+        if os.path.exists(p):
+            return p
+    return os.path.abspath(candidates[0])
+
+
+MINE_EXE = resolve_engine(
+    "WHALE_ENGINE",
+    os.path.join("target", "release", "whale"),
+    os.path.join("target", "release", "whale.exe"),
+)
+ORIG_EXE = resolve_engine(
+    "RUDIM_ENGINE",
+    "rudim-v305-orig.exe",
+    "rudim-v305-orig",
+)
 
 def calculate_elo(score, total_games):
     if score <= 0:

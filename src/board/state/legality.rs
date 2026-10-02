@@ -25,14 +25,16 @@ impl BoardState {
         if piece == Piece::None {
             return false;
         }
-        if self.occupancies[self.side_to_move].get_bit(src) == 0 {
+        let us_occ = self.occupancies[self.side_to_move].0;
+        if (us_occ & (1u64 << src)) == 0 {
             return false;
         }
-        if self.occupancies[self.side_to_move].get_bit(tgt) == 1 {
+        if (us_occ & (1u64 << tgt)) != 0 {
             return false;
         }
-        let occ = self.occupancy();
-        let is_target_occupied = occ.get_bit(tgt) == 1;
+        let them_occ = self.occupancies[self.side_to_move.other()].0;
+        let occ = Bitboard(us_occ | them_occ);
+        let is_target_occupied = (them_occ & (1u64 << tgt)) != 0;
 
         match piece {
             Piece::Pawn => {
@@ -203,20 +205,56 @@ impl BoardState {
         self.is_legal_with(m, self.checkers(us).0, self.pinned_pieces(us).0)
     }
 
+    #[inline(always)]
     pub fn is_legal_with(&self, m: Move, checkers: u64, pinned: u64) -> bool {
         if !self.is_pseudo_legal(m) {
             return false;
         }
+        self.is_legal_pseudo_with(m, checkers, pinned)
+    }
+
+    #[inline(always)]
+    pub fn is_legal_pseudo_with(&self, m: Move, checkers: u64, pinned: u64) -> bool {
         let us = self.side_to_move;
-        let them = us.other();
-        let king_bb = self.get_pieces(us, Piece::King);
-        if king_bb.is_empty() {
+        let king_bb = self.pieces[Piece::King].0 & self.occupancies[us].0;
+        if king_bb == 0 {
             return false;
         }
-        let ksq = Square::from(king_bb.get_lsb() as usize);
         let from = m.source;
         let to = m.target;
         let from_piece = self.piece_mapping[from as usize];
+
+        if from_piece != Piece::King && m.move_type != MoveType::EnPassant {
+            if checkers == 0 {
+                if (pinned & (1u64 << (from as usize))) == 0 {
+                    return true;
+                }
+                let ksq = king_bb.trailing_zeros() as usize;
+                return (LINE_BB[ksq][from as usize] & (1u64 << (to as usize))) != 0;
+            }
+
+            if (checkers & (checkers - 1)) != 0 {
+                return false;
+            }
+
+            let ksq = king_bb.trailing_zeros() as usize;
+
+            if (pinned & (1u64 << (from as usize))) != 0
+                && (LINE_BB[ksq][from as usize] & (1u64 << (to as usize))) == 0
+            {
+                return false;
+            }
+
+            let checker_sq = checkers.trailing_zeros() as usize;
+            if to as usize == checker_sq {
+                return true;
+            }
+
+            return (BETWEEN_BB[ksq][checker_sq] & (1u64 << (to as usize))) != 0;
+        }
+
+        let them = us.other();
+        let ksq = Square::from(king_bb.trailing_zeros() as usize);
 
         if from_piece == Piece::King {
             if m.move_type == MoveType::Castle {
@@ -389,29 +427,6 @@ impl BoardState {
             return true;
         }
 
-        if checkers == 0 {
-            if (pinned & (1u64 << from as usize)) == 0 {
-                return true;
-            }
-            return (LINE_BB[ksq as usize][from as usize] & (1u64 << to as usize)) != 0;
-        }
-
-        let num_checkers = checkers.count_ones();
-        if num_checkers > 1 {
-            return false;
-        }
-
-        if (pinned & (1u64 << from as usize)) != 0
-            && (LINE_BB[ksq as usize][from as usize] & (1u64 << to as usize)) == 0
-        {
-            return false;
-        }
-
-        let checker_sq = checkers.trailing_zeros() as usize;
-        if to as usize == checker_sq {
-            return true;
-        }
-
-        (BETWEEN_BB[ksq as usize][checker_sq] & (1u64 << to as usize)) != 0
+        false
     }
 }

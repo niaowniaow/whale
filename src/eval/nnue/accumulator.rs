@@ -56,17 +56,26 @@ impl Accumulator {
     pub fn add_feature(&mut self, feature_idx: usize, network: &Network) {
         let start = feature_idx * ACC_SIZE;
         let weights = &network.transformer_weights[start..start + ACC_SIZE];
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::add_feature_avx2(&mut self.state, weights);
-                }
-                return;
+            unsafe {
+                Self::add_feature_avx2(&mut self.state, weights);
             }
         }
-        for (state, weight) in self.state.iter_mut().zip(weights) {
-            *state += *weight;
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        {
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::add_feature_avx2(&mut self.state, weights);
+                    }
+                    return;
+                }
+            }
+            for (state, weight) in self.state.iter_mut().zip(weights) {
+                *state += *weight;
+            }
         }
     }
 
@@ -74,17 +83,26 @@ impl Accumulator {
     pub fn remove_feature(&mut self, feature_idx: usize, network: &Network) {
         let start = feature_idx * ACC_SIZE;
         let weights = &network.transformer_weights[start..start + ACC_SIZE];
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::remove_feature_avx2(&mut self.state, weights);
-                }
-                return;
+            unsafe {
+                Self::remove_feature_avx2(&mut self.state, weights);
             }
         }
-        for (state, weight) in self.state.iter_mut().zip(weights) {
-            *state -= *weight;
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        {
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::remove_feature_avx2(&mut self.state, weights);
+                    }
+                    return;
+                }
+            }
+            for (state, weight) in self.state.iter_mut().zip(weights) {
+                *state -= *weight;
+            }
         }
     }
 
@@ -94,17 +112,26 @@ impl Accumulator {
         let remove_start = remove_idx * ACC_SIZE;
         let add_weights = &network.transformer_weights[add_start..add_start + ACC_SIZE];
         let remove_weights = &network.transformer_weights[remove_start..remove_start + ACC_SIZE];
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
-                }
-                return;
+            unsafe {
+                Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
             }
         }
-        for i in 0..ACC_SIZE {
-            self.state[i] += add_weights[i] - remove_weights[i];
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        {
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::add_1_sub_1_avx2(&mut self.state, add_weights, remove_weights);
+                    }
+                    return;
+                }
+            }
+            for i in 0..ACC_SIZE {
+                self.state[i] += add_weights[i] - remove_weights[i];
+            }
         }
     }
 
@@ -122,22 +149,36 @@ impl Accumulator {
         let add_weights = &network.transformer_weights[add_start..add_start + ACC_SIZE];
         let remove1_weights = &network.transformer_weights[remove1_start..remove1_start + ACC_SIZE];
         let remove2_weights = &network.transformer_weights[remove2_start..remove2_start + ACC_SIZE];
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::add_1_sub_2_avx2(
-                        &mut self.state,
-                        add_weights,
-                        remove1_weights,
-                        remove2_weights,
-                    );
-                }
-                return;
+            unsafe {
+                Self::add_1_sub_2_avx2(
+                    &mut self.state,
+                    add_weights,
+                    remove1_weights,
+                    remove2_weights,
+                );
             }
         }
-        for i in 0..ACC_SIZE {
-            self.state[i] += add_weights[i] - remove1_weights[i] - remove2_weights[i];
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        {
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::add_1_sub_2_avx2(
+                            &mut self.state,
+                            add_weights,
+                            remove1_weights,
+                            remove2_weights,
+                        );
+                    }
+                    return;
+                }
+            }
+            for i in 0..ACC_SIZE {
+                self.state[i] += add_weights[i] - remove1_weights[i] - remove2_weights[i];
+            }
         }
     }
 
@@ -158,17 +199,26 @@ impl Accumulator {
         let a2 = &network.transformer_weights[add2_start..add2_start + ACC_SIZE];
         let r1 = &network.transformer_weights[remove1_start..remove1_start + ACC_SIZE];
         let r2 = &network.transformer_weights[remove2_start..remove2_start + ACC_SIZE];
-        #[cfg(target_arch = "x86_64")]
+        #[cfg(all(target_arch = "x86_64", target_feature = "avx2"))]
         {
-            if *super::HAS_AVX2 {
-                unsafe {
-                    Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
-                }
-                return;
+            unsafe {
+                Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
             }
         }
-        for i in 0..ACC_SIZE {
-            self.state[i] += a1[i] + a2[i] - r1[i] - r2[i];
+        #[cfg(not(all(target_arch = "x86_64", target_feature = "avx2")))]
+        {
+            #[cfg(all(target_arch = "x86_64", not(target_feature = "avx2")))]
+            {
+                if *super::HAS_AVX2 {
+                    unsafe {
+                        Self::add_2_sub_2_avx2(&mut self.state, a1, a2, r1, r2);
+                    }
+                    return;
+                }
+            }
+            for i in 0..ACC_SIZE {
+                self.state[i] += a1[i] + a2[i] - r1[i] - r2[i];
+            }
         }
     }
 
@@ -179,10 +229,25 @@ impl Accumulator {
             use std::arch::x86_64::*;
             let s_ptr = state.as_mut_ptr() as *mut __m256i;
             let w_ptr = weights.as_ptr() as *const __m256i;
-            for i in 0..16 {
-                let s = _mm256_load_si256(s_ptr.add(i));
-                let w = _mm256_loadu_si256(w_ptr.add(i));
-                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s, w));
+            let mut i = 0;
+            while i < 16 {
+                let s0 = _mm256_load_si256(s_ptr.add(i));
+                let w0 = _mm256_load_si256(w_ptr.add(i));
+                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s0, w0));
+
+                let s1 = _mm256_load_si256(s_ptr.add(i + 1));
+                let w1 = _mm256_load_si256(w_ptr.add(i + 1));
+                _mm256_store_si256(s_ptr.add(i + 1), _mm256_add_epi16(s1, w1));
+
+                let s2 = _mm256_load_si256(s_ptr.add(i + 2));
+                let w2 = _mm256_load_si256(w_ptr.add(i + 2));
+                _mm256_store_si256(s_ptr.add(i + 2), _mm256_add_epi16(s2, w2));
+
+                let s3 = _mm256_load_si256(s_ptr.add(i + 3));
+                let w3 = _mm256_load_si256(w_ptr.add(i + 3));
+                _mm256_store_si256(s_ptr.add(i + 3), _mm256_add_epi16(s3, w3));
+
+                i += 4;
             }
         }
     }
@@ -194,10 +259,25 @@ impl Accumulator {
             use std::arch::x86_64::*;
             let s_ptr = state.as_mut_ptr() as *mut __m256i;
             let w_ptr = weights.as_ptr() as *const __m256i;
-            for i in 0..16 {
-                let s = _mm256_load_si256(s_ptr.add(i));
-                let w = _mm256_loadu_si256(w_ptr.add(i));
-                _mm256_store_si256(s_ptr.add(i), _mm256_sub_epi16(s, w));
+            let mut i = 0;
+            while i < 16 {
+                let s0 = _mm256_load_si256(s_ptr.add(i));
+                let w0 = _mm256_load_si256(w_ptr.add(i));
+                _mm256_store_si256(s_ptr.add(i), _mm256_sub_epi16(s0, w0));
+
+                let s1 = _mm256_load_si256(s_ptr.add(i + 1));
+                let w1 = _mm256_load_si256(w_ptr.add(i + 1));
+                _mm256_store_si256(s_ptr.add(i + 1), _mm256_sub_epi16(s1, w1));
+
+                let s2 = _mm256_load_si256(s_ptr.add(i + 2));
+                let w2 = _mm256_load_si256(w_ptr.add(i + 2));
+                _mm256_store_si256(s_ptr.add(i + 2), _mm256_sub_epi16(s2, w2));
+
+                let s3 = _mm256_load_si256(s_ptr.add(i + 3));
+                let w3 = _mm256_load_si256(w_ptr.add(i + 3));
+                _mm256_store_si256(s_ptr.add(i + 3), _mm256_sub_epi16(s3, w3));
+
+                i += 4;
             }
         }
     }
@@ -214,12 +294,38 @@ impl Accumulator {
             let s_ptr = state.as_mut_ptr() as *mut __m256i;
             let a_ptr = add_weights.as_ptr() as *const __m256i;
             let r_ptr = remove_weights.as_ptr() as *const __m256i;
-            for i in 0..16 {
-                let s = _mm256_load_si256(s_ptr.add(i));
-                let a = _mm256_loadu_si256(a_ptr.add(i));
-                let r = _mm256_loadu_si256(r_ptr.add(i));
-                let diff = _mm256_sub_epi16(a, r);
-                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s, diff));
+            let mut i = 0;
+            while i < 16 {
+                let s0 = _mm256_load_si256(s_ptr.add(i));
+                let a0 = _mm256_load_si256(a_ptr.add(i));
+                let r0 = _mm256_load_si256(r_ptr.add(i));
+                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s0, _mm256_sub_epi16(a0, r0)));
+
+                let s1 = _mm256_load_si256(s_ptr.add(i + 1));
+                let a1 = _mm256_load_si256(a_ptr.add(i + 1));
+                let r1 = _mm256_load_si256(r_ptr.add(i + 1));
+                _mm256_store_si256(
+                    s_ptr.add(i + 1),
+                    _mm256_add_epi16(s1, _mm256_sub_epi16(a1, r1)),
+                );
+
+                let s2 = _mm256_load_si256(s_ptr.add(i + 2));
+                let a2 = _mm256_load_si256(a_ptr.add(i + 2));
+                let r2 = _mm256_load_si256(r_ptr.add(i + 2));
+                _mm256_store_si256(
+                    s_ptr.add(i + 2),
+                    _mm256_add_epi16(s2, _mm256_sub_epi16(a2, r2)),
+                );
+
+                let s3 = _mm256_load_si256(s_ptr.add(i + 3));
+                let a3 = _mm256_load_si256(a_ptr.add(i + 3));
+                let r3 = _mm256_load_si256(r_ptr.add(i + 3));
+                _mm256_store_si256(
+                    s_ptr.add(i + 3),
+                    _mm256_add_epi16(s3, _mm256_sub_epi16(a3, r3)),
+                );
+
+                i += 4;
             }
         }
     }
@@ -238,14 +344,37 @@ impl Accumulator {
             let a_ptr = add_weights.as_ptr() as *const __m256i;
             let r1_ptr = rem1_weights.as_ptr() as *const __m256i;
             let r2_ptr = rem2_weights.as_ptr() as *const __m256i;
-            for i in 0..16 {
-                let s = _mm256_load_si256(s_ptr.add(i));
-                let a = _mm256_loadu_si256(a_ptr.add(i));
-                let r1 = _mm256_loadu_si256(r1_ptr.add(i));
-                let r2 = _mm256_loadu_si256(r2_ptr.add(i));
-                let rem = _mm256_add_epi16(r1, r2);
-                let diff = _mm256_sub_epi16(a, rem);
-                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s, diff));
+            let mut i = 0;
+            while i < 16 {
+                let s0 = _mm256_load_si256(s_ptr.add(i));
+                let a0 = _mm256_load_si256(a_ptr.add(i));
+                let r1_0 = _mm256_load_si256(r1_ptr.add(i));
+                let r2_0 = _mm256_load_si256(r2_ptr.add(i));
+                let diff0 = _mm256_sub_epi16(a0, _mm256_add_epi16(r1_0, r2_0));
+                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s0, diff0));
+
+                let s1 = _mm256_load_si256(s_ptr.add(i + 1));
+                let a1 = _mm256_load_si256(a_ptr.add(i + 1));
+                let r1_1 = _mm256_load_si256(r1_ptr.add(i + 1));
+                let r2_1 = _mm256_load_si256(r2_ptr.add(i + 1));
+                let diff1 = _mm256_sub_epi16(a1, _mm256_add_epi16(r1_1, r2_1));
+                _mm256_store_si256(s_ptr.add(i + 1), _mm256_add_epi16(s1, diff1));
+
+                let s2 = _mm256_load_si256(s_ptr.add(i + 2));
+                let a2 = _mm256_load_si256(a_ptr.add(i + 2));
+                let r1_2 = _mm256_load_si256(r1_ptr.add(i + 2));
+                let r2_2 = _mm256_load_si256(r2_ptr.add(i + 2));
+                let diff2 = _mm256_sub_epi16(a2, _mm256_add_epi16(r1_2, r2_2));
+                _mm256_store_si256(s_ptr.add(i + 2), _mm256_add_epi16(s2, diff2));
+
+                let s3 = _mm256_load_si256(s_ptr.add(i + 3));
+                let a3 = _mm256_load_si256(a_ptr.add(i + 3));
+                let r1_3 = _mm256_load_si256(r1_ptr.add(i + 3));
+                let r2_3 = _mm256_load_si256(r2_ptr.add(i + 3));
+                let diff3 = _mm256_sub_epi16(a3, _mm256_add_epi16(r1_3, r2_3));
+                _mm256_store_si256(s_ptr.add(i + 3), _mm256_add_epi16(s3, diff3));
+
+                i += 4;
             }
         }
     }
@@ -266,16 +395,45 @@ impl Accumulator {
             let a2_ptr = a2_weights.as_ptr() as *const __m256i;
             let r1_ptr = r1_weights.as_ptr() as *const __m256i;
             let r2_ptr = r2_weights.as_ptr() as *const __m256i;
-            for i in 0..16 {
-                let s = _mm256_load_si256(s_ptr.add(i));
-                let a1 = _mm256_loadu_si256(a1_ptr.add(i));
-                let a2 = _mm256_loadu_si256(a2_ptr.add(i));
-                let r1 = _mm256_loadu_si256(r1_ptr.add(i));
-                let r2 = _mm256_loadu_si256(r2_ptr.add(i));
-                let adds = _mm256_add_epi16(a1, a2);
-                let rems = _mm256_add_epi16(r1, r2);
-                let diff = _mm256_sub_epi16(adds, rems);
-                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s, diff));
+            let mut i = 0;
+            while i < 16 {
+                let s0 = _mm256_load_si256(s_ptr.add(i));
+                let a1_0 = _mm256_load_si256(a1_ptr.add(i));
+                let a2_0 = _mm256_load_si256(a2_ptr.add(i));
+                let r1_0 = _mm256_load_si256(r1_ptr.add(i));
+                let r2_0 = _mm256_load_si256(r2_ptr.add(i));
+                let diff0 =
+                    _mm256_sub_epi16(_mm256_add_epi16(a1_0, a2_0), _mm256_add_epi16(r1_0, r2_0));
+                _mm256_store_si256(s_ptr.add(i), _mm256_add_epi16(s0, diff0));
+
+                let s1 = _mm256_load_si256(s_ptr.add(i + 1));
+                let a1_1 = _mm256_load_si256(a1_ptr.add(i + 1));
+                let a2_1 = _mm256_load_si256(a2_ptr.add(i + 1));
+                let r1_1 = _mm256_load_si256(r1_ptr.add(i + 1));
+                let r2_1 = _mm256_load_si256(r2_ptr.add(i + 1));
+                let diff1 =
+                    _mm256_sub_epi16(_mm256_add_epi16(a1_1, a2_1), _mm256_add_epi16(r1_1, r2_1));
+                _mm256_store_si256(s_ptr.add(i + 1), _mm256_add_epi16(s1, diff1));
+
+                let s2 = _mm256_load_si256(s_ptr.add(i + 2));
+                let a1_2 = _mm256_load_si256(a1_ptr.add(i + 2));
+                let a2_2 = _mm256_load_si256(a2_ptr.add(i + 2));
+                let r1_2 = _mm256_load_si256(r1_ptr.add(i + 2));
+                let r2_2 = _mm256_load_si256(r2_ptr.add(i + 2));
+                let diff2 =
+                    _mm256_sub_epi16(_mm256_add_epi16(a1_2, a2_2), _mm256_add_epi16(r1_2, r2_2));
+                _mm256_store_si256(s_ptr.add(i + 2), _mm256_add_epi16(s2, diff2));
+
+                let s3 = _mm256_load_si256(s_ptr.add(i + 3));
+                let a1_3 = _mm256_load_si256(a1_ptr.add(i + 3));
+                let a2_3 = _mm256_load_si256(a2_ptr.add(i + 3));
+                let r1_3 = _mm256_load_si256(r1_ptr.add(i + 3));
+                let r2_3 = _mm256_load_si256(r2_ptr.add(i + 3));
+                let diff3 =
+                    _mm256_sub_epi16(_mm256_add_epi16(a1_3, a2_3), _mm256_add_epi16(r1_3, r2_3));
+                _mm256_store_si256(s_ptr.add(i + 3), _mm256_add_epi16(s3, diff3));
+
+                i += 4;
             }
         }
     }

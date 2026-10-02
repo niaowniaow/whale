@@ -20,6 +20,9 @@ impl UciClient {
         let mut state = self.search_state.lock().unwrap_or_else(|e| e.into_inner());
         state.tt.clear();
         state.reset_heuristics();
+        if !crate::eval::nnue::v16::maintenance_active() {
+            let _ = crate::eval::nnue::v16::try_load_default();
+        }
         self.is_ready = true;
     }
 }

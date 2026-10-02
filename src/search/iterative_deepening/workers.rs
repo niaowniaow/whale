@@ -1,3 +1,4 @@
+use super::aspiration::run_aspiration;
 use super::*;
 
 pub(super) fn worker_search(
@@ -9,8 +10,13 @@ pub(super) fn worker_search(
 ) -> (u64, u64, u32) {
     let mut previous_pv = Vec::new();
     let mut pv_table = PvTable::new();
+    let mut last_score: i16 = 0;
 
-    let start_depth = if thread_id % 2 == 1 { 1 } else { 2 };
+    let start_depth = if max_depth <= 1 {
+        1
+    } else {
+        1 + (thread_id % 2) as u8
+    };
     for current_depth in start_depth..=max_depth {
         if cancellation_token.load(Ordering::Relaxed) {
             break;
@@ -20,13 +26,12 @@ pub(super) fn worker_search(
             break;
         }
 
-        let score = negamax::search(
+        let (score, completed) = run_aspiration(
             &mut board,
             current_depth,
-            i16::MIN + 1,
-            i16::MAX - 1,
-            cancellation_token,
+            last_score,
             &previous_pv,
+            cancellation_token,
             &mut pv_table,
             &mut search_state,
         );
@@ -38,10 +43,13 @@ pub(super) fn worker_search(
         if search_state.max_nodes > 0 && search_state.nodes >= search_state.max_nodes {
             break;
         }
-        let _ = score;
-        let current_pv = pv_table.line().to_vec();
-        if !current_pv.is_empty() {
-            previous_pv = current_pv;
+
+        if completed {
+            last_score = score;
+            let current_pv = pv_table.line().to_vec();
+            if !current_pv.is_empty() {
+                previous_pv = current_pv;
+            }
         }
     }
     (

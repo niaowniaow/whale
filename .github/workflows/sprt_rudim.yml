@@ -1,0 +1,104 @@
+name: SPRT (Whale vs Rudim 3.0.5)
+
+on:
+  workflow_dispatch:
+    inputs:
+      games:
+        description: "Maximum games to play"
+        default: "40"
+        type: string
+      movetime:
+        description: "Milliseconds per move for both engines"
+        default: "2000"
+        type: string
+  pull_request:
+    branches: [main, development]
+    paths:
+      - "src/**"
+      - "tests/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - ".cargo/**"
+
+concurrency:
+  group: sprt-rudim-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sprt_rudim:
+    name: sprt (whale vs rudim 3.0.5)
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      RUSTFLAGS: "-C target-cpu=x86-64-v3"
+    permissions:
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          lfs: true
+
+      - name: Setup Rust toolchain (rustup)
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+          cargo --version
+
+      - name: Cache Rust dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-stable-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-stable-
+
+      - name: Install Python chess library
+        run: pip install chess
+
+      - name: Build Whale engine
+        run: |
+          cargo build --release
+          cp target/release/whale /tmp/whale
+          /tmp/whale bench 2>&1 | tail -n 1
+
+      - name: Download Rudim 3.0.5
+        run: |
+          mkdir -p /tmp/rudim
+          wget -q https://github.com/znxftw/rudim/releases/download/v3.0.5/linux-x64-avx2.zip -O /tmp/rudim/linux-x64-avx2.zip
+          unzip -o /tmp/rudim/linux-x64-avx2.zip -d /tmp/rudim
+          chmod +x /tmp/rudim/Rudim
+          cp /tmp/rudim/Rudim /tmp/rudim-305
+          printf "uci\nquit\n" | /tmp/rudim-305 | head -n 3
+
+      - name: Play SPRT match (Whale vs Rudim 3.0.5)
+        env:
+          GAMES: ${{ inputs.games || '40' }}
+          MOVETIME: ${{ inputs.movetime || '2000' }}
+        run: |
+          python3 tools/sprt_match.py \
+            --binary /tmp/whale \
+            --binary-b /tmp/rudim-305 \
+            --games "$GAMES" \
+            --movetime "$MOVETIME" \
+            --label-a "Whale" \
+            --label-b "Rudim-3.0.5" \
+            --out sprt_rudim.pgn
+
+      - name: SPRT verdict
+        run: |
+          python3 tools/sprt.py sprt_rudim.pgn --elo0 0 --elo1 5 --json sprt_rudim.json
+          python3 -c "import json,sys; r=json.load(open('sprt_rudim.json')); print(r); sys.exit(1 if r['verdict']=='H0' else 0)"
+
+      - name: Upload match PGN
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sprt-rudim-match
+          path: |
+            sprt_rudim.pgn
+            sprt_rudim.json

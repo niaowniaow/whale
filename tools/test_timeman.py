@@ -1,9 +1,28 @@
+import os
 import subprocess
 import time
 
+
+def resolve_engine():
+    override = os.environ.get("WHALE_ENGINE")
+    if override:
+        return override
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    unix = os.path.join(root, "target", "release", "whale")
+    if os.path.exists(unix):
+        return unix
+    win = os.path.join(root, "target", "release", "whale.exe")
+    if os.path.exists(win):
+        return win
+    return unix
+
+
+ENGINE = resolve_engine()
+
+
 def test_time_control(name, wtime, btime, winc=0, binc=0):
     proc = subprocess.Popen(
-        [r"C:\Users\newo\Downloads\whale\target\release\whale.exe"],
+        [ENGINE],
         stdin=subprocess.PIPE,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,

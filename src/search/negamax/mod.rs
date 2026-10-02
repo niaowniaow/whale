@@ -9,9 +9,7 @@ use crate::common::tt::{self, TranspositionEntryType};
 use crate::search::move_picker::MovePicker;
 use crate::search::pv_table::PvTable;
 use crate::search::search_state::SearchState;
-use crate::search::{
-    alp, cfss, counterplay, draw, ghi, gtp, iir, lmr, nmp, psm, quiescence, razoring, tce,
-};
+use crate::search::{counterplay, draw, ghi, iir, lmr, nmp, quiescence, razoring};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 pub mod context;
