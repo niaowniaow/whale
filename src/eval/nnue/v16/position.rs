@@ -141,12 +141,11 @@ pub fn append_halfka_stack(pos: &SfnnPosition, perspective: Side, out: &mut [usi
             continue;
         }
         let piece = Piece::ALL[pt];
-        if let Some(idx) = halfka_index(perspective, side, piece, s, ksq) {
-            if len < 32 {
+        if let Some(idx) = halfka_index(perspective, side, piece, s, ksq)
+            && len < 32 {
                 out[len] = idx;
                 len += 1;
             }
-        }
     }
     len
 }

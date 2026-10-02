@@ -42,15 +42,9 @@ fn resolve_move(board: &mut BoardState, uci: &str) -> Option<Move> {
     board.generate_moves(&mut list);
     for m in list.iter() {
         if m.mv.source == parsed.source && m.mv.target == parsed.target {
-            if parsed.move_type == MoveType::Quiet {
-                let cand = m.mv;
-                board.make_move(cand);
-                let bad = board.is_in_check(board.side_to_move.other());
-                board.unmake_move(cand);
-                if !bad {
-                    return Some(cand);
-                }
-            } else if (m.mv.move_type.value() & !8) == parsed.move_type.value() {
+            if parsed.move_type == MoveType::Quiet
+                || (m.mv.move_type.value() & !8) == parsed.move_type.value()
+            {
                 let cand = m.mv;
                 board.make_move(cand);
                 let bad = board.is_in_check(board.side_to_move.other());
@@ -89,7 +83,7 @@ pub extern "C" fn whale_create() -> *mut WhaleHandle {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn whale_destroy(h: *mut WhaleHandle) {
+pub unsafe extern "C" fn whale_destroy(h: *mut WhaleHandle) {
     if h.is_null() {
         return;
     }
@@ -138,7 +132,7 @@ pub extern "C" fn whale_push_uci(h: *mut WhaleHandle, uci: *const c_char) -> c_i
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn whale_go_depth(
+pub unsafe extern "C" fn whale_go_depth(
     h: *mut WhaleHandle,
     depth: c_uchar,
     out: *mut c_char,
